@@ -26,5 +26,6 @@ def make_task1_environment() -> Environment:
         ),
     ]
     
-    base_pose = torch.eye(4)   # robot mounted at origin
+    base_pose = torch.eye(4)
+    base_pose[0, 3] = -0.3   # robot outside the open side of the U
     return Environment(obstacles=obstacles, base_pose=base_pose)

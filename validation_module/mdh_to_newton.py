@@ -4,69 +4,67 @@ import warp as wp
 import newton
 from scipy.spatial.transform import Rotation
 
+from interface import Morphology
 
-def build_mdh_newton_model(
-    morph: torch.Tensor,
+
+def add_robot_to_builder(
+    builder: newton.ModelBuilder,
+    morph: Morphology,
     pose: torch.Tensor,
-    link_radius: float,
-    validate_inertia_detailed: bool = True,
-    add_ground_plane: bool = True,
-    label: str = "simple_robot",
-):
-    """Build a Newton model from MDH morphology parameters.
-
+    label: str = "robot",
+) -> tuple[list[int], list[int]]:
+    """Add robot links and joints to an existing builder.
+    
     Args:
-        morph: Tensor of shape (N, 3) containing MDH link parameters.
-        pose: Tensor of shape (N, 4, 4) containing link poses in world coordinates.
-        link_radius: Radius for both capsule shapes attached to each link.
-        validate_inertia_detailed: If True, enable detailed inertia validation.
-        add_ground_plane: If True, add a ground plane to the builder.
-        label: Articulation label for the final model.
-
+        builder: Existing ModelBuilder (may already contain environment shapes).
+        morph: Morphology with shape (n_links, 3) MDH parameters.
+        pose: World poses for each link, shape (n_links, 4, 4) — typically from FK.
+        label: Articulation label.
+    
     Returns:
-        model: The finalized Newton model.
-        state: The model state object.
+        (link_indices, joint_indices)
     """
-    builder = newton.ModelBuilder()
-    builder.validate_inertia_detailed = validate_inertia_detailed
-    if add_ground_plane:
-        builder.add_ground_plane()
-
     links = []
     joints = []
-    for i in range(morph.shape[0]):
+    
+    for i in range(morph.n_links):
         link_xform = wp.transform(
             p=pose[i, :3, 3],
             q=Rotation.from_matrix(pose[i, :3, :3]).as_quat(),
         )
-
+        
         link = builder.add_link(mass=0.0, inertia=None, xform=link_xform)
         links.append(link)
-
+        
+        d_val = morph.d[i].item()
+        a_val = morph.a[i].item()
+        
+        # d-capsule (along local z)
         builder.add_shape_capsule(
             body=link,
-            radius=link_radius,
-            half_height=abs(morph[i, 2].item()) / 2,
+            radius=morph.link_radius,
+            half_height=abs(d_val) / 2,
             xform=wp.transform(
-                p=torch.tensor([0.0, 0.0, -morph[i, 2].item() / 2]),
+                p=torch.tensor([0.0, 0.0, -d_val / 2]),
                 q=Rotation.identity().as_quat(),
             ),
         )
-
+        
+        # a-capsule (along local x)
         builder.add_shape_capsule(
             body=link,
-            radius=link_radius,
-            half_height=abs(morph[i, 1].item()) / 2,
+            radius=morph.link_radius,
+            half_height=abs(a_val) / 2,
             xform=wp.transform(
-                p=torch.tensor([-morph[i, 1].item() / 2, 0.0, -morph[i, 2].item()]),
+                p=torch.tensor([-a_val / 2, 0.0, -d_val]),
                 q=Rotation.from_euler("y", 90, degrees=True).as_quat(),
             ),
         )
-
+        
         if i != 0:
             pose_rel = torch.linalg.inv(pose[i - 1]) @ pose[i]
             joints.append(
-                builder.add_joint_fixed(
+                builder.add_joint_revolute(
                     parent=links[i - 1],
                     child=link,
                     parent_xform=wp.transform(
@@ -76,8 +74,27 @@ def build_mdh_newton_model(
                     child_xform=wp.transform_identity(),
                 )
             )
+    
+    if joints:
+        builder.add_articulation(joints, label=label)
+    
+    return links, joints
 
-    builder.add_articulation(joints, label=label)
+
+def build_mdh_newton_model(
+    morph: Morphology,
+    pose: torch.Tensor,
+    add_ground_plane: bool = True,
+    label: str = "robot",
+):
+    """Convenience wrapper: builds a model with just the robot (no environment)."""
+    builder = newton.ModelBuilder()
+    builder.validate_inertia_detailed = True
+    if add_ground_plane:
+        builder.add_ground_plane()
+    
+    add_robot_to_builder(builder, morph, pose, label=label)
+    
     model = builder.finalize()
     state = model.state()
     return model, state

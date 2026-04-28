@@ -2,16 +2,22 @@ import time
 import torch
 import warp as wp
 import newton
+
 from validation_module.scenarios.task1 import make_task1
+from validation_module.scenarios.test_morphology import make_test_morphology
+from validation_module.kinematics import compute_link_world_poses
+from validation_module.mdh_to_newton import add_robot_to_builder
 
 
 def main():
     task = make_task1()
+    morph = make_test_morphology()
     
+    # ONE builder for the whole scene
     builder = newton.ModelBuilder()
     builder.add_ground_plane()
     
-    # Walls
+    # ── Walls ──
     for obs in task.environment.obstacles:
         if obs.kind == "box":
             builder.add_shape_box(
@@ -23,14 +29,13 @@ def main():
                 hz=obs.half_extents[2].item(),
             )
     
-    # Reachable region — site only (no collision), bright color
+    # ── Reachable region ──
     region = task.reachable_region
     region_center = wp.vec3(
         (region.x_min + region.x_max) / 2,
         (region.y_min + region.y_max) / 2,
         (region.z_min + region.z_max) / 2,
     )
-
     builder.add_shape_box(
         body=-1,
         xform=wp.transform(p=region_center, q=wp.quat_identity()),
@@ -42,32 +47,41 @@ def main():
         label="reachable_region",
     )
     
-    # Goal poses as small spheres
+    # ── Goal poses ──
     for i in range(task.goal_poses.shape[0]):
         pos = task.goal_poses[i, :3, 3]
         builder.add_shape_sphere(
             body=-1,
-            xform=wp.transform(p=wp.vec3(*pos.tolist()), q=wp.quat_identity()),
+            xform=wp.transform(p=wp.vec3(*pos.tolist()),
+                               q=wp.quat_identity()),
             radius=0.03,
+            as_site=True,
+            color=wp.vec3(1.0, 0.2, 0.2),
         )
     
+    # ── Robot ──
+    poses = compute_link_world_poses(morph)
+    poses = task.environment.base_pose.unsqueeze(0) @ poses
+    add_robot_to_builder(builder, morph, poses, label="test_robot")
+    
+    # Finalize ONCE at the end
     model = builder.finalize()
     state = model.state()
     
+    # Viewer
     viewer = newton.viewer.ViewerViser(port=8080)
     viewer.set_model(model)
     viewer.begin_frame(0.0)
     viewer.log_state(state)
     viewer.end_frame()
     
-    print("Open http://localhost:8080 in your browser")
+    print("Open http://localhost:8080")
     
     try:
         while viewer.is_running():
             time.sleep(0.1)
     except KeyboardInterrupt:
         viewer.close()
-
 
 if __name__ == "__main__":
     main()
