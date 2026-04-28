@@ -38,28 +38,30 @@ def add_robot_to_builder(
         
         d_val = morph.d[i].item()
         a_val = morph.a[i].item()
-        
+
         # d-capsule (along local z)
-        builder.add_shape_capsule(
-            body=link,
-            radius=morph.link_radius,
-            half_height=abs(d_val) / 2,
-            xform=wp.transform(
-                p=torch.tensor([0.0, 0.0, -d_val / 2]),
-                q=Rotation.identity().as_quat(),
-            ),
-        )
-        
+        if abs(d_val) > 2 * morph.link_radius:
+            builder.add_shape_capsule(
+                body=link,
+                radius=morph.link_radius,
+                half_height=abs(d_val) / 2,
+                xform=wp.transform(
+                    p=wp.vec3(0.0, 0.0, -d_val / 2),
+                    q=wp.quat_identity(),
+                ),
+            )
+
         # a-capsule (along local x)
-        builder.add_shape_capsule(
-            body=link,
-            radius=morph.link_radius,
-            half_height=abs(a_val) / 2,
-            xform=wp.transform(
-                p=torch.tensor([-a_val / 2, 0.0, -d_val]),
-                q=Rotation.from_euler("y", 90, degrees=True).as_quat(),
-            ),
-        )
+        if abs(a_val) > 2 * morph.link_radius:
+            builder.add_shape_capsule(
+                body=link,
+                radius=morph.link_radius,
+                half_height=abs(a_val) / 2,
+                xform=wp.transform(
+                    p=wp.vec3(-a_val / 2, 0.0, -d_val),
+                    q=Rotation.from_euler("y", 90, degrees=True).as_quat(),
+                ),
+            )
         
         if i != 0:
             pose_rel = torch.linalg.inv(pose[i - 1]) @ pose[i]
