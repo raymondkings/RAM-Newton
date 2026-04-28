@@ -2,4 +2,9 @@
 name = "nrm-newton"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "torch>=2.0",
+    "warp>=0.3",
+    "newton>=0.1",
+    "scipy>=1.10",
+]
