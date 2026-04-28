@@ -28,6 +28,8 @@ def make_task1_environment() -> Environment:
 
     # Robot base: LEFT of the room, beside the left wall midpoint
     base_pose = torch.eye(4)
-    base_pose[0, 3] = -0.6    # x = -0.3, outside left wall
-    base_pose[1, 3] = ROOM_DEPTH / 2   # y = 0.5, level with room midpoint
+    base_pose[0, 3] = -0.6              # x: outside left wall
+    base_pose[1, 3] = ROOM_DEPTH / 2   # y: level with room midpoint
+    base_pose[2, 3] = 0.3              # z: lifted clear of ground + Newton contact margin
+    
     return Environment(obstacles=obstacles, base_pose=base_pose)
