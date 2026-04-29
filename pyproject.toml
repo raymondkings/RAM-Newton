@@ -8,6 +8,7 @@ dependencies = [
     "newton>=0.1",
     "scipy>=1.10",
     "jaxtyping",
+    "viser>=1.0.26",
 ]
 
 [build-system]
