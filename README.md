@@ -1,12 +1,49 @@
-# nrm-newton
+# NRM-Newton
 
-Gradient-based robot design pipeline using Neural Reachability Maps (NRM) and Newton physics simulator.
+Gradient-based robot morphology optimization pipeline based on Neural Reachability Maps (NRM) and Newton physics simulation.
 
 Practical course project — TUM CPS, Summer 2026.
 
-**Team:** Julian, Shiyuan, Jiyao, Raymond
+**Team:** Julian Arkenau, Shiyuan Zhang, Jiyao Zhang, Raymond King Setia
+
+**Supervisor**: Tim Walter
 
 ---
+
+## Requirements
+
+Python ≥ 3.10. Warp and Newton fall back to CPU if no NVIDIA GPU is available, but torch-based optimization will be significantly slower without one.
+
+## Setup
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) if you don't have it, then:
+
+```bash
+uv sync
+```
+
+This creates a virtual environment and installs all dependencies from `uv.lock`. To run scripts:
+
+```bash
+uv run python <file>
+```
+
+Or activate the environment directly:
+
+```bash
+source .venv/bin/activate
+```
+
+## Usage
+
+To run the pipeline use:
+
+```bash
+python run_pipeline.py clean         # validate a clean morphology
+python run_pipeline.py self_collide  # validate a self-colliding morphology
+```
+
+Both modes print a `ValidationResult` and open a browser-based Newton viewer.
 
 ## Interface Types
 
@@ -22,11 +59,3 @@ Practical course project — TUM CPS, Summer 2026.
 Takes an optimized `Morphology` and `Task`, builds a Newton scene, runs collision detection,
 and returns a `ValidationResult` with self-collision and environment-collision counts.
 `render_scene` opens a browser-based Newton viewer on the given port.
-```
-
-## Running
-
-```bash
-python run_validation.py clean         # no collisions expected
-python run_validation.py self_collide  # self-collisions expected
-```
