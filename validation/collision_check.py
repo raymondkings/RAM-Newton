@@ -1,7 +1,22 @@
-import newton
-
-
 def check_collisions(model, state, debug: bool = False) -> dict:
+    """Check for collisions at the current simulation state and classify them.
+
+    Runs Newton's collision detection and categorises each contact as either a
+    self-collision (two robot bodies touching) or an environment collision (a
+    robot body touching static geometry, indicated by body index -1).
+
+    Args:
+        model: Newton Model, must have been finalised with collision shapes.
+        state: Current simulation State (joint positions/velocities).
+        debug: If True, prints each contact pair with its kind, shape indices,
+            and body indices to stdout.
+
+    Returns:
+        Dict with keys:
+            - ``n_self_collisions``: contacts between two robot bodies.
+            - ``n_env_collisions``: contacts between a robot body and the environment.
+            - ``n_total``: total number of contacts detected.
+    """
     contacts = model.collide(state)
     n_contacts = int(contacts.rigid_contact_count.numpy()[0])
 
