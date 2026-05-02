@@ -1,10 +1,11 @@
 import time
+import torch
 import warp as wp
 import newton
 
 from interface import Morphology, Task
-from .kinematics import compute_link_world_poses
-from .mdh_to_newton import add_robot_to_builder
+from util.kinematics import forward_kinematics
+from validation.mdh_to_newton import add_robot_to_builder
 
 
 def render_scene(morph: Morphology, task: Task, port: int = 8080) -> None:
@@ -56,7 +57,7 @@ def render_scene(morph: Morphology, task: Task, port: int = 8080) -> None:
         )
 
     # Robot
-    poses = compute_link_world_poses(morph)
+    poses = forward_kinematics(morph.params, torch.zeros(morph.n_links, 1))
     poses = task.environment.base_pose.unsqueeze(0) @ poses
     add_robot_to_builder(builder, morph, poses, label="robot")
 

@@ -1,9 +1,10 @@
+import torch
 import newton
 import warp as wp
 from interface import Morphology, Task, ValidationResult
-from .mdh_to_newton import add_robot_to_builder
-from .kinematics import compute_link_world_poses
-from .collision_check import check_collisions
+from validation.mdh_to_newton import add_robot_to_builder
+from util.kinematics import forward_kinematics
+from validation.collision_check import check_collisions
 
 
 def validate(morph: Morphology, task: Task, debug: bool = False) -> ValidationResult:
@@ -23,7 +24,7 @@ def validate(morph: Morphology, task: Task, debug: bool = False) -> ValidationRe
                 hz=obs.half_extents[2].item(),
             )
 
-    poses = compute_link_world_poses(morph)
+    poses = forward_kinematics(morph.params, torch.zeros(morph.n_links, 1))
     poses = task.environment.base_pose.unsqueeze(0) @ poses
     add_robot_to_builder(builder, morph, poses)
 

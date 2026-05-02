@@ -4,7 +4,9 @@ from typing import Any
 
 import torch
 
-from morphology_sampler import sample_dof6_initial_morphologies
+from task.morphology_sampler import sample_dof6_initial_morphologies
+from validation.validate import validate
+from interface import Morphology, Task
 
 
 OPTIMIZATION_PARAMETER_CHOICES = ("ad", "alpha", "all")
@@ -73,6 +75,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=1,
         help="Number of initial DOF=6 morphologies to sample.",
     )
+    parser.add_argument(
+        "--visualize",
+        action="store_true",
+        default=False,
+        help="Open Newton viewer after validation.",
+    )
 
     return parser.parse_args(argv)
 
@@ -81,29 +89,23 @@ def run_task_module(
     num_reach_poses: int,
     num_avoid_poses: int,
     seed: int,
-) -> tuple[Any, Any, Any]:
+) -> Task:
     """Call the Task Module.
 
     Expected output:
-        poses_to_reach: shape [num_reach_poses, 9]
-        poses_to_avoid: shape [num_avoid_poses, 9]
-        collision_environment: agreed environment representation
+        Task with environment, goal_poses, and reachable_region.
 
     TODO: Replace generate_task with Jiyao's final function name if needed.
     """
     try:
-        from task import generate_task
+        from task.environment import make_task1
     except ImportError as exc:
         raise NotImplementedError(
             "Task module is not ready yet. TODO: create task.py and implement "
             "generate_task(num_reach_poses, num_avoid_poses, seed)."
         ) from exc
 
-    return generate_task(
-        num_reach_poses=num_reach_poses,
-        num_avoid_poses=num_avoid_poses,
-        seed=seed,
-    )
+    return make_task1()
 
 
 def run_optimization_module(
@@ -144,35 +146,23 @@ def run_optimization_module(
 
 def run_validation_module(
     optimized_morphologies: torch.Tensor,
-    collision_environment: Any,
-    poses_to_reach: Any,
+    task: Task,
     poses_to_avoid: Any,
 ) -> Any:
     """Call the Validation Module.
 
     Expected input:
         optimized_morphologies: Tensor [num_initial_samples, 7, 3]
-        collision_environment: environment representation from Task Module
-        poses_to_reach: shape [num_reach, 9]
+        task: Task from the Task Module
         poses_to_avoid: shape [num_avoid, 9]
 
     Expected output:
         validation result, e.g. dict with self-collision and environment-collision information.
-
-    TODO: Confirm Raymond's final validate interface.
     """
-    try:
-        from validation import validate
-    except ImportError as exc:
-        raise NotImplementedError(
-            "Validation module is not ready yet. TODO: create validation.py and implement validate(...)."
-        ) from exc
-
     return validate(
-        optimized_morphologies=optimized_morphologies,
-        collision_environment=collision_environment,
-        poses_to_reach=poses_to_reach,
-        poses_to_avoid=poses_to_avoid,
+        morph=Morphology(params=optimized_morphologies[0]),  # TODO: support validating multiple morphologies
+        task=task,
+        debug=False,
     )
 
 
@@ -196,29 +186,36 @@ def run_pipeline(args: argparse.Namespace) -> Any:
     )
     print(f"initial_morphologies.shape = {tuple(initial_morphologies.shape)}")
 
-    poses_to_reach, poses_to_avoid, collision_environment = run_task_module(
+    poses_to_avoid = None  # TODO: get these from the Task Module output
+
+    task = run_task_module(
         num_reach_poses=args.num_reach,
         num_avoid_poses=args.num_avoid,
         seed=args.seed,
     )
 
-    optimized_morphologies = run_optimization_module(
-        poses_to_reach=poses_to_reach,
-        poses_to_avoid=poses_to_avoid,
-        initial_morphologies=initial_morphologies,
-        optimization_parameters=args.optimization_parameters,
-    )
-    print(f"optimized_morphologies.shape = {tuple(optimized_morphologies.shape)}")
+    # optimized_morphologies = run_optimization_module(
+    #     poses_to_reach=task.goal_poses,
+    #     poses_to_avoid=poses_to_avoid,
+    #     initial_morphologies=initial_morphologies,
+    #     optimization_parameters=args.optimization_parameters,
+    # )
+    # print(f"optimized_morphologies.shape = {tuple(optimized_morphologies.shape)}")
+
+    morph = Morphology(params=initial_morphologies[0])  # TODO: replace with optimized_morphologies when optimization module is ready
 
     validation_result = run_validation_module(
-        optimized_morphologies=optimized_morphologies,
-        collision_environment=collision_environment,
-        poses_to_reach=poses_to_reach,
+        optimized_morphologies=initial_morphologies,
+        task=task,
         poses_to_avoid=poses_to_avoid,
     )
 
     print("Validation result:")
     print(validation_result)
+
+    if args.visualize:
+        from validation.render import render_scene
+        render_scene(morph, task)
 
     return validation_result
 
