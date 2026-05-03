@@ -1,3 +1,9 @@
+# -----------------------------------------------------------------------------
+# Original work Copyright (c) 2025 Tim Walter
+# Source: https://github.com/TimWalter/nrm
+
+# Modified work Copyright (c) 2026 Julian Arkenau
+# -----------------------------------------------------------------------------
 import json
 from pathlib import Path
 

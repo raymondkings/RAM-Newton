@@ -1,20 +1,26 @@
-"""
-Standalone DOF-6 morphology sampler extracted from the NRM project.
-
-This file only depends on torch. It does NOT need:
-- nrm package
-- scipy / se3 / so3 lookup tables
-- IK / EAIK
-- zarr dataset files
-- jaxtyping / beartype
-
-Main API:
-    sample_dof6_initial_morphologies(num_initial_samples, ...)
-
-Output:
-    Tensor [N, 7, 3]
-    Each morphology M is [dof + 1, 3], where each row is [alpha_i, a_i, d_i].
-"""
+# -----------------------------------------------------------------------------
+# Original work Copyright (c) 2023 Tim Walter
+# Source: https://github.com/TimWalter/nrm 
+# 
+# Modified work Copyright (c) 2026 Shiyuan Zhang
+# -----------------------------------------------------------------------------
+#
+# Standalone DOF-6 morphology sampler extracted from the NRM project.
+#
+# This file only depends on torch. It does NOT need:
+#   - nrm package
+#   - scipy / se3 / so3 lookup tables
+#   - IK / EAIK
+#   - zarr dataset files
+#   - jaxtyping / beartype
+#
+# Main API:
+#   sample_dof6_initial_morphologies(num_initial_samples, ...)
+#
+# Output:
+#   Tensor [N, 7, 3]
+#   Each morphology M is [dof + 1, 3], where each row is [alpha_i, a_i, d_i].
+# -----------------------------------------------------------------------------
 
 from __future__ import annotations
 
