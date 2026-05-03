@@ -30,7 +30,7 @@ def add_robot_to_builder(
     for i in range(morph.n_links):
         link_xform = wp.transform(
             p=pose[i, :3, 3],
-            q=Rotation.from_matrix(pose[i, :3, :3]).as_quat(),
+            q=Rotation.from_matrix(pose[i, :3, :3].cpu().numpy()).as_quat(),
         )
         
         link = builder.add_link(mass=0.0, inertia=None, xform=link_xform)
@@ -71,7 +71,7 @@ def add_robot_to_builder(
                     child=link,
                     parent_xform=wp.transform(
                         p=pose_rel[:3, 3],
-                        q=Rotation.from_matrix(pose_rel[:3, :3]).as_quat(),
+                        q=Rotation.from_matrix(pose_rel[:3, :3].cpu().numpy()).as_quat(),
                     ),
                     child_xform=wp.transform_identity(),
                 )

@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+
 import torch
 from jaxtyping import Float
 
@@ -28,7 +29,7 @@ class Morphology:
     Joint angles θ live elsewhere — they are configuration, not morphology.
     """
     params: Float[torch.Tensor, "n_links 3"]
-    link_radius: float = 0.05
+    link_radius: float = 0.025
 
     @property
     def n_links(self) -> int:
