@@ -755,6 +755,7 @@ dependencies = [
     { name = "newton" },
     { name = "scipy" },
     { name = "torch" },
+    { name = "tqdm" },
     { name = "viser" },
     { name = "warp-lang" },
 ]

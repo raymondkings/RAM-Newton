@@ -5,8 +5,10 @@ from typing import Any
 import torch
 
 from task.morphology_sampler import sample_dof6_initial_morphologies
+from optim.nrm import optimize_morphology
 from validation.validate import validate
 from interface import Morphology, Task
+from interface.environment import Environment
 
 
 OPTIMIZATION_PARAMETER_CHOICES = ("ad", "alpha", "all")
@@ -76,6 +78,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Number of initial DOF=6 morphologies to sample.",
     )
     parser.add_argument(
+        "--dummy-task",
+        action="store_true",
+        default=False,
+        help="Skip the task module and use random SE3 poses to test the optimization loop.",
+    )
+    parser.add_argument(
         "--visualize",
         action="store_true",
         default=False,
@@ -83,6 +91,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     return parser.parse_args(argv)
+
+
+def make_dummy_task(n_poses: int, device: torch.device | None = None) -> Task:
+    """Generate a Task with random valid SE3 goal poses for testing the optimization loop."""
+    if device is None:
+        device = torch.device("cpu")
+    # Random rotations via QR decomposition; flip sign if det=-1 to ensure SO(3)
+    raw = torch.randn(n_poses, 3, 3, device=device)
+    Q, R = torch.linalg.qr(raw)
+    sign = torch.sign(torch.diagonal(R, dim1=-2, dim2=-1)).prod(dim=-1, keepdim=True).unsqueeze(-1)
+    R_valid = Q * sign
+    # Random translations in a reachable workspace sphere (~0.3–0.7 m from origin)
+    t = torch.rand(n_poses, 3, device=device) * 0.4 + 0.3
+    poses = torch.zeros(n_poses, 4, 4, device=device)
+    poses[:, :3, :3] = R_valid
+    poses[:, :3, 3] = t
+    poses[:, 3, 3] = 1.0
+    return Task(environment=Environment(), goal_poses=poses)
 
 
 def run_task_module(
@@ -112,33 +138,27 @@ def run_optimization_module(
     poses_to_reach: Any,
     poses_to_avoid: Any,
     initial_morphologies: torch.Tensor,
-    optimization_parameters: str,
 ) -> torch.Tensor:
     """Call the Optimization Module.
 
-    Expected input:
+    Input:
         poses_to_reach: shape [num_reach, 9]
         poses_to_avoid: shape [num_avoid, 9]
         initial_morphologies: Tensor [num_initial_samples, 7, 3]
-        optimization_parameters: "ad", "alpha", or "all"
 
-    Expected output:
+    Output:
         optimized_morphologies: Tensor [num_initial_samples, 7, 3]
 
-    TODO: Replace optimize_morphology with Julian's final function name if needed.
     """
-    try:
-        from optimization import optimize_morphology
-    except ImportError as exc:
-        raise NotImplementedError(
-            "Optimization module is not ready yet. TODO: create optimization.py and implement "
-            "optimize_morphology(poses_to_reach, poses_to_avoid, initial_morphologies, "
-            "optimization_parameters)."
-        ) from exc
+
+    optimization_parameters = {
+        "num_iterations": 100,
+        "learning_rate": 0.01,
+        "logging": True,
+    }
 
     return optimize_morphology(
         poses_to_reach=poses_to_reach,
-        poses_to_avoid=poses_to_avoid,
         initial_morphologies=initial_morphologies,
         optimization_parameters=optimization_parameters,
     )
@@ -188,24 +208,30 @@ def run_pipeline(args: argparse.Namespace) -> Any:
 
     poses_to_avoid = None  # TODO: get these from the Task Module output
 
-    task = run_task_module(
-        num_reach_poses=args.num_reach,
-        num_avoid_poses=args.num_avoid,
-        seed=args.seed,
+    if args.dummy_task:
+        task = make_dummy_task(n_poses=args.num_reach)
+        print(f"Using dummy task with {args.num_reach} random SE3 goal poses.")
+    else:
+        task = run_task_module(
+            num_reach_poses=args.num_reach,
+            num_avoid_poses=args.num_avoid,
+            seed=args.seed,
+        )
+
+    morph = Morphology(params=initial_morphologies[0])
+    optimized_morph = optimize_morphology(
+        morph=morph,
+        task=task,
+        optimization_parameters={
+            "num_iterations": 100,
+            "learning_rate": 0.01,
+            "logging": True,
+        },
     )
-
-    # optimized_morphologies = run_optimization_module(
-    #     poses_to_reach=task.goal_poses,
-    #     poses_to_avoid=poses_to_avoid,
-    #     initial_morphologies=initial_morphologies,
-    #     optimization_parameters=args.optimization_parameters,
-    # )
-    # print(f"optimized_morphologies.shape = {tuple(optimized_morphologies.shape)}")
-
-    morph = Morphology(params=initial_morphologies[0])  # TODO: replace with optimized_morphologies when optimization module is ready
+    print(f"optimized_morph.params.shape = {tuple(optimized_morph.params.shape)}")
 
     validation_result = run_validation_module(
-        optimized_morphologies=initial_morphologies,
+        optimized_morphologies=optimized_morph.params.unsqueeze(0),
         task=task,
         poses_to_avoid=poses_to_avoid,
     )
