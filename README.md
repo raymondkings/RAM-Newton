@@ -58,6 +58,7 @@ All runtime behaviour is controlled by a JSON file (default: `config.json` in th
 | `seed` | `int` | `0` | Global random seed. Controls initial morphology sampling and all torch/numpy RNG state, enabling reproducible runs. |
 | `optimize` | `bool` | `true` | Run the NRM-based gradient optimisation loop. When `false` the sampled initial morphology is passed directly to validation, which is useful for quick sanity-checks or debugging validation alone. |
 | `visualize` | `bool` | `true` | Open the Newton interactive viewer after validation. Requires a display; set to `false` for headless / CI runs. |
+| `debug` | `bool` | `true` | Enable per-iteration logging during optimisation. Each step shows the current BCE loss and mean NRM-predicted reachability probability in the progress bar. Set to `false` for silent runs. |
 
 Example minimal config for a fast headless run:
 

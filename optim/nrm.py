@@ -85,7 +85,10 @@ def optimize_morphology(morph: Morphology, task: Task, optimization_parameters: 
     optimizer = torch.optim.AdamW([lengths], lr=lr)
     model = _load_model(device)
 
-    for _ in tqdm(range(n_iter)):
+    loss_list: list[float] = []
+    prob_list: list[float] = []
+
+    for i in tqdm(range(n_iter), desc="optimizing"):
         optimizer.zero_grad()
 
         param, _ = _preprocess(lengths, morph.link_radius)
@@ -96,6 +99,16 @@ def optimize_morphology(morph: Morphology, task: Task, optimization_parameters: 
         loss = torch.nn.BCEWithLogitsLoss(reduction="mean")(logit, torch.ones_like(logit))
         loss.backward()
         optimizer.step()
+
+        if logging:
+            with torch.no_grad():
+                loss_list.append(loss.item())
+                prob_list.append(torch.sigmoid(logit).mean().item())
+
+    if logging:
+        print(f"\n{'iter':>6}  {'loss':>8}  {'nrm_prob':>8}")
+        for i in range(0, len(loss_list), 10):
+            print(f"{i:>6}  {loss_list[i]:>8.4f}  {prob_list[i]:>8.3f}")
 
     with torch.no_grad():
         param, _ = _preprocess(lengths, morph.link_radius)

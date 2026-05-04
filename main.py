@@ -80,7 +80,7 @@ def main() -> None:
             optimization_parameters = {
                 "num_iterations": 100,
                 "learning_rate": 0.01,
-                "logging": True,
+                "logging": args.debug,
             },
         )
         print(f"Optimized morphology params:\n{optimized_morph.params} \nlink_radius={optimized_morph.link_radius}")
