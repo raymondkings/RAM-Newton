@@ -1,14 +1,15 @@
 [project]
 name = "nrm-newton"
 version = "0.1.0"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
-    "torch>=2.0",
-    "warp>=0.3",
-    "newton>=0.1",
-    "scipy>=1.10",
-    "jaxtyping",
-    "viser>=1.0.26",
+    "torch>=2.11.0",
+    "warp-lang>=1.13.0",
+    "newton>=1.1.0",
+    "scipy>=1.17.1",
+    "jaxtyping>=0.3.9",
+    "viser>=1.0.27",
+    "tqdm>=4.67.3",
 ]
 
 [build-system]
@@ -16,4 +17,4 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["interface", "validation_module"]
+packages = ["interface", "validation", "optim", "task", "util"]
