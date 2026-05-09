@@ -24,7 +24,8 @@ def _se3_to_vector(pose: Tensor) -> Tensor:
 _WEIGHTS_DIR = Path(__file__).parent.parent / "weights"
 
 
-def _load_model(device: torch.device) -> MLP:
+def _load_model() -> MLP:
+    device = torch.get_default_device()
     metadata = json.loads((_WEIGHTS_DIR / "metadata.json").read_text())
     model = MLP(**metadata["hyperparameter"])
     model.load_state_dict(torch.load(_WEIGHTS_DIR / "checkpoint.pth", map_location=device, weights_only=True))
@@ -75,7 +76,6 @@ def optimize_morphology(morph: Morphology, task: Task, optimization_parameters: 
     lr = optimization_parameters.get("learning_rate", 0.01)
     logging = optimization_parameters.get("logging", True)
 
-    device = morph.params.device
     task_vec = _se3_to_vector(task.goal_poses)
 
     alpha = morph.params[:, 0:1].clone()
@@ -83,7 +83,8 @@ def optimize_morphology(morph: Morphology, task: Task, optimization_parameters: 
     lengths.requires_grad_(True)
 
     optimizer = torch.optim.AdamW([lengths], lr=lr)
-    model = _load_model(device)
+    model = _load_model()
+    model.train()  # cuDNN LSTM backward requires training mode
 
     loss_list: list[float] = []
     prob_list: list[float] = []

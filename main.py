@@ -52,15 +52,16 @@ def main() -> None:
     args = parse_args()
     set_global_seed(args.seed)
 
-    print("Pipeline starting...")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.set_default_device(device)
+
     print("Config:", json.dumps(vars(args), indent=2))
 
     initial_morphologies = sample_dof6_initial_morphologies(
         num_initial_samples=1,
         seed=args.seed,
-        device=None,
+        device=device,
         analytically_solvable=False,
-        cpu_output=True,
         as_list=False,
     )
     

@@ -549,7 +549,6 @@ def sample_dof6_initial_morphologies(
     seed: int | None = 0,
     device: str | torch.device | None = None,
     analytically_solvable: bool = False,
-    cpu_output: bool = True,
     as_list: bool = False,
 ) -> Tensor | list[Tensor]:
     """
@@ -576,12 +575,7 @@ def sample_dof6_initial_morphologies(
     """
     if num_initial_samples <= 0:
         raise ValueError("num_initial_samples must be positive.")
-
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    else:
-        device = torch.device(device)
-
+    
     if seed is not None:
         torch.manual_seed(seed)
         if device.type == "cuda":
@@ -593,9 +587,6 @@ def sample_dof6_initial_morphologies(
         analytically_solvable=analytically_solvable,
         device=device,
     ).float()
-
-    if cpu_output:
-        morphologies = morphologies.cpu()
 
     if as_list:
         return [morphologies[i].clone() for i in range(morphologies.shape[0])]
