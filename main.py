@@ -15,7 +15,7 @@ from task.environment import l_environment
 from task.target import simple_targets
 from validation.plan import plan_to_pose
 from validation.planner import interpolate_path
-from validation.visualize import animate_plan
+from validation.render import animate_plan
 
 DEFAULT_CONFIG = Path(__file__).parent / "config.json"
 
@@ -79,7 +79,7 @@ def run_plan(morph: Morphology, task: Task) -> None:
     for i in range(task.goal_poses.shape[0]):
         goal_pose = task.goal_poses[i]
         print(f"\nGoal {i}: pos = {goal_pose[:3, 3].tolist()}")
-        result, start_q, goal_q = plan_to_pose(morph, task, goal_pose, seed=0)
+        result, start_q, goal_q = plan_to_pose(morph, task, goal_pose)
         if goal_q is None:
             print("  Morphology is kinematically incapable of reaching this pose.")
             continue
@@ -152,10 +152,6 @@ def main() -> None:
 
     cpu_morph, cpu_task = _to_cpu(optimized_morph, task)
     run_plan(cpu_morph, cpu_task)
-
-    if args.visualize:
-        from validation.render import render_scene
-        render_scene(cpu_morph, cpu_task)
 
 
 if __name__ == "__main__":

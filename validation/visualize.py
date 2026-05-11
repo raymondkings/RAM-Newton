@@ -3,11 +3,16 @@ import numpy as np
 import torch
 import warp as wp
 import newton
+from newton import JointTargetMode
 
 from interface import Morphology, Task
 from util.kinematics import compute_link_world_poses
 from validation.mdh_to_newton import add_robot_to_builder
 from validation.ground import add_ground_grid_to_viser, make_origin_axes
+
+# PD gains for joint position control during Newton simulation
+_KE = 500.0   # position stiffness  [N·m/rad]
+_KD = 50.0    # velocity damping    [N·m·s/rad]
 
 
 def animate_plan(
@@ -18,13 +23,21 @@ def animate_plan(
     fps: int = 30,
     hold_seconds: float = 1.0,
     loop: bool = True,
+    sim_substeps: int = 4,
 ) -> None:
-    """Open a Newton viewer and play the path. Loops until the user closes the tab.
+    """Execute the planned path in Newton physics and stream it to a viewer.
+
+    Each animation frame sets the next joint-position target and advances the
+    Newton simulation by `sim_substeps` steps with PD position control, so
+    contact forces are fully resolved.  The viewer loops until the tab is closed.
+
     Args:
-        path: list of joint-config tensors (n_joints,). Should already be densified
-            with `interpolate_path` for a smooth animation.
-        hold_seconds: how long to pause at start and end of each loop.
+        path: list of joint-config tensors (n_joints,).  Should be densified
+            with `interpolate_path` for smooth target tracking.
+        sim_substeps: physics substeps per rendered frame.
     """
+    n_joints = morph.n_links - 1
+
     builder = newton.ModelBuilder()
 
     for obs in task.environment.obstacles:
@@ -71,8 +84,24 @@ def animate_plan(
     rest_poses = task.environment.base_pose.unsqueeze(0) @ rest_poses
     add_robot_to_builder(builder, morph, rest_poses, label="robot")
 
+    # Enable PD position control on every revolute DOF
+    for i in range(len(builder.joint_target_ke)):
+        builder.joint_target_ke[i] = _KE
+        builder.joint_target_kd[i] = _KD
+        builder.joint_target_mode[i] = int(JointTargetMode.POSITION)
+
+    # Start at the first waypoint so the robot doesn't lurch from rest
+    builder.joint_q = path[0].detach().cpu().numpy().astype(np.float32).tolist()
+
     model = builder.finalize()
-    state = model.state()
+    state_0 = model.state()
+    state_1 = model.state()
+    control = model.control()
+
+    solver = newton.solvers.SolverMuJoCo(model)
+
+    frame_dt = 1.0 / fps
+    sim_dt = frame_dt / sim_substeps
 
     viewer = newton.viewer.ViewerViser(port=port)
     viewer.set_model(model)
@@ -82,15 +111,20 @@ def animate_plan(
 
     print(f"Open http://localhost:{port}  ({len(path)} frames)")
 
-    frame_dt = 1.0 / fps
     hold_frames = int(hold_seconds * fps)
 
-    def render_q(q: torch.Tensor, t: float) -> None:
-        arr = q.detach().cpu().numpy().astype(np.float32).reshape(-1)
-        state.joint_q.assign(arr)
-        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+    def step_to(q: torch.Tensor) -> None:
+        nonlocal state_0, state_1
+        arr = q.detach().cpu().numpy().astype(np.float32)[:n_joints]
+        control.joint_target_pos.assign(arr)
+        for _ in range(sim_substeps):
+            state_0.clear_forces()
+            solver.step(state_0, state_1, control, None, sim_dt)
+            state_0, state_1 = state_1, state_0
+
+    def render(t: float) -> None:
         viewer.begin_frame(t)
-        viewer.log_state(state)
+        viewer.log_state(state_0)
         viewer.log_lines("/origin_frame", axes_begins, axes_ends, axes_colors)
         viewer.end_frame()
 
@@ -98,7 +132,8 @@ def animate_plan(
         t = 0.0
         while viewer.is_running():
             for _ in range(hold_frames):
-                render_q(path[0], t)
+                step_to(path[0])
+                render(t)
                 t += frame_dt
                 time.sleep(frame_dt)
                 if not viewer.is_running():
@@ -107,12 +142,14 @@ def animate_plan(
             for q in path:
                 if not viewer.is_running():
                     break
-                render_q(q, t)
+                step_to(q)
+                render(t)
                 t += frame_dt
                 time.sleep(frame_dt)
 
             for _ in range(hold_frames):
-                render_q(path[-1], t)
+                step_to(path[-1])
+                render(t)
                 t += frame_dt
                 time.sleep(frame_dt)
                 if not viewer.is_running():
