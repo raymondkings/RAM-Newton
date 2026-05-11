@@ -6,7 +6,7 @@ import newton
 
 from interface import Morphology, Task
 from util.kinematics import compute_link_world_poses
-from validation.mdh_to_newton import add_robot_to_builder
+from util.mdh import add_robot_to_builder
 from validation.ground import add_ground_grid_to_viser, make_origin_axes
 
 # PD gains for joint position control during Newton simulation

@@ -31,6 +31,7 @@ import torch
 REJECTION_TEST_CONFIGS = 1000
 from torch import Tensor
 from util.kinematics import forward_kinematics, transformation_matrix
+from util.self_collision import get_capsules
 
 
 # Same constants as the original self_collision.py
@@ -81,45 +82,6 @@ def yoshikawa_manipulability(jacobian: Tensor, soft: bool = False) -> Tensor:
         return torch.prod(singular_values[..., : min(6, jacobian.shape[-1])], dim=-1)
 
     return torch.sqrt(torch.det(jacobian @ jacobian.transpose(-1, -2)).abs())
-
-
-# -----------------------------------------------------------------------------
-# Minimal self_collision.py subset
-# -----------------------------------------------------------------------------
-
-def get_capsules(mdh: Tensor, poses: Optional[Tensor]) -> tuple[Tensor, Tensor]:
-    """
-    Given a robot morphology, compute link-enclosing capsule start and endpoints.
-
-    Args:
-        mdh: Tensor [..., dofp1, 3], MDH morphology [alpha, a, d].
-        poses: Tensor [..., dofp1, 4, 4], forward kinematics result.
-
-    Returns:
-        s_all, e_all: each Tensor [..., 2*dofp1, 3]
-    """
-    if poses is None:
-        raise ValueError("poses must be provided for get_capsules().")
-
-    *batch_shape, _, _ = mdh.shape
-    device = mdh.device
-    dtype = mdh.dtype
-
-    # Prepend base frame T0. poses currently contains [T1, T2, ..., TN].
-    identity = torch.eye(4, device=device, dtype=dtype).expand(*batch_shape, 1, 4, 4)
-    poses = torch.cat([identity, poses], dim=-3)
-
-    s_a = poses[..., :-1, :3, 3]
-    e_d = poses[..., 1:, :3, 3]
-
-    z_axis = poses[..., 1:, :3, 2]
-    d = mdh[..., 2].unsqueeze(-1)
-    e_a = s_d = e_d - d * z_axis
-
-    s_all = torch.stack([s_a, s_d], dim=-2).flatten(-3, -2)
-    e_all = torch.stack([e_a, e_d], dim=-2).flatten(-3, -2)
-    return s_all, e_all
-
 
 def signed_distance_capsule_capsule(
     s1: Tensor,
@@ -236,11 +198,6 @@ def collision_check(mdh: Tensor, poses: Tensor, radius: float = LINK_RADIUS, deb
     critical_distance = (distances * collisions).min(dim=-1).values.reshape(batch_shape)
     critical_distance_end = (distance_end * collisions_end).min(dim=-1).values
     return torch.stack([critical_distance, critical_distance_end], dim=-1).min(dim=-1).values
-
-
-# -----------------------------------------------------------------------------
-# Minimal morphology.py subset
-# -----------------------------------------------------------------------------
 
 def _sample_link_type(batch_size: int, dof: int, device: torch.device) -> Tensor:
     """
@@ -486,6 +443,13 @@ def _reject_morph(morph: Tensor) -> Tensor:
     Returns:
         Bool Tensor [batch_size], True means rejected.
     """
+    zero_joints = torch.zeros(*morph.shape[:-1], 1, device=morph.device, dtype=morph.dtype)
+    zero_poses = forward_kinematics(morph, zero_joints)
+    # Use cuRobo's effective radius (LINK_RADIUS + collision_sphere_buffer) so the
+    # sampler's check matches cuRobo's stricter self-collision threshold.
+    CUROBO_BUFFER = 0.002
+    rejected = collision_check(morph, zero_poses, radius=LINK_RADIUS + CUROBO_BUFFER)
+
     joint_limits = get_joint_limits(morph)
 
     joint_limits = joint_limits.unsqueeze(1).expand(-1, REJECTION_TEST_CONFIGS, -1, -1)
@@ -495,7 +459,7 @@ def _reject_morph(morph: Tensor) -> Tensor:
     joints = joints + joint_limits[..., 1:2]
 
     poses = forward_kinematics(morph_expanded, joints)
-    rejected = collision_check(morph_expanded, poses).all(dim=1)
+    rejected |= collision_check(morph_expanded, poses).all(dim=1)
 
     jacobian = geometric_jacobian(poses)
     rejected |= (yoshikawa_manipulability(jacobian, soft=True) < 1e-4).all(dim=1)

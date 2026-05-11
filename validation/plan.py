@@ -6,16 +6,17 @@ from validation.planner import PlanResult
 from validation.curobo_planner import CUROBO_AVAILABLE, CuroboPlanner
 
 
-def plan_to_pose(
+def plan_to_poses(
     morph: Morphology,
     task: Task,
-    goal_pose: torch.Tensor,
+    goal_poses: torch.Tensor,
     start_q: torch.Tensor | None = None,
     max_attempts: int = 5,
 ) -> tuple[PlanResult, torch.Tensor, torch.Tensor | None]:
-    """Plan a collision-free trajectory to goal_pose using cuRobo.
+    """Plan a collision-free trajectory through all goal_poses using cuRobo.
 
-    Returns (result, start_q, goal_q).  goal_q is None on failure.
+    Chains plans sequentially: start_q → goal[0] → goal[1] → … → goal[N-1].
+    Returns (result, start_q, final_goal_q).  final_goal_q is None on failure.
     Requires CUDA and the curobo package.
     """
     n_joints = morph.n_links - 1
@@ -27,11 +28,7 @@ def plan_to_pose(
         print("cuRobo unavailable (requires CUDA + the curobo package).")
         return PlanResult(success=False, path=[], n_iterations=0, n_nodes=0), start_q, None
 
-    print("Planning with cuRobo (GPU TrajOpt + graph search)...")
-    try:
-        planner = CuroboPlanner(morph, task)
-        result, goal_q = planner.plan(goal_pose, start_q, max_attempts=max_attempts)
-        return result, start_q, goal_q
-    except Exception as e:
-        print(f"  cuRobo error: {e}")
-        return PlanResult(success=False, path=[], n_iterations=0, n_nodes=0), start_q, None
+    print(f"Planning sequence of {goal_poses.shape[0]} goals with cuRobo (GPU TrajOpt + graph search)...")
+    planner = CuroboPlanner(morph, task)
+    result, final_q = planner.plan_sequence(goal_poses, start_q, max_attempts=max_attempts)
+    return result, start_q, final_q

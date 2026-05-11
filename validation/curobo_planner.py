@@ -1,16 +1,7 @@
-"""Motion planning via cuRobo (NVIDIA GPU-accelerated trajectory optimisation).
-
-Install from source into this project's venv:
-    git clone https://github.com/NVlabs/curobo && cd curobo
-    nvidia-smi | grep CUDA   # check CUDA version
-    uv pip install --python /u/halle/arke/home_at/Documents/nrm-newton/.venv/bin/python .[cu12]
-See https://nvlabs.github.io/curobo/latest/getting-started/installation.html
-"""
-from __future__ import annotations
-
 import math
 import os
 import tempfile
+import traceback
 import xml.etree.ElementTree as ET
 
 import torch
@@ -20,6 +11,7 @@ from scipy.spatial.transform import Rotation
 from interface import Morphology, Task
 from interface.environment import Box, Sphere as EnvSphere, Capsule as EnvCapsule
 from validation.planner import PlanResult
+from util.mdh import to_urdf, get_joint_limits
 
 try:
     from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
@@ -27,111 +19,8 @@ try:
     from curobo.scene import Scene, Cuboid, Sphere as SceneSphere
 
     CUROBO_AVAILABLE = True
-    _CUROBO_IMPORT_ERROR: Exception | None = None
 except ImportError as e:
     CUROBO_AVAILABLE = False
-    _CUROBO_IMPORT_ERROR = e
-
-
-# ---------------------------------------------------------------------------
-# URDF generation from MDH parameters
-# ---------------------------------------------------------------------------
-
-def _joint_limits(morph: Morphology) -> list[tuple[float, float]]:
-    """Per-joint angle limits derived from MDH a-offsets to prevent non-adjacent self-collision.
-
-    When joint j rotates by θ, the horizontal distance between the d-capsule axes of
-    link_{j-1} and link_{j+1} (approximating α≈0) obeys the law of cosines:
-
-        dist(θ) = √(a_j² + a_{j+1}² + 2·a_j·a_{j+1}·cos(θ))
-
-    Self-collision occurs when dist(θ) < 2r.  Solving for the critical angle:
-
-        cos(θ_crit) = (4r² − a_j² − a_{j+1}²) / (2·a_j·a_{j+1})
-
-    The joint is limited to |θ| ≤ θ_crit.
-    """
-    r = morph.link_radius
-    n_joints = morph.n_links - 1
-    limits: list[tuple[float, float]] = []
-
-    for j in range(n_joints):
-        a_j = abs(morph.a[j].item())
-        a_j1 = abs(morph.a[j + 1].item())  # always valid: j+1 ≤ n_links-1
-
-        if a_j > 0.0 and a_j1 > 0.0:
-            cos_crit = (4.0 * r**2 - a_j**2 - a_j1**2) / (2.0 * a_j * a_j1)
-            if cos_crit <= -1.0:
-                # Even fully folded (θ=π) the capsules stay > 2r apart — no limit needed
-                limits.append((-math.pi, math.pi))
-            elif cos_crit >= 1.0:
-                # Even at θ=0 the capsules overlap — restrict to ±π/2 as a safe fallback
-                limits.append((-math.pi / 2.0, math.pi / 2.0))
-            else:
-                theta_crit = math.acos(cos_crit)
-                limits.append((-theta_crit, theta_crit))
-        else:
-            # One of the a-offsets is zero: no lateral displacement → no folding risk
-            limits.append((-math.pi, math.pi))
-
-    return limits
-
-
-def _morphology_to_urdf(morph: Morphology) -> str:
-    """Generate a URDF XML string for the given MDH morphology.
-
-    For Modified DH, the full joint transform is:
-        T_i(θ) = Rₓ(αᵢ) · Tₓ(aᵢ) · R_z(θᵢ) · T_z(dᵢ)
-
-    Because T_z and R_z share the same axis they commute, so:
-        T_i(θ) = Rₓ(αᵢ) · Tₓ(aᵢ) · T_z(dᵢ) · R_z(θᵢ)  =  T_origin · R_z(θᵢ)
-
-    T_origin maps to a URDF joint origin with:
-        xyz = (aᵢ, −sin(αᵢ)·dᵢ, cos(αᵢ)·dᵢ)
-        rpy = (αᵢ, 0, 0)
-        axis = z
-    """
-    n = morph.n_links
-    n_joints = n - 1  # revolute DOFs; last MDH row becomes the fixed EE joint
-
-    robot = ET.Element("robot", name="mdh_robot")
-    ET.SubElement(robot, "link", name="base_link")
-    for i in range(n):
-        ET.SubElement(robot, "link", name=f"link_{i}")
-
-    joint_lims = _joint_limits(morph)
-
-    for i in range(n):
-        alpha = morph.alpha[i].item()
-        a = morph.a[i].item()
-        d = morph.d[i].item()
-        sa, ca = math.sin(alpha), math.cos(alpha)
-
-        parent = "base_link" if i == 0 else f"link_{i - 1}"
-        child = f"link_{i}"
-        joint_type = "fixed" if i == n_joints else "revolute"
-
-        jnt = ET.SubElement(robot, "joint", name=f"joint_{i}", type=joint_type)
-        ET.SubElement(jnt, "parent", link=parent)
-        ET.SubElement(jnt, "child", link=child)
-        ET.SubElement(
-            jnt, "origin",
-            xyz=f"{a:.8f} {-sa * d:.8f} {ca * d:.8f}",
-            rpy=f"{alpha:.8f} 0.0 0.0",
-        )
-        ET.SubElement(jnt, "axis", xyz="0 0 1")
-        if joint_type == "revolute":
-            lower, upper = joint_lims[i]
-            ET.SubElement(
-                jnt, "limit",
-                lower=f"{lower:.6f}",
-                upper=f"{upper:.6f}",
-                effort="1000",
-                velocity=f"{math.pi:.6f}",
-            )
-
-    return '<?xml version="1.0"?>\n' + ET.tostring(robot, encoding="unicode")
-
 
 # ---------------------------------------------------------------------------
 # Collision-sphere approximation of MDH capsule geometry
@@ -250,7 +139,7 @@ def _build_scene(task: Task, base_pose_inv: torch.Tensor) -> "Scene":
                 dims=(2.0 * obs.half_extents).float().tolist(),
                 pose=pose,
             ))
-        elif isinstance(obs, EnvSphere):
+        if isinstance(obs, EnvSphere):
             c_l = _to_local(obs.center.float().numpy())
             scene_spheres.append(SceneSphere(
                 name=f"sphere_{idx}",
@@ -319,7 +208,6 @@ class CuroboPlanner:
         self._device = torch.device(device)
 
         n = morph.n_links
-        n_joints = n - 1
         ee_link = f"link_{n - 1}"
 
         dtype = morph.params.dtype
@@ -327,7 +215,7 @@ class CuroboPlanner:
         self._base_pose_inv = torch.linalg.inv(base_pose_f32).to(dtype)
 
         # Write URDF to a temp file (cuRobo requires a file path)
-        urdf_str = _morphology_to_urdf(morph)
+        urdf_str = to_urdf(morph, get_joint_limits(morph).tolist())
         tmp = tempfile.NamedTemporaryFile(suffix=".urdf", delete=False, mode="w")
         tmp.write(urdf_str)
         tmp.flush()
@@ -349,12 +237,18 @@ class CuroboPlanner:
 
         config = MotionPlannerCfg.create(
             robot=robot_dict,
-            scene_model=scene,
+            collision_cache={"cuboid": 20},
             num_ik_seeds=num_ik_seeds,
             num_trajopt_seeds=num_trajopt_seeds,
+            optimizer_collision_activation_distance=0.05,
         )
-        self._planner = MotionPlanner(config)
-        self._planner.warmup(enable_graph=True, num_warmup_iterations=3)
+        try:
+            self._planner = MotionPlanner(config)
+            self._planner.update_world(scene)
+            self._planner.warmup(enable_graph=True, num_warmup_iterations=3)
+        except Exception:
+            traceback.print_exc()
+            raise
 
     def plan(
         self,
@@ -380,7 +274,31 @@ class CuroboPlanner:
             joint_names=self._planner.joint_names,
         )
 
-        result = self._planner.plan_pose(goal, start_state, max_attempts=max_attempts)
+        gp = self._planner.graph_planner
+        if gp is not None:
+            q_check = start_q.float().unsqueeze(0).to(self._device)  # [1, n_joints]
+            start_feasible = gp.check_samples_feasibility(q_check)
+            if not start_feasible.all():
+                print("[cuRobo] start state is in collision (self or world)")
+                kin = self._planner.compute_kinematics(start_state)
+                if kin.robot_spheres is not None:
+                    # spheres: [batch, horizon, num_spheres, 4] — (x, y, z, r) in robot-local frame
+                    # ground top face is at z=0 in local frame
+                    spheres = kin.robot_spheres.reshape(-1, 4)
+                    ground_penetration = spheres[:, 2] - spheres[:, 3]  # z - r
+                    if (ground_penetration < 0).any():
+                        worst = ground_penetration.min().item()
+                        print(f"[cuRobo]   -> ground plane collision (deepest penetration: {worst:.4f} m)")
+                    else:
+                        print("[cuRobo]   -> no ground collision; likely self-collision")
+            else:
+                print("[cuRobo] start state is collision-free")
+
+        try:
+            result = self._planner.plan_pose(goal, start_state, max_attempts=max_attempts)
+        except Exception:
+            traceback.print_exc()
+            raise
 
         if result is None or not result.success.any():
             return PlanResult(success=False, path=[], n_iterations=0, n_nodes=0), None
@@ -394,6 +312,36 @@ class CuroboPlanner:
             PlanResult(success=True, path=path, n_iterations=1, n_nodes=len(path)),
             path[-1],
         )
+
+    def plan_sequence(
+        self,
+        goal_poses_world: torch.Tensor,
+        start_q: torch.Tensor | None = None,
+        max_attempts: int = 5,
+    ) -> tuple[PlanResult, torch.Tensor | None]:
+        """Plan a single trajectory through a sequence of goal poses.
+
+        Chains individual plans: start_q → goal[0] → goal[1] → … → goal[N-1].
+        Returns the concatenated path and the final joint config.
+        """
+        dtype = self._base_pose_inv.dtype
+        n_joints = len(self._planner.joint_names)
+        if start_q is None:
+            start_q = torch.zeros(n_joints, dtype=dtype)
+
+        full_path: list[torch.Tensor] = []
+        current_q = start_q
+
+        for i in range(goal_poses_world.shape[0]):
+            print(f"[cuRobo] Planning segment {i + 1}/{goal_poses_world.shape[0]} ...")
+            result, goal_q = self.plan(goal_poses_world[i], current_q, max_attempts)
+            if not result.success or goal_q is None:
+                print(f"[cuRobo] Failed at goal {i}.")
+                return PlanResult(success=False, path=full_path, n_iterations=0, n_nodes=len(full_path)), None
+            full_path.extend(result.path)
+            current_q = goal_q
+
+        return PlanResult(success=True, path=full_path, n_iterations=1, n_nodes=len(full_path)), current_q
 
     def __del__(self) -> None:
         try:

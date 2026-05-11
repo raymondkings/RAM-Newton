@@ -27,7 +27,8 @@ def l_environment() -> Environment:
     # Robot base at origin
     base_pose = torch.eye(4)
 
-    # TODO : ignore robot base's collision with ground plane
-    base_pose[2, 3] = 0.05   # lift above ground for now
+    # Lift robot above ground: worst-case first link reaches z = -(d[0] + link_radius)
+    # relative to base. Sampler allows |d[0]| <= 1/7 ≈ 0.143 m, link_radius = 0.025 m → 0.168 m min.
+    base_pose[2, 3] = 0.2
 
     return Environment(obstacles=obstacles, base_pose=base_pose)
