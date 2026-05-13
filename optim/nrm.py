@@ -12,6 +12,7 @@ from tqdm import tqdm
 from torch import Tensor
 
 from optim.model import MLP
+from optim.plot import plot_link_lengths, plot_link_lengths_trajectory
 from interface import Morphology, Task
 
 EPS = 1e-4
@@ -88,6 +89,7 @@ def optimize_morphology(morph: Morphology, task: Task, optimization_parameters: 
 
     loss_list: list[float] = []
     prob_list: list[float] = []
+    lengths_history: list[Tensor] = []
 
     for i in tqdm(range(n_iter), desc="optimizing"):
         optimizer.zero_grad()
@@ -105,11 +107,15 @@ def optimize_morphology(morph: Morphology, task: Task, optimization_parameters: 
             with torch.no_grad():
                 loss_list.append(loss.item())
                 prob_list.append(torch.sigmoid(logit).mean().item())
+                lengths_history.append(lengths.detach().clone().cpu())
 
     if logging:
         print(f"\n{'iter':>6}  {'loss':>8}  {'nrm_prob':>8}")
         for i in range(0, len(loss_list), 10):
             print(f"{i:>6}  {loss_list[i]:>8.4f}  {prob_list[i]:>8.3f}")
+
+        plot_link_lengths(torch.stack(lengths_history), title="Raw link lengths during optimization (before normalisation/squashing)")
+        plot_link_lengths_trajectory(torch.stack(lengths_history), title="Raw link lengths during optimization (before normalisation/squashing)")
 
     with torch.no_grad():
         param, _ = _preprocess(lengths, morph.link_radius)
