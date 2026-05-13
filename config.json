@@ -1,0 +1,7 @@
+{
+    "seed": 42,
+    "visualize": true,
+    "debug": false,
+    "ignore_ground": true,
+    "ignore_obstacles": true
+}

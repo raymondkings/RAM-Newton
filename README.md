@@ -1,6 +1,6 @@
 # NRM-Newton
 
-Gradient-based robot morphology optimization pipeline based on Neural Reachability Maps (NRM) and Newton physics simulation.
+Gradient-based robot morphology optimization pipeline based on Neural Reachability Maps (NRM) and Newton physics simulation. An optimized 6-DOF arm morphology is found for a given task, then validated with collision-free motion planning via cuRobo.
 
 Practical course project — TUM CPS, Summer 2026.
 
@@ -12,7 +12,9 @@ Practical course project — TUM CPS, Summer 2026.
 
 ## Requirements
 
-Python ≥ 3.10. Warp and Newton fall back to CPU if no NVIDIA GPU is available, but torch-based optimization will be significantly slower without one.
+- Python ≥ 3.10
+- NVIDIA GPU with CUDA (required by cuRobo for motion planning; optimization also benefits significantly)
+- [cuRobo](https://nvlabs.github.io/curobo/latest/getting-started/installation.html) installed separately (not in `uv.lock`)
 
 ## Setup
 
@@ -28,34 +30,59 @@ This creates a virtual environment and installs all dependencies from `uv.lock`.
 uv run python <file>
 ```
 
-Or activate the environment directly:
-
-```bash
-source .venv/bin/activate
-```
-
 ## Usage
 
-To run the pipeline use:
+Run the full pipeline with the default `config.json`:
 
 ```bash
-python run_pipeline.py clean         # validate a clean morphology
-python run_pipeline.py self_collide  # validate a self-colliding morphology
+uv run python main.py
 ```
 
-Both modes print a `ValidationResult` and open a browser-based Newton viewer.
+To supply a different config file:
 
-## Interface Types
+```bash
+uv run python main.py --config path/to/my_config.json
+```
 
-| Type | Key Fields |
-|---|---|
-| `Morphology` | `params (n_links, 3)` — columns `[α, a, d]`; `link_radius` |
-| `Environment` | `obstacles: list[Box\|Sphere\|Capsule]`; `base_pose (4,4)` |
-| `Task` | `environment`, `goal_poses (N,4,4)`, `reachable_region` |
-| `ValidationResult` | `self_collision_free`, `env_collision_free`, collision counts |
+The pipeline:
+1. Samples a random initial 6-DOF robot morphology
+2. Builds the task — an L-shaped room environment with goal poses
+3. Optimizes the morphology via the NRM gradient loop (100 iterations)
+4. Plans a collision-free trajectory through all goal poses using cuRobo (GPU TrajOpt + graph search)
+5. Animates the trajectory in the Newton/Viser viewer (if `visualize: true`)
 
-## Validation Module
+## Configuration
 
-Takes an optimized `Morphology` and `Task`, builds a Newton scene, runs collision detection,
-and returns a `ValidationResult` with self-collision and environment-collision counts.
-`render_scene` opens a browser-based Newton viewer on the given port.
+All runtime behaviour is controlled by a JSON file (default: `config.json` in the project root).
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `seed` | `int` | `42` | Global random seed for morphology sampling and all RNG state. |
+| `visualize` | `bool` | `true` | Open the Newton/Viser viewer after planning. Set to `false` for headless runs. On planning failure, also gates the debug static render. |
+| `debug` | `bool` | `false` | Enable per-iteration loss logging during optimization. On planning failure, renders a static scene showing the collision geometry (requires `visualize: true`). |
+| `ignore_ground` | `bool` | `false` | Exclude the ground plane from cuRobo collision checking. Useful for isolating whether ground collisions are causing planning failures. |
+| `ignore_obstacles` | `bool` | `false` | Exclude task obstacles (the L-shaped walls) from cuRobo collision checking. Useful for testing reachability without environment constraints. |
+
+Example config for a headless run with full collision checking:
+
+```json
+{
+    "seed": 42,
+    "visualize": false,
+    "debug": false,
+    "ignore_ground": false,
+    "ignore_obstacles": false
+}
+```
+
+Example config for debugging a planning failure (static scene with collision spheres shown):
+
+```json
+{
+    "seed": 42,
+    "visualize": true,
+    "debug": true,
+    "ignore_ground": false,
+    "ignore_obstacles": false
+}
+```
