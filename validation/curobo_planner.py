@@ -127,9 +127,14 @@ def _self_collision_ignore(morph: Morphology) -> dict[str, list[str]]:
 # World / scene construction
 # ---------------------------------------------------------------------------
 
-def _build_scene(task: Task, base_pose_inv: torch.Tensor) -> "Scene":
+def _build_scene(
+    task: Task,
+    base_pose_inv: torch.Tensor,
+    ignore_ground: bool = False,
+    ignore_obstacles: bool = False,
+) -> "Scene":
     """Convert task obstacles to a cuRobo Scene in robot-local frame.
-    
+
     NOTE: only supports cuboid obstacles
     """
     R_inv = base_pose_inv[:3, :3].float().cpu().numpy()
@@ -140,24 +145,25 @@ def _build_scene(task: Task, base_pose_inv: torch.Tensor) -> "Scene":
 
     cuboids: list[Cuboid] = []
 
-    # Ground plane — top face at z = 0, depth 1 m (matches Newton's add_ground_collision)
-    ground_center = _to_local(np.array([0.0, 0.0, -0.5]))
-    cuboids.append(Cuboid(
-        name="ground",
-        dims=[100.0, 100.0, 1.0],
-        pose=ground_center.tolist() + [1.0, 0.0, 0.0, 0.0],
-    ))
-
-    for idx, obs in enumerate(task.environment.obstacles):
-        c_l = _to_local(obs.center.float().cpu().numpy())
-        q_w = Rotation.from_quat(obs.rotation[[1, 2, 3, 0]].float().cpu().numpy())  # wxyz→xyzw
-        q_l = (Rotation.from_matrix(R_inv) * q_w).as_quat()  # xyzw
-        pose = c_l.tolist() + [float(q_l[3]), float(q_l[0]), float(q_l[1]), float(q_l[2])]
+    if not ignore_ground:
+        ground_center = _to_local(np.array([0.0, 0.0, -0.5]))
         cuboids.append(Cuboid(
-            name=f"box_{idx}",
-            dims=(2.0 * obs.half_extents).float().cpu().tolist(),
-            pose=pose,
+            name="ground",
+            dims=[100.0, 100.0, 1.0],
+            pose=ground_center.tolist() + [1.0, 0.0, 0.0, 0.0],
         ))
+
+    if not ignore_obstacles:
+        for idx, obs in enumerate(task.environment.obstacles):
+            c_l = _to_local(obs.center.float().cpu().numpy())
+            q_w = Rotation.from_quat(obs.rotation[[1, 2, 3, 0]].float().cpu().numpy())  # wxyz→xyzw
+            q_l = (Rotation.from_matrix(R_inv) * q_w).as_quat()  # xyzw
+            pose = c_l.tolist() + [float(q_l[3]), float(q_l[0]), float(q_l[1]), float(q_l[2])]
+            cuboids.append(Cuboid(
+                name=f"box_{idx}",
+                dims=(2.0 * obs.half_extents).float().cpu().tolist(),
+                pose=pose,
+            ))
 
     return Scene(cuboid=cuboids)
 
@@ -205,7 +211,8 @@ class CuroboPlanner:
         device: torch.device,
         num_ik_seeds: int = 32,
         num_trajopt_seeds: int = 4,
-        ignore_env_collision: bool = False,
+        ignore_ground: bool = False,
+        ignore_obstacles: bool = False,
     ) -> None:
         if not CUROBO_AVAILABLE:
             raise ImportError(
@@ -244,7 +251,7 @@ class CuroboPlanner:
             }
         }
 
-        self.scene = Scene(cuboid=[]) if ignore_env_collision else _build_scene(task, torch.linalg.inv(base_pose_f32))
+        self.scene = _build_scene(task, torch.linalg.inv(base_pose_f32), ignore_ground=ignore_ground, ignore_obstacles=ignore_obstacles)
         self._base_pose_f32 = base_pose_f32
 
         config = MotionPlannerCfg.create(

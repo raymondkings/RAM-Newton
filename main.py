@@ -52,23 +52,26 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     return load_config(args.config)
 
-def run_plan(morph: Morphology, task: Task, ignore_env_collision: bool = False) -> None:
+def run_plan(morph: Morphology, task: Task, ignore_ground: bool = False, ignore_obstacles: bool = False, debug: bool = False, visualize: bool = True) -> None:
     n_joints = morph.n_links - 1
     dtype = morph.params.dtype
     start_q = task.start_q.to(dtype) if task.start_q is not None else torch.zeros(n_joints, dtype=dtype)
 
-    planner = CuroboPlanner(morph, task, morph.params.device, ignore_env_collision=ignore_env_collision)
+    planner = CuroboPlanner(morph, task, morph.params.device, ignore_ground=ignore_ground, ignore_obstacles=ignore_obstacles)
     result, final_q = planner.plan_sequence(task.goal_poses, start_q)
 
     if final_q is None or not result.success:
-        print("\nPlanning failed. Rendering static scene for debugging.")
-        render_scene(morph, task, curobo_planner=planner)
+        print("\nPlanning failed.")
+        if debug and visualize:
+            print("Rendering static scene for debugging.")
+            render_scene(morph, task, curobo_planner=planner)
         return
 
     print(f"\nSequence complete: {len(result.path)} waypoints through {task.goal_poses.shape[0]} goals.")
-    dense = interpolate_path(result.path, step=0.03)
-    print(f"Animating — {len(dense)} frames ...")
-    animate_plan(morph, task, dense, curobo_planner=planner)
+    if visualize:
+        dense = interpolate_path(result.path, step=0.03)
+        print(f"Animating — {len(dense)} frames ...")
+        animate_plan(morph, task, dense, curobo_planner=planner)
 
 
 def main() -> None:
@@ -78,7 +81,7 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.set_default_device(device)
 
-    print("Config:", json.dumps(vars(args), indent=2))
+    print("[Info] Config:", json.dumps(vars(args), indent=2))
 
     initial_morphologies = sample_dof6_initial_morphologies(
         num_initial_samples=1,
@@ -99,24 +102,24 @@ def main() -> None:
     # get initial sampled morphology
     morph = Morphology(params=initial_morphologies[0])
 
-    print(f"Initial morphology params:\n{morph.params} \nlink_radius={morph.link_radius}")
+    print(f"[Info] Initial morphology params:\n{morph.params} \nlink_radius={morph.link_radius}")
     
-    # optimize morphology for the task
-    if args.optimize:
-        optimized_morph = optimize_morphology(
-            morph=morph,
-            task=task,
-            optimization_parameters = {
-                "num_iterations": 100,
-                "learning_rate": 0.01,
-                "logging": args.debug,
-            },
-        )
-        print(f"Optimized morphology params:\n{optimized_morph.params} \nlink_radius={optimized_morph.link_radius}")
-    else:
-        optimized_morph = morph
+    optimized_morph = optimize_morphology(
+        morph=morph,
+        task=task,
+        optimization_parameters = {
+            "num_iterations": 100,
+            "learning_rate": 0.01,
+            "logging": args.debug,
+        },
+    )
+    print(f"[Info] Optimized morphology params:\n{optimized_morph.params} \nlink_radius={optimized_morph.link_radius}")
 
-    run_plan(optimized_morph, task, ignore_env_collision=getattr(args, "ignore_env_collision", False))
+    run_plan(optimized_morph, task,
+             ignore_ground=getattr(args, "ignore_ground", False),
+             ignore_obstacles=getattr(args, "ignore_obstacles", False),
+             debug=getattr(args, "debug", False),
+             visualize=getattr(args, "visualize", True))
 
 
 if __name__ == "__main__":
