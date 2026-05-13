@@ -1,6 +1,6 @@
 # NRM-Newton
 
-Gradient-based robot morphology optimization pipeline based on Neural Reachability Maps (NRM) and Newton physics simulation.
+Gradient-based robot morphology optimization pipeline based on Neural Reachability Maps (NRM) and Newton physics simulation. An optimized 6-DOF arm morphology is found for a given task, then validated with collision-free motion planning via cuRobo.
 
 Practical course project — TUM CPS, Summer 2026.
 
@@ -12,7 +12,9 @@ Practical course project — TUM CPS, Summer 2026.
 
 ## Requirements
 
-Python ≥ 3.10. Warp and Newton fall back to CPU if no NVIDIA GPU is available, but torch-based optimization will be significantly slower without one.
+- Python ≥ 3.10
+- NVIDIA GPU with CUDA (required by cuRobo for motion planning; optimization also benefits significantly)
+- [cuRobo](https://nvlabs.github.io/curobo/latest/getting-started/installation.html) installed separately (not in `uv.lock`)
 
 ## Setup
 
@@ -30,7 +32,7 @@ uv run python <file>
 
 ## Usage
 
-Run the pipeline with the default `config.json`:
+Run the full pipeline with the default `config.json`:
 
 ```bash
 uv run python main.py
@@ -42,30 +44,45 @@ To supply a different config file:
 uv run python main.py --config path/to/my_config.json
 ```
 
-The pipeline will:
-1. Sample an initial 6-DOF robot morphology
-2. Create the task environment with goal targets
-3. Optionally optimize the morphology via the NRM gradient loop
-4. Validate the (optimized) morphology against the task
-5. Optionally open the Newton viewer for visual inspection
+The pipeline:
+1. Samples a random initial 6-DOF robot morphology
+2. Builds the task — an L-shaped room environment with goal poses
+3. Optimizes the morphology via the NRM gradient loop (100 iterations)
+4. Plans a collision-free trajectory through all goal poses using cuRobo (GPU TrajOpt + graph search)
+5. Animates the trajectory in the Newton/Viser viewer (if `visualize: true`)
 
 ## Configuration
 
-All runtime behaviour is controlled by a JSON file (default: `config.json` in the project root). The file is a flat object — pass any subset of these keys; unrecognised keys are forwarded to the pipeline as-is.
+All runtime behaviour is controlled by a JSON file (default: `config.json` in the project root).
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `seed` | `int` | `0` | Global random seed. Controls initial morphology sampling and all torch/numpy RNG state, enabling reproducible runs. |
-| `optimize` | `bool` | `true` | Run the NRM-based gradient optimisation loop. When `false` the sampled initial morphology is passed directly to validation, which is useful for quick sanity-checks or debugging validation alone. |
-| `visualize` | `bool` | `true` | Open the Newton interactive viewer after validation. Requires a display; set to `false` for headless / CI runs. |
-| `debug` | `bool` | `true` | Enable per-iteration logging during optimisation. Each step shows the current BCE loss and mean NRM-predicted reachability probability in the progress bar. Set to `false` for silent runs. |
+| `seed` | `int` | `42` | Global random seed for morphology sampling and all RNG state. |
+| `visualize` | `bool` | `true` | Open the Newton/Viser viewer after planning. Set to `false` for headless runs. On planning failure, also gates the debug static render. |
+| `debug` | `bool` | `false` | Enable per-iteration loss logging during optimization. On planning failure, renders a static scene showing the collision geometry (requires `visualize: true`). |
+| `ignore_ground` | `bool` | `false` | Exclude the ground plane from cuRobo collision checking. Useful for isolating whether ground collisions are causing planning failures. |
+| `ignore_obstacles` | `bool` | `false` | Exclude task obstacles (the L-shaped walls) from cuRobo collision checking. Useful for testing reachability without environment constraints. |
 
-Example minimal config for a fast headless run:
+Example config for a headless run with full collision checking:
 
 ```json
 {
     "seed": 42,
-    "optimize": false,
-    "visualize": false
+    "visualize": false,
+    "debug": false,
+    "ignore_ground": false,
+    "ignore_obstacles": false
+}
+```
+
+Example config for debugging a planning failure (static scene with collision spheres shown):
+
+```json
+{
+    "seed": 42,
+    "visualize": true,
+    "debug": true,
+    "ignore_ground": false,
+    "ignore_obstacles": false
 }
 ```
