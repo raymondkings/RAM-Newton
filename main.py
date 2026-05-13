@@ -9,33 +9,12 @@ import torch
 from task.morphology_sampler import sample_dof6_initial_morphologies
 from optim.nrm import optimize_morphology
 from interface import Morphology, Task
-from interface.environment import Box, Capsule, Environment, Sphere
 from task.environment import l_environment
 from task.target import simple_targets
-from validation.plan import plan_to_poses
-from validation.planner import interpolate_path
-from validation.render import animate_plan
+from validation.curobo_planner import CuroboPlanner, interpolate_path
+from validation.render import animate_plan, render_scene
 
 DEFAULT_CONFIG = Path(__file__).parent / "config.json"
-
-def _to_cpu(morph: Morphology, task: Task) -> tuple[Morphology, Task]:
-    cpu_morph = Morphology(params=morph.params.cpu(), link_radius=morph.link_radius)
-    cpu_obstacles = []
-    for obs in task.environment.obstacles:
-        if isinstance(obs, Box):
-            cpu_obstacles.append(Box(center=obs.center.cpu(), half_extents=obs.half_extents.cpu(), rotation=obs.rotation.cpu()))
-        elif isinstance(obs, Capsule):
-            cpu_obstacles.append(Capsule(center=obs.center.cpu(), half_height=obs.half_height, radius=obs.radius, rotation=obs.rotation.cpu()))
-        else:
-            cpu_obstacles.append(Sphere(center=obs.center.cpu(), radius=obs.radius))
-    env = task.environment
-    cpu_task = Task(
-        environment=Environment(obstacles=cpu_obstacles, base_pose=env.base_pose.cpu()),
-        goal_poses=task.goal_poses.cpu(),
-        reachable_region=task.reachable_region,
-        start_q=task.start_q.cpu() if task.start_q is not None else None,
-    )
-    return cpu_morph, cpu_task
 
 
 def set_global_seed(seed: int) -> None:
@@ -73,17 +52,23 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     return load_config(args.config)
 
-def run_plan(morph: Morphology, task: Task) -> None:
-    result, start_q, final_q = plan_to_poses(morph, task, task.goal_poses)
+def run_plan(morph: Morphology, task: Task, ignore_env_collision: bool = False) -> None:
+    n_joints = morph.n_links - 1
+    dtype = morph.params.dtype
+    start_q = task.start_q.to(dtype) if task.start_q is not None else torch.zeros(n_joints, dtype=dtype)
+
+    planner = CuroboPlanner(morph, task, morph.params.device, ignore_env_collision=ignore_env_collision)
+    result, final_q = planner.plan_sequence(task.goal_poses, start_q)
 
     if final_q is None or not result.success:
-        print("\nPlanning failed. Skipping animation.")
+        print("\nPlanning failed. Rendering static scene for debugging.")
+        render_scene(morph, task, curobo_planner=planner)
         return
 
     print(f"\nSequence complete: {len(result.path)} waypoints through {task.goal_poses.shape[0]} goals.")
     dense = interpolate_path(result.path, step=0.03)
     print(f"Animating — {len(dense)} frames ...")
-    animate_plan(morph, task, dense)
+    animate_plan(morph, task, dense, curobo_planner=planner)
 
 
 def main() -> None:
@@ -131,8 +116,7 @@ def main() -> None:
     else:
         optimized_morph = morph
 
-    cpu_morph, cpu_task = _to_cpu(optimized_morph, task)
-    run_plan(cpu_morph, cpu_task)
+    run_plan(optimized_morph, task, ignore_env_collision=getattr(args, "ignore_env_collision", False))
 
 
 if __name__ == "__main__":

@@ -2,5 +2,6 @@
     "seed": 42,
     "optimize": true,
     "visualize": true,
-    "debug": true
+    "debug": true,
+    "ignore_env_collision": false
 }
