@@ -70,7 +70,7 @@ def _preprocess(lengths: Tensor, link_radius: float) -> tuple[Tensor, Tensor]:
     return Normaliser.apply(squashed), norm_lengths
 
 
-def optimize_morphology(morph: Morphology, task: Task, optimization_parameters: dict) -> Morphology:
+def optimize_morphology(morph: Morphology, task: Task, optimization_parameters: dict, recorder=None) -> Morphology:
     """Optimize morphology link lengths (a, d) for the given task."""
     n_iter = optimization_parameters.get("num_iterations", 100)
     lr = optimization_parameters.get("learning_rate", 0.01)
@@ -101,10 +101,26 @@ def optimize_morphology(morph: Morphology, task: Task, optimization_parameters: 
         loss.backward()
         optimizer.step()
 
+        # Extract scalar metrics => pulls values out of the compute graph
+        # prob_val is the mean predicted reachability across all goal poses (0→1)
+        loss_val = loss.item()
+        prob_val = torch.sigmoid(logit).detach().mean().item()
+
         if logging:
+            loss_list.append(loss_val)
+            prob_list.append(prob_val)
+
+        if recorder is not None:
+            # Snapshot the current morphology for the timelapse frame.
+            # no_grad + detach().clone() so the renderer gets a plain tensor,
+            # not one wired into the gradient graph.
             with torch.no_grad():
-                loss_list.append(loss.item())
-                prob_list.append(torch.sigmoid(logit).mean().item())
+                snap_param, _ = _preprocess(lengths, morph.link_radius)
+                snap_params = torch.cat([alpha, snap_param], dim=1)
+            recorder.add_frame(
+                Morphology(params=snap_params.detach().clone(), link_radius=morph.link_radius),
+                i, n_iter, loss_val, prob_val,
+            )
 
     if logging:
         print(f"\n{'iter':>6}  {'loss':>8}  {'nrm_prob':>8}")
