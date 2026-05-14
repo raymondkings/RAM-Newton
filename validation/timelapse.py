@@ -217,8 +217,6 @@ def _draw_mdh_table(ax, morph: Morphology) -> None:
         cell.set_edgecolor(_GRID)
         cell.set_text_props(color="white")
 
-    ax.set_title("MDH Parameters", color="white", fontsize=9, pad=6)
-
 
 # ---------------------------------------------------------------------------
 # Metric drawing
