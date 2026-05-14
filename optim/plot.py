@@ -1,5 +1,41 @@
 import torch
 import matplotlib.pyplot as plt
+import numpy as np
+
+def plot_ik_fk_trajectory(
+    steps: list[int],
+    pos_errs: list[float],
+    rot_errs: list[float],
+    se3_dists: list[float],
+    save_path: str = "optim/figures/ik_fk_trajectory.png",
+    title: str = "IK→FK metrics over optimization",
+) -> None:
+    """Line plot of per-step IK→FK errors and SE3 distance during optimization.
+
+    Args:
+        steps:     Iteration indices at which evaluation was performed.
+        pos_errs:  Mean position error (m) at each eval step.
+        rot_errs:  Mean rotation error (rad) at each eval step.
+        se3_dists: Mean SE3 distance at each eval step.
+        save_path: File path for the saved figure.
+        title:     Figure-level title.
+    """
+    fig, axes = plt.subplots(3, 1, figsize=(9, 7), sharex=True)
+    fig.suptitle(title, fontsize=11)
+
+    for ax, values, ylabel, color in [
+        (axes[0], pos_errs,  "pos err [m]",   "steelblue"),
+        (axes[1], rot_errs,  "rot err [rad]", "darkorange"),
+        (axes[2], se3_dists, "SE3 distance",  "mediumpurple"),
+    ]:
+        ax.plot(steps, values, color=color, linewidth=1.5)
+        ax.set_ylabel(ylabel)
+        ax.grid(linestyle="--", alpha=0.4)
+
+    axes[2].set_xlabel("optimization step")
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
 
 
 def plot_link_lengths(
