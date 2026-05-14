@@ -111,14 +111,11 @@ def optimize_morphology(morph: Morphology, task: Task, optimization_parameters: 
             prob_list.append(prob_val)
 
         if recorder is not None:
-            # Snapshot the current morphology for the timelapse frame.
-            # no_grad + detach().clone() so the renderer gets a plain tensor,
-            # not one wired into the gradient graph.
-            with torch.no_grad():
-                snap_param, _ = _preprocess(lengths, morph.link_radius)
-                snap_params = torch.cat([alpha, snap_param], dim=1)
+            # Snapshot the pre-step morphology — reuse `param` already computed
+            # in the forward pass (before optimizer.step() updated lengths).
+            snap_params = torch.cat([alpha, param.detach()], dim=1)
             recorder.add_frame(
-                Morphology(params=snap_params.detach().clone(), link_radius=morph.link_radius),
+                Morphology(params=snap_params.clone(), link_radius=morph.link_radius),
                 i, n_iter, loss_val, prob_val,
             )
 

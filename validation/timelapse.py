@@ -77,7 +77,7 @@ class TimeLapseRecorder:
         loss: float,
         prob: float,
     ) -> np.ndarray:
-        fig = Figure(figsize=(14, 6.4), dpi=self.dpi, facecolor=_BG)
+        fig = Figure(figsize=(18, 7), dpi=self.dpi, facecolor=_BG)
         canvas = FigureCanvasAgg(fig)
 
         # Figure-level title: run identity + per-frame metrics
@@ -89,17 +89,21 @@ class TimeLapseRecorder:
             y=0.98,
         )
 
-        ax3d = fig.add_subplot(121, projection="3d")
-        ax3d.set_facecolor(_BG)
+        # Layout: 3D scene spans full left column; right column has 3 stacked panels
+        gs = fig.add_gridspec(3, 2, width_ratios=[2, 1], hspace=0.55, wspace=0.3)
+        ax3d    = fig.add_subplot(gs[:, 0], projection="3d")
+        ax_loss = fig.add_subplot(gs[0, 1])
+        ax_prob = fig.add_subplot(gs[1, 1])
+        ax_mdh  = fig.add_subplot(gs[2, 1])
 
-        ax_loss = fig.add_subplot(222)
-        ax_prob = fig.add_subplot(224)
+        ax3d.set_facecolor(_BG)
 
         _draw_scene(ax3d, morph, self.task)
         _draw_metric(ax_loss, self._loss_hist, "Loss", _C_LOSS, ylim=(0.0, None))
         _draw_metric(ax_prob, self._prob_hist, "NRM prob", _C_PROB, ylim=(0.0, 1.0))
+        _draw_mdh_table(ax_mdh, morph)
 
-        fig.tight_layout(pad=1.5)
+        fig.subplots_adjust(top=0.88, bottom=0.08, left=0.05, right=0.97)
         canvas.draw()
 
         buf = canvas.buffer_rgba()
@@ -190,6 +194,42 @@ def _draw_box_wireframe(ax, center: np.ndarray, half: np.ndarray) -> None:
 
 
 # ---------------------------------------------------------------------------
+# MDH parameter table
+# ---------------------------------------------------------------------------
+
+def _draw_mdh_table(ax, morph: Morphology) -> None:
+    """Render the 7×3 MDH parameter tensor as a plain text table.
+
+    Columns are [α, a, d]. α is frozen throughout optimisation (only a and d
+    are updated by AdamW), so it is visually separated by a vertical line.
+    """
+    data = morph.params.detach().cpu().numpy()  # [n_links, 3]
+    n_links = data.shape[0]
+
+    col_labels = ["α  (frozen)", "a", "d"]
+    cell_text = [[f"{data[row, col]:.4f}" for col in range(3)] for row in range(n_links)]
+    row_labels = [f"link {i}" for i in range(n_links)]
+
+    ax.set_axis_off()
+    table = ax.table(
+        cellText=cell_text,
+        rowLabels=row_labels,
+        colLabels=col_labels,
+        loc="center",
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(8)
+
+    # Style every cell to match the dark theme
+    for (row, col), cell in table.get_celld().items():
+        cell.set_facecolor(_PANEL_BG)
+        cell.set_edgecolor(_GRID)
+        cell.set_text_props(color="white")
+
+    ax.set_title("MDH Parameters", color="white", fontsize=9, pad=6)
+
+
+# ---------------------------------------------------------------------------
 # Metric drawing
 # ---------------------------------------------------------------------------
 
@@ -230,7 +270,8 @@ def _draw_metric(
 
 def _save_gif(frames: list[np.ndarray], path: Path, fps: int) -> None:
     import imageio
-    imageio.mimsave(str(path), frames, format="GIF", loop=0, fps=fps)
+    # imageio expects duration in milliseconds per frame
+    imageio.mimsave(str(path), frames, format="GIF", loop=0, duration=1000 // fps)
 
 
 def _save_mp4(frames: list[np.ndarray], path: Path, fps: int) -> None:
