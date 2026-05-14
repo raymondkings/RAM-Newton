@@ -3,5 +3,13 @@
     "visualize": true,
     "debug": false,
     "ignore_ground": true,
-    "ignore_obstacles": true
+    "ignore_obstacles": true,
+    "timelapse": {
+        "enabled": true,
+        "frame_every_n_steps": 5,
+        "output_dir": "timelapse",
+        "format": "mp4",
+        "fps": 8,
+        "dpi": 200
+    }
 }
