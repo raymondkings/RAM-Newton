@@ -2,7 +2,6 @@ import argparse
 import json
 import random
 from pathlib import Path
-import math
 
 import torch
 
@@ -114,10 +113,13 @@ def main() -> None:
     optimized_morph = optimize_morphology(
         morph=morph,
         task=task,
-        optimization_parameters = {
+        optimization_parameters={
             "num_iterations": 100,
             "learning_rate": 0.01,
             "logging": args.debug,
+            "eval_interval": 5,
+            "ignore_ground": args.ignore_ground,
+            "ignore_obstacles": args.ignore_obstacles,
         },
         recorder=recorder,
     )
@@ -127,10 +129,10 @@ def main() -> None:
     print(f"[Info] Optimized morphology params:\n{optimized_morph.params} \nlink_radius={optimized_morph.link_radius}")
 
     run_plan(optimized_morph, task,
-             ignore_ground=getattr(args, "ignore_ground", False),
-             ignore_obstacles=getattr(args, "ignore_obstacles", False),
-             debug=getattr(args, "debug", False),
-             visualize=getattr(args, "visualize", True))
+             ignore_ground=args.ignore_ground,
+             ignore_obstacles=args.ignore_obstacles,
+             debug=args.debug,
+             visualize=args.visualize)
 
 
 if __name__ == "__main__":
