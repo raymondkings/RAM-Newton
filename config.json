@@ -1,13 +1,23 @@
 {
     "seed": 42,
     "visualize": true,
-    "debug": false,
+    "debug": true,
+    "num_iterations": 100,
+    "num_validations": 50,
+    "number_random_seed": 32,
+    "percentage_poses": 0.5,
+    "learning_rate_length": 0.01,
+    "learning_rate_angle": 0.05,
     "ignore_ground": true,
     "ignore_obstacles": true,
+    "plot": {
+        "enabled": true,
+        "output_dir": "output/figures"
+    },
     "timelapse": {
         "enabled": true,
         "frame_every_n_steps": 5,
-        "output_dir": "timelapse",
+        "output_dir": "output/timelapse",
         "format": "mp4",
         "fps": 8,
         "dpi": 200

@@ -1121,6 +1121,7 @@ dependencies = [
     { name = "matplotlib" },
     { name = "newton" },
     { name = "nvidia-curobo", extra = ["cu13"] },
+    { name = "pyglet" },
     { name = "scipy" },
     { name = "torch" },
     { name = "tqdm" },
@@ -1134,6 +1135,7 @@ requires-dist = [
     { name = "matplotlib", specifier = ">=3.9.0" },
     { name = "newton", specifier = ">=1.1.0" },
     { name = "nvidia-curobo", extras = ["cu13"], git = "https://github.com/NVlabs/curobo" },
+    { name = "pyglet", specifier = ">=2.1.14" },
     { name = "scipy", specifier = ">=1.17.1" },
     { name = "torch", specifier = ">=2.11.0" },
     { name = "tqdm", specifier = ">=4.67.3" },
@@ -1577,6 +1579,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/5a/8d/52a5364a17eb96129962cae8d3ee7658775e085ad0ba38388684ad5944e9/pycollada-0.9.3.tar.gz", hash = "sha256:c34d6dcf0fe2eba5896f71c96d37a1c0fe1a61f08440fa0cfcec3dc2895d3302", size = 110826, upload-time = "2026-01-24T15:45:23.625Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/07/86/f1f61b7a0701f9d1299e5293d083318019f91021a4d449f94d59dbe024e4/pycollada-0.9.3-py3-none-any.whl", hash = "sha256:636e6496f60987586db82455ea7bbd9ade775e8181c6590c83b698b6cd53a9f5", size = 129206, upload-time = "2026-01-24T15:45:22.182Z" },
+]
+
+[[package]]
+name = "pyglet"
+version = "2.1.14"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e8/a6/ffd78b2d05a820ced85baa11210b8e5d0db0d951767021150be0a231df00/pyglet-2.1.14.tar.gz", hash = "sha256:feb3fba05a85f50f793688d88ddfbcdc57044d971f2d8d2107eb7578eb4af51e", size = 6595146, upload-time = "2026-04-05T08:24:35.549Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ae/d4/789d34a4674a4ccc0b65ad54d0f963f873d39000c3ebed0880574d5437e5/pyglet-2.1.14-py3-none-any.whl", hash = "sha256:70febf03f206607103e1f9806527019c589002626937aecdca4d095ce0a4b9b0", size = 1032928, upload-time = "2026-04-05T08:24:29.068Z" },
 ]
 
 [[package]]
