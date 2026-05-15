@@ -73,7 +73,7 @@ def _preprocess(lengths: Tensor, link_radius: float) -> tuple[Tensor, Tensor]:
     return Normaliser.apply(squashed), norm_lengths
 
 
-def optimize_morphology(morph: Morphology, task: Task, optimization_parameters: dict) -> Morphology:
+def optimize_morphology(morph: Morphology, task: Task, optimization_parameters: dict, recorder=None) -> Morphology:
     """Optimize morphology link lengths (a, d) for the given task."""
     n_iter = optimization_parameters.get("num_iterations", 100)
     lr = optimization_parameters.get("learning_rate", 0.01)
@@ -116,6 +116,9 @@ def optimize_morphology(morph: Morphology, task: Task, optimization_parameters: 
         loss.backward()
         optimizer.step()
 
+        loss_val = loss.item()
+        prob_val = torch.sigmoid(logit).detach().mean().item()
+
         if i % eval_interval == 0 and logging:
             with torch.no_grad():
                 param_eval, _ = _preprocess(lengths.detach(), morph.link_radius)
@@ -135,9 +138,16 @@ def optimize_morphology(morph: Morphology, task: Task, optimization_parameters: 
             pos_err_list.append(pos_err.mean().item())
             rot_err_list.append(rot_err.mean().item())
             se3_dist_list.append(dists.mean().item())
-            loss_list.append(loss.item())
-            prob_list.append(torch.sigmoid(logit).mean().item())
+            loss_list.append(loss_val)
+            prob_list.append(prob_val)
             lengths_history.append(lengths.detach().clone().cpu())
+
+        if recorder is not None:
+            snap_params = torch.cat([alpha, param.detach()], dim=1)
+            recorder.add_frame(
+                Morphology(params=snap_params.clone(), link_radius=morph.link_radius),
+                i, n_iter, loss_val, prob_val,
+            )
 
     if logging:
         eval_steps = list(range(0, n_iter, eval_interval))[:len(pos_err_list)]

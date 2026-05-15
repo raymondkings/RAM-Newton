@@ -102,6 +102,13 @@ def main() -> None:
     morph = Morphology(params=initial_morphologies[0])
 
     print(f"[Info] Initial morphology params:\n{morph.params} \nlink_radius={morph.link_radius}")
+    
+    tl_cfg = getattr(args, "timelapse", None)
+    recorder = None
+    if isinstance(tl_cfg, dict) and tl_cfg.get("enabled", False):
+        from validation.timelapse import TimeLapseRecorder
+        recorder = TimeLapseRecorder(tl_cfg, task)
+        print(f"[timelapse] Recording every {tl_cfg.get('frame_every_n_steps', 5)} steps → {recorder.output_path}")
 
     optimized_morph = optimize_morphology(
         morph=morph,
@@ -114,7 +121,11 @@ def main() -> None:
             "ignore_ground": args.ignore_ground,
             "ignore_obstacles": args.ignore_obstacles,
         },
+        recorder=recorder,
     )
+
+    if recorder is not None:
+        recorder.save()
     print(f"[Info] Optimized morphology params:\n{optimized_morph.params} \nlink_radius={optimized_morph.link_radius}")
 
     run_plan(optimized_morph, task,

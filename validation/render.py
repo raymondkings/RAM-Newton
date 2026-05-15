@@ -59,7 +59,7 @@ def add_curobo_scene_to_viser(server, scene, base_pose_f32) -> None:
         )
 
 
-def _build_scene_builder(morph: Morphology, task: Task) -> newton.ModelBuilder:
+def build_scene_builder(morph: Morphology, task: Task) -> newton.ModelBuilder:
     """Construct a ModelBuilder with obstacles, goal markers, and the robot."""
     builder = newton.ModelBuilder()
 
@@ -132,7 +132,7 @@ def _setup_viewer(model: newton.Model, port: int, share: bool, curobo_planner=No
 
 def render_scene(morph: Morphology, task: Task, port: int = 8080, share: bool = False, curobo_planner=None) -> None:
     """Render morphology + task environment in the Newton viewer (static)."""
-    builder = _build_scene_builder(morph, task)
+    builder = build_scene_builder(morph, task)
     model = builder.finalize()
     state = model.state()
 
@@ -180,7 +180,7 @@ def animate_plan(
     """
     n_joints = morph.n_links - 1
 
-    builder = _build_scene_builder(morph, task)
+    builder = build_scene_builder(morph, task)
     model = builder.finalize()
     state = model.state()
 

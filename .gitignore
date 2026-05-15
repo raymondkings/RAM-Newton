@@ -219,3 +219,9 @@ __marimo__/
 
 # Generated figures
 optim/figures/*.png
+
+# curobo
+curobo/
+
+# Timelapse results
+timelapse/
