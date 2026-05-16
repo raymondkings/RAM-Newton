@@ -46,11 +46,9 @@ def read_optimization_csv(csv_path: str | Path) -> list[dict]:
 
             for key in [
                 "raw_morphology_json",
-                "normalized_morphology_json",
                 "processed_morphology_json",
                 "sampled_pose_indices_json",
                 "sampled_goal_poses_json",
-                "best_seed_indices_json",
                 "best_joints_json",
                 "fk_reached_poses_best_json",
                 "best_pos_err_per_pose_json",

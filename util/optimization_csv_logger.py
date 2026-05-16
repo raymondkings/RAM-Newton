@@ -28,7 +28,6 @@ class OptimizationCSVLogger:
         "sampled_pose_indices_json",
         "sampled_goal_poses_json",
 
-        "best_seed_indices_json",
         "best_joints_json",
         "fk_reached_poses_best_json",
 
@@ -124,7 +123,6 @@ class OptimizationCSVLogger:
             "sampled_pose_indices_json": self._to_json(validation_data.get("sampled_pose_indices")),
             "sampled_goal_poses_json": self._to_json(validation_data.get("sampled_goal_poses")),
 
-            "best_seed_indices_json": self._to_json(validation_data.get("best_seed_indices")),
             "best_joints_json": self._to_json(validation_data.get("best_joints")),
             "fk_reached_poses_best_json": self._to_json(validation_data.get("fk_reached_poses_best")),
 
