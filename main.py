@@ -9,7 +9,7 @@ from task.morphology_sampler import sample_dof6_initial_morphologies
 from optim.nrm import optimize_morphology
 from interface import Morphology, Task
 from task.environment import l_environment
-from task.target1 import create_task
+from task.target import create_task
 from validation.curobo_planner import CuroboPlanner, interpolate_path
 from validation.render import animate_plan, render_scene
 
