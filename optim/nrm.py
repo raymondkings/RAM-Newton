@@ -110,32 +110,12 @@ def _preprocess(lengths: Tensor, link_radius: float) -> tuple[Tensor, Tensor]:
 
     return Normaliser.apply(squashed), norm_lengths
 
-
-def _should_validate(iteration: int, n_iter: int, num_validations: int) -> bool:
-    """Decide whether IK/FK validation should run at this logged iteration."""
-    if iteration <= 0 or num_validations <= 0:
-        return False
-
-    interval = max(1, n_iter // num_validations)
-
-    return iteration % interval == 0 or iteration == n_iter
-
-
 def optimize_morphology(
     morph: Morphology,
     task: Task,
     optimization_parameters: dict,
 ) -> tuple[Morphology, Path]:
     """Optimize morphology link lengths (a, d) for the given task.
-
-    CSV meaning:
-        iteration 0:
-            initial morphology. raw/normalized/processed are intentionally
-            written as the same initial morphology.
-        iteration k:
-            morphology after k optimizer steps.
-        iteration n_iter:
-            final morphology after all optimizer steps.
 
     Returns:
         optimized_morphology:
@@ -146,12 +126,11 @@ def optimize_morphology(
     n_iter = optimization_parameters.get("num_iterations", 100)
     lr = optimization_parameters.get("learning_rate", 0.01)
     logging = optimization_parameters.get("logging", True)
-
-    num_validations = optimization_parameters.get("num_validations", 10)
+    eval_interval = optimization_parameters.get("eval_interval", 1)
+    eval_interval = int(eval_interval)
     random_seed = optimization_parameters.get("random_seed", 42)
     number_random_seed = optimization_parameters.get("number_random_seed", 32)
-    percentage_poses = optimization_parameters.get("percentage_poses", 0.1)
-
+    percentage_poses = optimization_parameters.get("percentage_poses", 1)
     ignore_ground = optimization_parameters.get("ignore_ground", False)
     ignore_obstacles = optimization_parameters.get("ignore_obstacles", False)
 
@@ -161,7 +140,7 @@ def optimize_morphology(
         print(f"[Info] Starting morphology optimization with {n_iter} iterations on device {device}.")
         print(
             "[Info] "
-            f"num_validations={num_validations}, "
+            f"eval_interval={eval_interval}, "
             f"random_seed={random_seed}, "
             f"number_random_seed={number_random_seed}, "
             f"percentage_poses={percentage_poses}"
@@ -185,9 +164,7 @@ def optimize_morphology(
 
     csv_logger = OptimizationCSVLogger(root_dir=_PROJECT_ROOT)
 
-    # This generator is created once and consumed across validation calls.
-    # Therefore, different validation calls sample different poses, while the
-    # full run remains reproducible for the same random_seed.
+    #for pose sampling
     pose_sampling_generator = torch.Generator(device=device)
     pose_sampling_generator.manual_seed(random_seed)
 
@@ -195,36 +172,24 @@ def optimize_morphology(
         print(f"[Info] Writing CSV log to: {csv_logger.csv_path}")
 
     try:
-        print_every = max(1, n_iter // 10)
-
-        progress_bar = tqdm(
-            range(n_iter),
-            desc="optimizing",
-            dynamic_ncols=True,
-        )
-
+        progress_bar = tqdm(range(n_iter), desc="optimizing", dynamic_ncols=True)
         for update_idx in progress_bar:
             # Current state is after update_idx optimizer steps.
-            # update_idx = 0 is the initial state.
             optimizer.zero_grad()
 
-            processed_lengths, norm_lengths = _preprocess(lengths, morph.link_radius)
-
+            processed_lengths, _ = _preprocess(lengths, morph.link_radius)
             raw_morphology = torch.cat([alpha, lengths], dim=1)
-            normalized_morphology = torch.cat([alpha, norm_lengths], dim=1)
             processed_morphology = torch.cat([alpha, processed_lengths], dim=1)
 
             bmorph = processed_morphology.unsqueeze(0).expand(task_vec.shape[0], -1, -1)
             logit = model(bmorph, task_vec)
 
-            loss = torch.nn.BCEWithLogitsLoss(reduction="mean")(
-                logit,
-                torch.ones_like(logit),
-            )
+            loss = torch.nn.BCEWithLogitsLoss(reduction="mean")(logit, torch.ones_like(logit))
             prob = torch.sigmoid(logit).mean()
 
             validation_data = None
-            if _should_validate(update_idx, n_iter, num_validations):
+
+            if eval_interval > 0 and update_idx % eval_interval == 0 and logging:
                 validation_data = run_optimization_validation(
                     processed_morphology=processed_morphology.detach(),
                     morph=morph,
@@ -237,29 +202,24 @@ def optimize_morphology(
                     pose_sampling_generator=pose_sampling_generator,
                 )
 
-            if update_idx == 0:
-                # User-requested baseline row:
-                # raw/normalized/processed are exactly the same initial morphology.
-                initial_params = morph.params.detach().clone().to(device)
-                csv_logger.log_iteration(
-                    iteration=0,
-                    loss=loss.detach(),
-                    reachability_probability=prob.detach(),
-                    raw_morphology=initial_params,
-                    normalized_morphology=initial_params,
-                    processed_morphology=initial_params,
-                    validation_data=None,
+                best_se3 = validation_data["best_se3_dist_mean"].detach().cpu().item()
+                msg = (
+                    f"[Iter {update_idx:>4}/{n_iter}] "
+                    f"loss={loss.item():.6f}, "
+                    f"nrm_prob={prob.item():.6f},"
+                    f"best_se3={best_se3:.6f}"
                 )
-            else:
-                csv_logger.log_iteration(
-                    iteration=update_idx,
-                    loss=loss.detach(),
-                    reachability_probability=prob.detach(),
-                    raw_morphology=raw_morphology.detach(),
-                    normalized_morphology=normalized_morphology.detach(),
-                    processed_morphology=processed_morphology.detach(),
-                    validation_data=validation_data,
-                )
+
+                tqdm.write(msg)
+
+            csv_logger.log_iteration(
+                iteration=update_idx,
+                loss=loss.detach(),
+                reachability_probability=prob.detach(),
+                raw_morphology=raw_morphology.detach(),
+                processed_morphology=processed_morphology.detach(),
+                validation_data=validation_data,
+            )
 
             loss.backward()
             optimizer.step()
@@ -269,23 +229,6 @@ def optimize_morphology(
                 prob=f"{prob.item():.3f}",
             )
 
-            if logging and (
-                update_idx == 0
-                or update_idx % print_every == 0
-                or update_idx == n_iter - 1
-            ):
-                msg = (
-                    f"[Iter {update_idx:>4}/{n_iter}] "
-                    f"loss={loss.item():.6f}, "
-                    f"nrm_prob={prob.item():.6f}"
-                )
-
-                if validation_data is not None:
-                    best_se3 = validation_data["best_se3_dist_mean"].detach().cpu().item()
-                    msg += f", best_se3={best_se3:.6f}"
-
-                tqdm.write(msg)
-
         # Final state after n_iter optimizer steps.
         with torch.no_grad():
             final_processed_lengths, final_norm_lengths = _preprocess(
@@ -294,7 +237,6 @@ def optimize_morphology(
             )
 
             final_raw_morphology = torch.cat([alpha, lengths.detach()], dim=1)
-            final_normalized_morphology = torch.cat([alpha, final_norm_lengths], dim=1)
             final_processed_morphology = torch.cat([alpha, final_processed_lengths], dim=1)
 
             final_bmorph = final_processed_morphology.unsqueeze(0).expand(task_vec.shape[0], -1, -1)
@@ -305,9 +247,8 @@ def optimize_morphology(
             )
             final_prob = torch.sigmoid(final_logit).mean()
 
-        final_validation_data = None
-        if _should_validate(n_iter, n_iter, num_validations):
-            final_validation_data = run_optimization_validation(
+        # you will always do a validation for the final result even if not in logging mode
+        final_validation_data = run_optimization_validation(
                 processed_morphology=final_processed_morphology,
                 morph=morph,
                 task=task,
@@ -324,24 +265,20 @@ def optimize_morphology(
             loss=final_loss,
             reachability_probability=final_prob,
             raw_morphology=final_raw_morphology,
-            normalized_morphology=final_normalized_morphology,
             processed_morphology=final_processed_morphology,
             validation_data=final_validation_data,
         )
 
-        if logging:
-            msg = (
-                f"[Iter {n_iter:>4}/{n_iter}] "
-                f"loss={final_loss.item():.6f}, "
-                f"nrm_prob={final_prob.item():.6f}"
-            )
+        final_se3_err = final_validation_data["best_se3_dist_mean"].detach().cpu().item()
 
-            if final_validation_data is not None:
-                best_se3 = final_validation_data["best_se3_dist_mean"].detach().cpu().item()
-                msg += f", best_se3={best_se3:.6f}"
-
-            tqdm.write(msg)
-
+        msg = (
+            f"[Iter {n_iter:>4}/{n_iter}] "
+            f"loss={final_loss.item():.6f}, "
+            f"nrm_prob={final_prob.item():.6f},"
+            f"final_se3_err={final_se3_err:.6f}"
+        )
+        print(msg)
+        
         optimized_morph = Morphology(
             params=final_processed_morphology.detach(),
             link_radius=morph.link_radius,

@@ -23,7 +23,6 @@ class OptimizationCSVLogger:
         "reachability_probability",
 
         "raw_morphology_json",
-        "normalized_morphology_json",
         "processed_morphology_json",
 
         "sampled_pose_indices_json",
@@ -92,7 +91,6 @@ class OptimizationCSVLogger:
         loss: float | Tensor | None,
         reachability_probability: float | Tensor | None,
         raw_morphology: Tensor,
-        normalized_morphology: Tensor,
         processed_morphology: Tensor,
         validation_data: dict | None = None,
     ) -> None:
@@ -107,8 +105,6 @@ class OptimizationCSVLogger:
                 Mean sigmoid(logit) over all task goal poses.
             raw_morphology:
                 [7, 3] morphology before normalize/squash/normalize.
-            normalized_morphology:
-                [7, 3] morphology after first normalization only.
             processed_morphology:
                 [7, 3] morphology after normalize -> squash -> normalize.
             validation_data:
@@ -123,7 +119,6 @@ class OptimizationCSVLogger:
             "reachability_probability": self._to_scalar(reachability_probability),
 
             "raw_morphology_json": self._to_json(raw_morphology),
-            "normalized_morphology_json": self._to_json(normalized_morphology),
             "processed_morphology_json": self._to_json(processed_morphology),
 
             "sampled_pose_indices_json": self._to_json(validation_data.get("sampled_pose_indices")),

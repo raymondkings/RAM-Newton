@@ -3,7 +3,7 @@
     "visualize": true,
     "debug": true,
     "num_iterations": 100,
-    "num_validations": 50,
+    "eval_interval": 5,
     "number_random_seed": 32,
     "percentage_poses": 0.5,
     "learning_rate_length": 0.01,

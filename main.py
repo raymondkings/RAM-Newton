@@ -142,7 +142,7 @@ def main() -> None:
             "num_iterations": args.num_iterations,
             "learning_rate": args.learning_rate_length,
             "logging": args.debug,
-            "num_validations": args.num_validations,
+            "eval_interval": args.eval_interval,
             "random_seed": args.seed,
             "number_random_seed": args.number_random_seed,
             "percentage_poses": args.percentage_poses,
