@@ -164,7 +164,7 @@ def optimize_morphology(
 
     csv_logger = OptimizationCSVLogger(root_dir=_PROJECT_ROOT)
 
-    #for pose sampling
+    #for pose sampling (each validation sample different poses if not full pose validation)
     pose_sampling_generator = torch.Generator(device=device)
     pose_sampling_generator.manual_seed(random_seed)
 
@@ -278,7 +278,7 @@ def optimize_morphology(
             f"final_se3_err={final_se3_err:.6f}"
         )
         print(msg)
-        
+
         optimized_morph = Morphology(
             params=final_processed_morphology.detach(),
             link_radius=morph.link_radius,
