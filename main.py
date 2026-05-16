@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 
 from task.morphology_sampler import sample_dof6_initial_morphologies
-from optim.nrm_alpha_random_selection import optimize_morphology
+from optim.nrm import optimize_morphology
 from interface import Morphology, Task
 from task.environment import l_environment
 from task.target import create_task
@@ -173,6 +173,10 @@ def main() -> None:
     print(f"[Info] Optimization CSV: {csv_path}")
 
     run_postprocess(Path(csv_path), task, args)
+
+    # from util.csv_log_reader import load_middle_start_q_from_last_validation
+    # task.start_q = load_middle_start_q_from_last_validation(csv_path=csv_path, device=optimized_morph.params.device)
+    # print(task.start_q)
 
     run_plan(
         optimized_morph,

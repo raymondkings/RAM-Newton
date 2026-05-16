@@ -76,3 +76,61 @@ def tensor_from_json_cell(value) -> torch.Tensor | None:
     if value is None:
         return None
     return torch.tensor(value, dtype=torch.float32)
+
+def load_middle_start_q_from_last_validation(
+    csv_path: str | Path,
+    device: torch.device | None = None,
+    dtype: torch.dtype = torch.float32,
+) -> torch.Tensor:
+    """Load middle joint solution from the last CSV row that contains validation data.
+
+    The selected row is the last row with non-empty best_joints_json.
+    If best_joints has shape [P, dof], choose index P // 2.
+    Example:
+        P = 8 -> index 4
+        P = 3 -> index 1
+    """
+    rows = read_optimization_csv(csv_path)
+
+    validation_rows = [
+        row for row in rows
+        if row.get("best_joints_json") is not None
+    ]
+
+    if not validation_rows:
+        raise ValueError(
+            f"No validation row with best_joints_json found in CSV: {csv_path}"
+        )
+
+    last_validation_row = validation_rows[-1]
+    best_joints = tensor_from_json_cell(last_validation_row["best_joints_json"])
+
+    if best_joints is None:
+        raise ValueError(
+            f"Last validation row has empty best_joints_json in CSV: {csv_path}"
+        )
+
+    if best_joints.ndim != 2:
+        raise ValueError(
+            f"Expected best_joints shape [num_poses, dof], "
+            f"got {tuple(best_joints.shape)}"
+        )
+
+    num_poses = best_joints.shape[0]
+    if num_poses == 0:
+        raise ValueError("best_joints_json contains zero joint solutions.")
+
+    middle_idx = num_poses // 2
+    start_q = best_joints[middle_idx].to(dtype=dtype)
+
+    if device is not None:
+        start_q = start_q.to(device)
+
+    print(
+        f"[Info] Loaded start_q from last validation row: "
+        f"iteration={last_validation_row['iteration']}, "
+        f"best_joints_shape={tuple(best_joints.shape)}, "
+        f"selected_index={middle_idx}"
+    )
+
+    return start_q
