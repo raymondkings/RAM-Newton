@@ -9,7 +9,7 @@ def create_task():
 
     # Top — z_max + standoff, pointing +x
     goals[1, :3, :3] = torch.tensor([[0.0, -0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]])
-    goals[1, :3, 3]  = torch.tensor([0.25, 0.0, 0.355])
+    goals[1, :3, 3]  = torch.tensor([0.25, 0.0, 0.40])
 
     # Back face (shifted) — x_max + standoff + extra, pointing -z (down)
     goals[2, :3, :3] = torch.tensor([[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]])

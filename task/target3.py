@@ -14,14 +14,14 @@ def create_task():
 
     # Top — z_max center, pointing -z
     goals[2, :3, :3] = torch.tensor([[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]])
-    goals[2, :3, 3]  = torch.tensor([0.25, 0.0, 0.355])
+    goals[2, :3, 3]  = torch.tensor([0.25, 0.0, 0.40])
 
     # Above init — above pose 0, pointing -z
     goals[3, :3, :3] = torch.tensor([[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]])
-    goals[3, :3, 3]  = torch.tensor([0.15, 0.0, 0.355])
+    goals[3, :3, 3]  = torch.tensor([0.15, 0.0, 0.40])
 
     # Above back — above pose 1, pointing -z
     goals[4, :3, :3] = torch.tensor([[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]])
-    goals[4, :3, 3]  = torch.tensor([0.3175, 0.0, 0.355])
+    goals[4, :3, 3]  = torch.tensor([0.3175, 0.0, 0.40])
 
     return goals
