@@ -57,8 +57,6 @@ def _load_model(device: torch.device) -> MLP:
 
 
 class SquasherSTE(torch.autograd.Function):
-    """Hard threshold in forward, straight-through gradient in backward."""
-
     @staticmethod
     def forward(_ctx, param, threshold):
         mask = (param.abs() >= threshold).float()
@@ -70,12 +68,10 @@ class SquasherSTE(torch.autograd.Function):
 
 
 class Normaliser(torch.autograd.Function):
-    """Safe normalizer for one morphology's [a, d] length matrix [7, 2]."""
-
     @staticmethod
     def forward(ctx, param):
         l2_norm = torch.hypot(param[:, 0:1], param[:, 1:2])
-        norm = l2_norm.sum(dim=0, keepdim=True).clamp_min(EPS)
+        norm = l2_norm.sum(dim=0, keepdim=True)
 
         ctx.save_for_backward(param, l2_norm, norm)
 
@@ -87,7 +83,7 @@ class Normaliser(torch.autograd.Function):
 
         chain = torch.where(
             (param.abs() > EPS).any(dim=1, keepdim=True),
-            param / l2_norm.clamp_min(EPS),
+            param / l2_norm,
             torch.zeros_like(param),
         )
 
