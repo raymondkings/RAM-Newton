@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 
 from task.morphology_sampler import sample_dof6_initial_morphologies
-from optim.nrm import optimize_morphology
+from optim.nrm_alpha_random_selection import optimize_morphology
 from interface import Morphology, Task
 from task.environment import l_environment
 from task.target import create_task
@@ -150,6 +150,24 @@ def main() -> None:
             "ignore_obstacles": args.ignore_obstacles,
         },
     )
+    
+    # # for testing the alpha(different learning rate, different input)
+    # optimized_morph, csv_path = optimize_morphology(
+    #     morph=morph,
+    #     task=task,
+    #     optimization_parameters={
+    #         "num_iterations": args.num_iterations,
+    #         "learning_rate_angle": args.learning_rate_angle,
+    #         "learning_rate_length": args.learning_rate_length,
+    #         "logging": args.debug,
+    #         "eval_interval": args.eval_interval,
+    #         "random_seed": args.seed,
+    #         "number_random_seed": args.number_random_seed,
+    #         "percentage_poses": args.percentage_poses,
+    #         "ignore_ground": args.ignore_ground,
+    #         "ignore_obstacles": args.ignore_obstacles,
+    #     },
+    # )
 
     print(f"[Info] Optimized morphology params:\n{optimized_morph.params} \nlink_radius={optimized_morph.link_radius}")
     print(f"[Info] Optimization CSV: {csv_path}")
