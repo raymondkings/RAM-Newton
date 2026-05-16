@@ -9,7 +9,7 @@ from task.morphology_sampler import sample_dof6_initial_morphologies
 from optim.nrm import optimize_morphology
 from interface import Morphology, Task
 from task.environment import l_environment
-from task.target import simple_targets
+from task.target1 import create_task
 from validation.curobo_planner import CuroboPlanner, interpolate_path
 from validation.render import animate_plan, render_scene
 
@@ -126,7 +126,7 @@ def main() -> None:
     start_q = torch.tensor([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], device=device)
     task = Task(
         environment=l_environment(),
-        goal_poses=simple_targets(),
+        goal_poses=create_task(),
         reachable_region=None,
         start_q=start_q,
     )
