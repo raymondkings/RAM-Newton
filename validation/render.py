@@ -1,3 +1,4 @@
+import math
 import socket
 import time
 import numpy as np
@@ -162,6 +163,7 @@ def animate_plan(
     loop: bool = True,
     sim_substeps: int = 4,
     startup_delay: float = 5.0,
+    max_joint_speed: float = math.pi,
     curobo_planner=None,
 ) -> None:
     """Execute a planned joint-space trajectory in Newton physics and stream it to the viewer.
@@ -177,6 +179,9 @@ def animate_plan(
         sim_substeps: physics substeps per rendered frame.
         startup_delay: seconds to hold the initial pose before playback starts,
             giving time to open the browser tab.
+        max_joint_speed: maximum joint speed in rad/s. Frames with large joint
+            displacements are paced slower so speed never exceeds this limit,
+            without affecting the physics timestep.
     """
     n_joints = morph.n_links - 1
 
@@ -188,6 +193,10 @@ def animate_plan(
 
     viewer = _setup_viewer(model, port, share, curobo_planner)
     axes_begins, axes_ends, axes_colors = make_origin_axes(axis_length=0.1)
+
+    speed_slider = viewer._server.gui.add_slider(
+        "Playback speed", min=0.1, max=4.0, step=0.1, initial_value=1.0
+    )
 
     print(f"({len(path)} frames — starting in {startup_delay:.0f}s)")
 
@@ -229,23 +238,31 @@ def animate_plan(
         while time.monotonic() < stop and viewer.is_running():
             render_q(path[0], t)
             t += frame_dt
+            time.sleep(frame_dt / speed_slider.value)
 
         while viewer.is_running():
             for _ in range(hold_frames):
                 render_q(path[0], t)
                 t += frame_dt
+                time.sleep(frame_dt / speed_slider.value)
                 if not viewer.is_running():
                     break
 
+            prev_q = path[0]
             for q in path:
                 if not viewer.is_running():
                     break
+                dq = float((q - prev_q).norm())
+                frame_time = max(frame_dt, dq / max_joint_speed)
                 render_q(q, t)
-                t += frame_dt
+                t += frame_time
+                time.sleep(frame_time / speed_slider.value)
+                prev_q = q
 
             for _ in range(hold_frames):
                 render_q(path[-1], t)
                 t += frame_dt
+                time.sleep(frame_dt / speed_slider.value)
                 if not viewer.is_running():
                     break
 
