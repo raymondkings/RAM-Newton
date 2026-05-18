@@ -66,7 +66,6 @@ class CuroboPlanner:
             collision_cache={"cuboid": 20},
             num_ik_seeds=num_ik_seeds,
             num_trajopt_seeds=num_trajopt_seeds,
-            optimizer_collision_activation_distance=0.05,
         )
         self._planner = MotionPlanner(config)
         self._planner.warmup(enable_graph=True, num_warmup_iterations=3)
