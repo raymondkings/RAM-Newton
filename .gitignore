@@ -217,11 +217,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Generated figures
-optim/figures/*.png
-
 # curobo
 curobo/
 
-# Timelapse results
-timelapse/
+output/

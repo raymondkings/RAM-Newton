@@ -1,6 +1,6 @@
 import torch
 
-def simple_targets():
+def create_task():
     goals = torch.eye(4).unsqueeze(0).repeat(10, 1, 1)
 
     # Initial pose — EEF in front of wall, pointing +x
