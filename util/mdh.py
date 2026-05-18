@@ -6,83 +6,14 @@ from interface import Morphology, Task
 import warp as wp
 import xml.etree.ElementTree as ET
 from interface.morphology import Morphology
-from util.kinematics import transformation_matrix, forward_kinematics
-from util.self_collision import get_capsules
 
 EPS = 1e-4
 
-def get_joint_limits(morph: Morphology) -> torch.Tensor:
+def to_urdf(morph: Morphology) -> str:
+    """Convert an mdh description of a morphology to a URDF string
+
+    NOTE: joint limits are set to +/- 2pi and are not sufficient to guarantee no self-collisions.
     """
-    Compute joint limits based on the morphology to avoid self-collisions.
-
-    Args:
-        morph: MDH parameters encoding the robot geometry.
-
-    Returns:
-        Joint limits
-    """
-    params = morph.params
-    joint_limits = torch.zeros(*params.shape[:-1], 2, device=params.device)
-
-    extended_morph = torch.cat([torch.zeros_like(params[..., :1, :]), params], dim=-2)
-    alpha0, a0, d0 = extended_morph[..., :-2, :].split(1, dim=-1)
-    alpha1, a1, d1 = extended_morph[..., 1:-1, :].split(1, dim=-1)
-
-    coordinate_fix = torch.eye(4, device=params.device, dtype=params.dtype).repeat(*params.shape[:-2], params.shape[-2] - 1,
-                                                                                   1, 1)
-    wrist = (a1[..., 0] == 0) & (d1[..., 0] == 0)
-    coordinate_fix[wrist] = transformation_matrix(alpha0, a0, d0, torch.zeros_like(d0))[wrist]
-
-    plane_normal = torch.stack([
-        torch.zeros_like(alpha1),
-        -torch.sin(alpha1),
-        torch.cos(alpha1),
-        torch.zeros_like(alpha1)], dim=-1)
-    plane_anchor = torch.stack([
-        a1,
-        -d1 * torch.sin(alpha1),
-        d1 * torch.cos(alpha1),
-        torch.ones_like(alpha1)], dim=-1)
-
-    plane_normal = torch.sum(coordinate_fix * plane_normal, dim=-1)[..., :3]
-    plane_anchor = torch.sum(coordinate_fix * plane_anchor, dim=-1)[..., :3]
-
-    stacked_morph = torch.stack([extended_morph[..., :-2, :], extended_morph[..., 1:-1, :], extended_morph[..., 2:, :]],
-                                dim=-2)
-    stacked_morph[~wrist, 0, :] = 0.0
-    stacked_poses = forward_kinematics(stacked_morph, torch.zeros(*stacked_morph.shape[:-1], 1, device=params.device))
-    start, end = get_capsules(stacked_morph, stacked_poses)
-    capsules = end - start
-
-    # Get closest non-zero capsule before joint
-    pre_capsule = capsules[..., 3, :]
-    pre_capsule[mask] = capsules[mask := pre_capsule.norm(dim=-1) < 1e-6, 2, :]
-    pre_capsule[mask] = capsules[mask := pre_capsule.norm(dim=-1) < 1e-6, 1, :]
-
-    # Get closest non-zero capsule after joint
-    post_capsule = capsules[..., -2, :]
-    post_capsule[mask] = capsules[mask := post_capsule.norm(dim=-1) < 1e-6, -1, :]
-
-    in_plane = ((pre_capsule - plane_anchor) * plane_normal).sum(dim=-1).abs() < 1e-6
-    in_plane &= ((post_capsule - plane_anchor) * plane_normal).sum(dim=-1).abs() < 1e-6
-
-    limited = (pre_capsule.norm(dim=-1) > EPS) & (post_capsule.norm(dim=-1) > EPS) & in_plane
-
-    mask = post_capsule.norm(dim=-1) > pre_capsule.norm(dim=-1)
-    arc = torch.arcsin(2 * morph.link_radius / post_capsule.norm(dim=-1))
-    arc[mask] = torch.arcsin(2 * morph.link_radius / pre_capsule.norm(dim=-1))[mask]
-
-    joint_limits[..., :-1, 0] = torch.where(limited, 2 * torch.pi - 2 * arc, 2 * torch.pi)  # Range
-    angle = torch.atan2(torch.sum(torch.cross(pre_capsule, post_capsule, dim=-1) * plane_normal, dim=-1),
-                        torch.sum(pre_capsule * post_capsule, dim=-1))
-    # if their angle becomes pi, they collide and are antiparallel
-    angle = torch.atan2(torch.sin(torch.pi - angle), torch.cos(torch.pi - angle))
-    joint_limits[..., :-1, 1] = torch.where(limited, angle + arc, -torch.pi)  # Offset
-
-    return joint_limits
-
-def to_urdf(morph: Morphology, joint_lims: list[tuple[float, float]]) -> str:
-    """Convert a mhd description of a morphology to a URDF string""" 
     n = morph.n_links
     n_joints = n - 1  # revolute DOFs
 
@@ -109,11 +40,10 @@ def to_urdf(morph: Morphology, joint_lims: list[tuple[float, float]]) -> str:
         )
         ET.SubElement(jnt, "axis", xyz="0 0 1")
         if joint_type == "revolute":
-            span, offset = joint_lims[i]
             ET.SubElement(
                 jnt, "limit",
-                lower=f"{offset:.6f}",
-                upper=f"{offset + span:.6f}",
+                lower=f"{-2*math.pi:.6f}",
+                upper=f"{2*math.pi:.6f}",
                 effort="1000",
                 velocity=f"{math.pi:.6f}",
             )

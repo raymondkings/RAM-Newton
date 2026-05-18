@@ -9,7 +9,7 @@ from scipy.spatial.transform import Rotation
 
 from interface import Morphology, Task
 from interface.plan_result import PlanResult
-from util.mdh import to_urdf, get_joint_limits
+from util.mdh import to_urdf
 from util.kinematics import forward_kinematics, build_sphere_dict, build_self_collision_ignore, _mat_to_goal_pose, build_scene
 from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
 from curobo.types import JointState
@@ -39,7 +39,7 @@ class CuroboPlanner:
         self._base_pose_inv = torch.linalg.inv(base_pose_f32).to(dtype)
 
         # Shared robot dict and scene (used by both IK and motion planner)
-        urdf_str = to_urdf(morph, get_joint_limits(morph).tolist())
+        urdf_str = to_urdf(morph)
         tmp = tempfile.NamedTemporaryFile(suffix=".urdf", delete=False, mode="w")
         tmp.write(urdf_str); tmp.flush(); tmp.close()
         self._urdf_path = tmp.name
@@ -66,7 +66,6 @@ class CuroboPlanner:
             collision_cache={"cuboid": 20},
             num_ik_seeds=num_ik_seeds,
             num_trajopt_seeds=num_trajopt_seeds,
-            optimizer_collision_activation_distance=0.05,
         )
         self._planner = MotionPlanner(config)
         self._planner.warmup(enable_graph=True, num_warmup_iterations=3)
