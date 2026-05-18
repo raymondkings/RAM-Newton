@@ -147,9 +147,9 @@ def build_robot_dict(morph) -> tuple[dict, str]:
     Returns:
         (robot_dict, urdf_path) — caller must delete urdf_path when done.
     """
-    from util.mdh import to_urdf, get_joint_limits  # local to avoid circular import
+    from util.mdh import to_urdf # local to avoid circular import
     ee_link = f"link_{morph.n_links - 1}"
-    urdf_str = to_urdf(morph, get_joint_limits(morph).tolist())
+    urdf_str = to_urdf(morph)
     tmp = tempfile.NamedTemporaryFile(suffix=".urdf", delete=False, mode="w")
     tmp.write(urdf_str); tmp.flush(); tmp.close()
 
