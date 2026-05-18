@@ -11,3 +11,4 @@ class PlanResult:
     n_iterations: int
     n_nodes: int
     kinematic_only: bool = False  # retained for API compatibility; always False
+    failed_at_goal: int | None = None  # index of first goal that could not be reached
