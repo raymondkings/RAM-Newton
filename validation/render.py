@@ -300,8 +300,15 @@ def animate_plan(
     axes_begins, axes_ends, axes_colors = make_origin_axes(axis_length=0.1)
 
     speed_slider = viewer._server.gui.add_slider(
-        "Playback speed", min=0.1, max=4.0, step=0.1, initial_value=1.0
+        "Playback speed", min=0.0, max=4.0, step=0.05, initial_value=1.0
     )
+
+    def _sleep(dt: float) -> None:
+        """Sleep for one frame; spin-wait if playback is paused (speed == 0)."""
+        while speed_slider.value == 0.0 and viewer.is_running():
+            time.sleep(0.05)
+        if viewer.is_running():
+            time.sleep(dt / speed_slider.value)
 
     print(f"({len(path)} frames — starting in {startup_delay:.0f}s)")
 
@@ -343,13 +350,13 @@ def animate_plan(
         while time.monotonic() < stop and viewer.is_running():
             render_q(path[0], t)
             t += frame_dt
-            time.sleep(frame_dt / speed_slider.value)
+            _sleep(frame_dt)
 
         while viewer.is_running():
             for _ in range(hold_frames):
                 render_q(path[0], t)
                 t += frame_dt
-                time.sleep(frame_dt / speed_slider.value)
+                _sleep(frame_dt)
                 if not viewer.is_running():
                     break
 
@@ -361,13 +368,13 @@ def animate_plan(
                 frame_time = max(frame_dt, dq / max_joint_speed)
                 render_q(q, t)
                 t += frame_time
-                time.sleep(frame_time / speed_slider.value)
+                _sleep(frame_time)
                 prev_q = q
 
             for _ in range(hold_frames):
                 render_q(path[-1], t)
                 t += frame_dt
-                time.sleep(frame_dt / speed_slider.value)
+                _sleep(frame_dt)
                 if not viewer.is_running():
                     break
 
