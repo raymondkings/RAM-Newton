@@ -9,7 +9,7 @@ from task.morphology_sampler import sample_dof6_initial_morphologies
 from optim.nrm import optimize_morphology
 from interface import Morphology, Task
 from task.environment import l_environment
-from task.target import create_task
+from task.target1 import create_task
 from validation.curobo_planner import CuroboPlanner, interpolate_path
 from validation.render import animate_plan, render_scene
 
@@ -97,7 +97,13 @@ def run_plan(
                 animate_plan(morph, task, dense, curobo_planner=planner)
         elif debug and visualize:
             print("Rendering static scene for debugging.")
-            render_scene(morph, task, curobo_planner=planner)
+            render_scene(
+                morph,
+                task,
+                curobo_planner=planner,
+                failed_at_goal=failed_at,
+                best_ik_q=result.best_ik_q,
+            )
         return
 
     print(
@@ -106,7 +112,7 @@ def run_plan(
     if visualize:
         dense = interpolate_path(result.path, step=0.03)
         print(f"Animating — {len(dense)} frames ...")
-        animate_plan(morph, task, dense, curobo_planner=planner)
+        animate_plan(morph, task, dense, curobo_planner=planner, failed_at_goal=None)
 
 
 def run_postprocess(csv_path: Path, task: Task, args: argparse.Namespace) -> None:

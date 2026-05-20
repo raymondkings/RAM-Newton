@@ -60,6 +60,9 @@ def add_curobo_scene_to_viser(server, scene, base_pose_f32) -> None:
         )
 
 
+_GHOST_COLOR = (160, 60, 255)  # purple — best IK approximation
+_GHOST_OPACITY = 0.45
+
 _GOAL_COLOR_SUCCESS = (50, 180, 50)  # 🟢 green — reached
 _GOAL_COLOR_FAILED = (240, 140, 0)  # 🟠 orange — first unreachable goal
 _GOAL_COLOR_UNREACHED = (210, 40, 40)  # 🔴 red — never attempted
@@ -74,6 +77,40 @@ def _goal_color(i: int, failed_at_goal: int | None, n_goals: int) -> tuple:
     if i == failed_at_goal:
         return _GOAL_COLOR_FAILED
     return _GOAL_COLOR_UNREACHED
+
+
+def _add_ghost_robot_to_viser(server, curobo_planner, best_ik_q, n_joints: int) -> list:
+    """Add semi-transparent ghost robot at best_ik_q using collision spheres.
+
+    Returns a list of viser IcosphereHandles (empty if no ghost is shown).
+    """
+    if curobo_planner is None or best_ik_q is None:
+        return []
+    spheres = curobo_planner.robot_spheres_world(best_ik_q[:n_joints])
+    handles = []
+    for i, (x, y, z, r) in enumerate(spheres):
+        h = server.scene.add_icosphere(
+            f"/ghost_robot/sphere_{i}",
+            radius=float(r),
+            color=_GHOST_COLOR,
+            opacity=_GHOST_OPACITY,
+            position=(float(x), float(y), float(z)),
+            visible=False,
+        )
+        handles.append(h)
+    return handles
+
+
+def _add_ghost_toggle(server, ghost_handles: list) -> None:
+    """Add a viser checkbox that shows/hides ghost robot spheres."""
+    if not ghost_handles:
+        return
+    toggle = server.gui.add_checkbox("Show ghost robot (best IK)", initial_value=False)
+
+    @toggle.on_update
+    def _on_toggle(_event) -> None:
+        for h in ghost_handles:
+            h.visible = toggle.value
 
 
 def build_scene_builder(morph: Morphology, task: Task) -> newton.ModelBuilder:
@@ -183,6 +220,7 @@ def render_scene(
     share: bool = False,
     curobo_planner=None,
     failed_at_goal: int | None = "unknown",
+    best_ik_q=None,
 ) -> None:
     """Render morphology + task environment in the Newton viewer (static)."""
     builder = build_scene_builder(morph, task)
@@ -192,6 +230,11 @@ def render_scene(
     viewer = _setup_viewer(model, port, share, curobo_planner)
     add_obstacles_to_viser(viewer._server, task)
     add_goals_to_viser(viewer._server, task, failed_at_goal)
+    n_joints = morph.n_links - 1
+    ghost_handles = _add_ghost_robot_to_viser(
+        viewer._server, curobo_planner, best_ik_q, n_joints
+    )
+    _add_ghost_toggle(viewer._server, ghost_handles)
     axes_begins, axes_ends, axes_colors = make_origin_axes(axis_length=0.1)
 
     viewer.begin_frame(0.0)
@@ -220,6 +263,7 @@ def animate_plan(
     max_joint_speed: float = math.pi,
     curobo_planner=None,
     failed_at_goal: int | None = "unknown",
+    best_ik_q=None,
 ) -> None:
     """Execute a planned joint-space trajectory in Newton physics and stream it to the viewer.
 
@@ -249,6 +293,10 @@ def animate_plan(
     viewer = _setup_viewer(model, port, share, curobo_planner)
     add_obstacles_to_viser(viewer._server, task)
     add_goals_to_viser(viewer._server, task, failed_at_goal)
+    ghost_handles = _add_ghost_robot_to_viser(
+        viewer._server, curobo_planner, best_ik_q, n_joints
+    )
+    _add_ghost_toggle(viewer._server, ghost_handles)
     axes_begins, axes_ends, axes_colors = make_origin_axes(axis_length=0.1)
 
     speed_slider = viewer._server.gui.add_slider(
