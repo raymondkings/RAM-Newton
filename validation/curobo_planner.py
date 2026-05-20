@@ -154,7 +154,9 @@ class CuroboPlanner:
                             f"[cuRobo]   -> ground plane collision (deepest penetration: {worst:.4f} m)"
                         )
                     else:
-                        print("[cuRobo]   -> no ground collision; likely self-collision")
+                        print(
+                            "[cuRobo]   -> no ground collision; likely self-collision"
+                        )
 
         try:
             result = self._planner.plan_pose(
@@ -197,7 +199,13 @@ class CuroboPlanner:
         for i in range(goal_poses_world.shape[0]):
             result, goal_q = self.plan(goal_poses_world[i], current_q, max_attempts)
             if not result.success or goal_q is None:
-                return PlanResult(success=False, path=full_path, n_iterations=0, n_nodes=len(full_path), failed_at_goal=i), None
+                return PlanResult(
+                    success=False,
+                    path=full_path,
+                    n_iterations=0,
+                    n_nodes=len(full_path),
+                    failed_at_goal=i,
+                ), None
             full_path.extend(result.path)
             current_q = goal_q
 

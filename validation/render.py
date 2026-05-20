@@ -60,8 +60,35 @@ def add_curobo_scene_to_viser(server, scene, base_pose_f32) -> None:
         )
 
 
-def build_scene_builder(morph: Morphology, task: Task) -> newton.ModelBuilder:
-    """Construct a ModelBuilder with obstacles, goal markers, and the robot."""
+_GOAL_COLOR_SUCCESS = (50, 180, 50)  # 🟢 green — reached
+_GOAL_COLOR_FAILED = (240, 140, 0)  # 🟠 orange — first unreachable goal
+_GOAL_COLOR_UNREACHED = (210, 40, 40)  # 🔴 red — never attempted
+_GOAL_COLOR_DEFAULT = (190, 190, 190)  # ⚪ light grey — unknown status
+
+
+def _goal_color(i: int, failed_at_goal: int | None, n_goals: int) -> tuple:
+    if failed_at_goal is None:
+        return _GOAL_COLOR_SUCCESS
+    if i < failed_at_goal:
+        return _GOAL_COLOR_SUCCESS
+    if i == failed_at_goal:
+        return _GOAL_COLOR_FAILED
+    return _GOAL_COLOR_UNREACHED
+
+
+def build_scene_builder(
+    morph: Morphology,
+    task: Task,
+    failed_at_goal: int | None = "unknown",
+) -> newton.ModelBuilder:
+    """Construct a ModelBuilder with obstacles, goal markers, and the robot.
+
+    Args:
+        failed_at_goal: index of the first goal that could not be reached
+            (from PlanResult.failed_at_goal).  Pass None for a fully-successful
+            plan.  The default sentinel "unknown" renders all goals in the
+            default red so callers that don't have result info are unaffected.
+    """
     builder = newton.ModelBuilder()
 
     for obs in task.environment.obstacles:
@@ -96,14 +123,19 @@ def build_scene_builder(morph: Morphology, task: Task) -> newton.ModelBuilder:
             label="reachable_region",
         )
 
-    for i in range(task.goal_poses.shape[0]):
+    n_goals = task.goal_poses.shape[0]
+    for i in range(n_goals):
         pos = task.goal_poses[i, :3, 3].cpu()
+        if failed_at_goal == "unknown":
+            color = _GOAL_COLOR_DEFAULT
+        else:
+            color = _goal_color(i, failed_at_goal, n_goals)
         builder.add_shape_sphere(
             body=-1,
             xform=wp.transform(p=wp.vec3(*pos.tolist()), q=wp.quat_identity()),
             radius=0.03,
             as_site=True,
-            color=wp.vec3(1.0, 0.2, 0.2),
+            color=color,
         )
 
     poses = compute_link_world_poses(morph)
@@ -111,6 +143,16 @@ def build_scene_builder(morph: Morphology, task: Task) -> newton.ModelBuilder:
     add_robot_to_builder(builder, morph, poses, label="robot")
 
     return builder
+
+
+def _add_goal_legend(server) -> None:
+    server.gui.add_markdown(
+        "**Goal status**\n\n"
+        "🟢 &nbsp;Reached\n\n"
+        "🟠 &nbsp;First failure\n\n"
+        "🔴 &nbsp;Not attempted\n\n"
+        "⚪ &nbsp;Unknown"
+    )
 
 
 def _setup_viewer(
@@ -122,6 +164,7 @@ def _setup_viewer(
     viewer._server.scene.add_icosphere(
         "/unit_sphere", radius=1.0, color=(180, 180, 255), opacity=0.08
     )
+    _add_goal_legend(viewer._server)
 
     if curobo_planner is not None:
         add_curobo_scene_to_viser(
@@ -147,9 +190,10 @@ def render_scene(
     port: int = 8080,
     share: bool = False,
     curobo_planner=None,
+    failed_at_goal: int | None = "unknown",
 ) -> None:
     """Render morphology + task environment in the Newton viewer (static)."""
-    builder = build_scene_builder(morph, task)
+    builder = build_scene_builder(morph, task, failed_at_goal=failed_at_goal)
     model = builder.finalize()
     state = model.state()
 
@@ -181,6 +225,7 @@ def animate_plan(
     startup_delay: float = 5.0,
     max_joint_speed: float = math.pi,
     curobo_planner=None,
+    failed_at_goal: int | None = "unknown",
 ) -> None:
     """Execute a planned joint-space trajectory in Newton physics and stream it to the viewer.
 
@@ -201,7 +246,7 @@ def animate_plan(
     """
     n_joints = morph.n_links - 1
 
-    builder = build_scene_builder(morph, task)
+    builder = build_scene_builder(morph, task, failed_at_goal=failed_at_goal)
     model = builder.finalize()
     state = model.state()
 

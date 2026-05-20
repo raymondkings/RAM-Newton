@@ -84,12 +84,16 @@ def run_plan(
         if failed_at is not None:
             print(f"[cuRobo] Planning failed at goal {failed_at}/{n_goals}.")
         else:
-            print(f"[cuRobo] Planning failed.")
+            print("[cuRobo] Planning failed.")
         if result.path:
-            print(f"[cuRobo] Executing partial plan: {len(result.path)} waypoints up to goal {failed_at}.")
+            print(
+                f"[cuRobo] Executing partial plan: {len(result.path)} waypoints up to goal {failed_at}."
+            )
             if visualize:
                 dense = interpolate_path(result.path, step=0.03)
-                print(f"Animating partial plan — {len(dense)} frames (failure at goal {failed_at}/{n_goals}) ...")
+                print(
+                    f"Animating partial plan — {len(dense)} frames (failure at goal {failed_at}/{n_goals}) ..."
+                )
                 animate_plan(morph, task, dense, curobo_planner=planner)
         elif debug and visualize:
             print("Rendering static scene for debugging.")
