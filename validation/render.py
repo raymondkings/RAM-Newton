@@ -76,32 +76,9 @@ def _goal_color(i: int, failed_at_goal: int | None, n_goals: int) -> tuple:
     return _GOAL_COLOR_UNREACHED
 
 
-def build_scene_builder(
-    morph: Morphology,
-    task: Task,
-    failed_at_goal: int | None = "unknown",
-) -> newton.ModelBuilder:
-    """Construct a ModelBuilder with obstacles, goal markers, and the robot.
-
-    Args:
-        failed_at_goal: index of the first goal that could not be reached
-            (from PlanResult.failed_at_goal).  Pass None for a fully-successful
-            plan.  The default sentinel "unknown" renders all goals in the
-            default red so callers that don't have result info are unaffected.
-    """
+def build_scene_builder(morph: Morphology, task: Task) -> newton.ModelBuilder:
+    """Construct a ModelBuilder for the robot and static scene markers."""
     builder = newton.ModelBuilder()
-
-    for obs in task.environment.obstacles:
-        if obs.kind == "box":
-            builder.add_shape_box(
-                body=-1,
-                xform=wp.transform(
-                    p=wp.vec3(*obs.center.cpu().tolist()), q=wp.quat_identity()
-                ),
-                hx=obs.half_extents[0].item(),
-                hy=obs.half_extents[1].item(),
-                hz=obs.half_extents[2].item(),
-            )
 
     region = task.reachable_region
     if region is not None:
@@ -123,26 +100,41 @@ def build_scene_builder(
             label="reachable_region",
         )
 
-    n_goals = task.goal_poses.shape[0]
-    for i in range(n_goals):
-        pos = task.goal_poses[i, :3, 3].cpu()
-        if failed_at_goal == "unknown":
-            color = _GOAL_COLOR_DEFAULT
-        else:
-            color = _goal_color(i, failed_at_goal, n_goals)
-        builder.add_shape_sphere(
-            body=-1,
-            xform=wp.transform(p=wp.vec3(*pos.tolist()), q=wp.quat_identity()),
-            radius=0.03,
-            as_site=True,
-            color=color,
-        )
-
     poses = compute_link_world_poses(morph)
     poses = (task.environment.base_pose.unsqueeze(0) @ poses).cpu()
     add_robot_to_builder(builder, morph, poses, label="robot")
 
     return builder
+
+
+def add_obstacles_to_viser(server, task) -> None:
+    for i, obs in enumerate(task.environment.obstacles):
+        if obs.kind == "box":
+            center = tuple(float(v) for v in obs.center.cpu().tolist())
+            dims = tuple(float(obs.half_extents[j].item() * 2) for j in range(3))
+            server.scene.add_box(
+                f"/obstacles/box_{i}",
+                color=(170, 170, 170),
+                dimensions=dims,
+                position=center,
+            )
+
+
+def add_goals_to_viser(server, task, failed_at_goal) -> None:
+    n_goals = task.goal_poses.shape[0]
+    for i in range(n_goals):
+        pos = tuple(float(v) for v in task.goal_poses[i, :3, 3].cpu().tolist())
+        color = (
+            _GOAL_COLOR_DEFAULT
+            if failed_at_goal == "unknown"
+            else _goal_color(i, failed_at_goal, n_goals)
+        )
+        server.scene.add_icosphere(
+            f"/goals/sphere_{i}",
+            radius=0.03,
+            color=color,
+            position=pos,
+        )
 
 
 def _add_goal_legend(server) -> None:
@@ -193,11 +185,13 @@ def render_scene(
     failed_at_goal: int | None = "unknown",
 ) -> None:
     """Render morphology + task environment in the Newton viewer (static)."""
-    builder = build_scene_builder(morph, task, failed_at_goal=failed_at_goal)
+    builder = build_scene_builder(morph, task)
     model = builder.finalize()
     state = model.state()
 
     viewer = _setup_viewer(model, port, share, curobo_planner)
+    add_obstacles_to_viser(viewer._server, task)
+    add_goals_to_viser(viewer._server, task, failed_at_goal)
     axes_begins, axes_ends, axes_colors = make_origin_axes(axis_length=0.1)
 
     viewer.begin_frame(0.0)
@@ -246,13 +240,15 @@ def animate_plan(
     """
     n_joints = morph.n_links - 1
 
-    builder = build_scene_builder(morph, task, failed_at_goal=failed_at_goal)
+    builder = build_scene_builder(morph, task)
     model = builder.finalize()
     state = model.state()
 
     frame_dt = 1.0 / fps
 
     viewer = _setup_viewer(model, port, share, curobo_planner)
+    add_obstacles_to_viser(viewer._server, task)
+    add_goals_to_viser(viewer._server, task, failed_at_goal)
     axes_begins, axes_ends, axes_colors = make_origin_axes(axis_length=0.1)
 
     speed_slider = viewer._server.gui.add_slider(
