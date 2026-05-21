@@ -9,9 +9,14 @@ from task.morphology_sampler import sample_dof6_initial_morphologies
 from optim.nrm_alpha_random_selection import optimize_morphology
 from interface import Morphology, Task
 from task.environment import l_environment
-from task.target1 import create_task
 from validation.curobo_planner import CuroboPlanner, interpolate_path
 from validation.render import animate_plan, render_scene
+
+#target selecting
+#from task.target1 import create_task
+from task.target1plus import create_task
+#from task.target2 import create_task
+
 
 DEFAULT_CONFIG = Path(__file__).parent / "config.json"
 
@@ -76,7 +81,8 @@ def run_plan(
         ignore_ground=ignore_ground,
         ignore_obstacles=ignore_obstacles,
     )
-    result, final_q = planner.plan_sequence(task.goal_poses, start_q)
+    ordered_poses = task.goal_poses[task.goal_order] if task.goal_order is not None else task.goal_poses
+    result, final_q = planner.plan_sequence(ordered_poses, start_q)
 
     if not result.success:
         n_goals = task.goal_poses.shape[0]
@@ -178,6 +184,7 @@ def main() -> None:
         goal_poses=create_task(),
         reachable_region=None,
         start_q=start_q,
+        goal_order=[0, 1, 2, 3, 4],#0123456789...
     )
 
     morph = Morphology(params=initial_morphologies[0])
