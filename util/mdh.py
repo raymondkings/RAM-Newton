@@ -2,12 +2,12 @@ import math
 import torch
 import newton
 from scipy.spatial.transform import Rotation
-from interface import Morphology, Task
 import warp as wp
 import xml.etree.ElementTree as ET
 from interface.morphology import Morphology
 
 EPS = 1e-4
+
 
 def to_urdf(morph: Morphology) -> str:
     """Convert an mdh description of a morphology to a URDF string
@@ -34,21 +34,24 @@ def to_urdf(morph: Morphology) -> str:
         ET.SubElement(jnt, "parent", link=parent)
         ET.SubElement(jnt, "child", link=f"link_{i}")
         ET.SubElement(
-            jnt, "origin",
+            jnt,
+            "origin",
             xyz=f"{a:.8f} {-sa * d:.8f} {ca * d:.8f}",
             rpy=f"{alpha:.8f} 0.0 0.0",
         )
         ET.SubElement(jnt, "axis", xyz="0 0 1")
         if joint_type == "revolute":
             ET.SubElement(
-                jnt, "limit",
-                lower=f"{-2*math.pi:.6f}",
-                upper=f"{2*math.pi:.6f}",
+                jnt,
+                "limit",
+                lower=f"{-2 * math.pi:.6f}",
+                upper=f"{2 * math.pi:.6f}",
                 effort="1000",
                 velocity=f"{math.pi:.6f}",
             )
 
     return '<?xml version="1.0"?>\n' + ET.tostring(robot, encoding="unicode")
+
 
 def add_robot_to_builder(
     builder: newton.ModelBuilder,
@@ -170,9 +173,9 @@ def build_mdh_newton_model(
     builder.validate_inertia_detailed = True
     if add_ground_plane:
         add_ground_collision(builder)
-    
+
     add_robot_to_builder(builder, morph, pose, label=label)
-    
+
     model = builder.finalize()
     state = model.state()
     return model, state

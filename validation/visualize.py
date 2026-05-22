@@ -11,8 +11,8 @@ from validation.mdh_to_newton import add_robot_to_builder
 from validation.ground import add_ground_grid_to_viser, make_origin_axes
 
 # PD gains for joint position control during Newton simulation
-_KE = 500.0   # position stiffness  [N·m/rad]
-_KD = 50.0    # velocity damping    [N·m·s/rad]
+_KE = 500.0  # position stiffness  [N·m/rad]
+_KD = 50.0  # velocity damping    [N·m·s/rad]
 
 
 def animate_plan(
@@ -44,7 +44,9 @@ def animate_plan(
         if obs.kind == "box":
             builder.add_shape_box(
                 body=-1,
-                xform=wp.transform(p=wp.vec3(*obs.center.tolist()), q=wp.quat_identity()),
+                xform=wp.transform(
+                    p=wp.vec3(*obs.center.tolist()), q=wp.quat_identity()
+                ),
                 hx=obs.half_extents[0].item(),
                 hy=obs.half_extents[1].item(),
                 hz=obs.half_extents[2].item(),

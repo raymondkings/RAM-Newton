@@ -1,18 +1,23 @@
 import os
 import tempfile
 import traceback
-import xml.etree.ElementTree as ET
 
 import torch
 import numpy as np
-from scipy.spatial.transform import Rotation
 
 from interface import Morphology, Task
 from interface.plan_result import PlanResult
 from util.mdh import to_urdf
-from util.kinematics import forward_kinematics, build_sphere_dict, build_self_collision_ignore, _mat_to_goal_pose, build_scene
+from util.kinematics import (
+    forward_kinematics,
+    build_sphere_dict,
+    build_self_collision_ignore,
+    _mat_to_goal_pose,
+    build_scene,
+)
 from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
 from curobo.types import JointState
+
 
 class CuroboPlanner:
     """cuRobo MotionPlanner wrapper for a fixed (Morphology, Task) pair."""
@@ -41,7 +46,9 @@ class CuroboPlanner:
         # Shared robot dict and scene (used by both IK and motion planner)
         urdf_str = to_urdf(morph)
         tmp = tempfile.NamedTemporaryFile(suffix=".urdf", delete=False, mode="w")
-        tmp.write(urdf_str); tmp.flush(); tmp.close()
+        tmp.write(urdf_str)
+        tmp.flush()
+        tmp.close()
         self._urdf_path = tmp.name
 
         sphere_dict = build_sphere_dict(morph)
@@ -57,7 +64,12 @@ class CuroboPlanner:
                 "self_collision_ignore": build_self_collision_ignore(morph),
             }
         }
-        self.scene = build_scene(task, torch.linalg.inv(base_pose_f32), ignore_ground=ignore_ground, ignore_obstacles=ignore_obstacles)
+        self.scene = build_scene(
+            task,
+            torch.linalg.inv(base_pose_f32),
+            ignore_ground=ignore_ground,
+            ignore_obstacles=ignore_obstacles,
+        )
 
         # Motion planner for trajectory planning
         config = MotionPlannerCfg.create(
@@ -70,7 +82,6 @@ class CuroboPlanner:
         self._planner = MotionPlanner(config)
         self._planner.warmup(enable_graph=True, num_warmup_iterations=3)
 
-
     def robot_spheres_world(self, q: torch.Tensor) -> np.ndarray:
         """Return collision sphere positions for joint config q in world frame.
 
@@ -80,7 +91,7 @@ class CuroboPlanner:
         q_cpu = q.float().cpu()
         # MDH has n rows; last row is the EE link (theta=0)
         theta = torch.zeros(n, 1, device="cpu")
-        theta[:n - 1] = q_cpu.unsqueeze(1)
+        theta[: n - 1] = q_cpu.unsqueeze(1)
         mdh = self._morph.params.float().cpu()
         link_poses = forward_kinematics(mdh, theta)  # [n, 4, 4] in robot-local frame
         base = self._base_pose_f32.float().cpu()
@@ -95,7 +106,11 @@ class CuroboPlanner:
                 p = T @ c
                 results.append([p[0], p[1], p[2], s["radius"]])
 
-        return np.array(results, dtype=np.float32) if results else np.zeros((0, 4), dtype=np.float32)
+        return (
+            np.array(results, dtype=np.float32)
+            if results
+            else np.zeros((0, 4), dtype=np.float32)
+        )
 
     def plan(
         self,
@@ -135,14 +150,20 @@ class CuroboPlanner:
                     ground_penetration = spheres[:, 2] - spheres[:, 3]  # z - r
                     if (ground_penetration < 0).any():
                         worst = ground_penetration.min().item()
-                        print(f"[cuRobo]   -> ground plane collision (deepest penetration: {worst:.4f} m)")
+                        print(
+                            f"[cuRobo]   -> ground plane collision (deepest penetration: {worst:.4f} m)"
+                        )
                     else:
-                        print("[cuRobo]   -> no ground collision; likely self-collision")
+                        print(
+                            "[cuRobo]   -> no ground collision; likely self-collision"
+                        )
             else:
                 print("[cuRobo] start state is collision-free")
 
         try:
-            result = self._planner.plan_pose(goal, start_state, max_attempts=max_attempts)
+            result = self._planner.plan_pose(
+                goal, start_state, max_attempts=max_attempts
+            )
         except Exception:
             traceback.print_exc()
             raise
@@ -171,7 +192,9 @@ class CuroboPlanner:
         Chains individual plans: start_q → goal[0] → goal[1] → … → goal[N-1].
         Returns the concatenated path and the final joint config, or None on failure.
         """
-        print(f"Planning sequence of {goal_poses_world.shape[0]} goals with cuRobo (GPU TrajOpt + graph search)...")
+        print(
+            f"Planning sequence of {goal_poses_world.shape[0]} goals with cuRobo (GPU TrajOpt + graph search)..."
+        )
         full_path: list[torch.Tensor] = []
         current_q = start_q
 
@@ -180,11 +203,18 @@ class CuroboPlanner:
             result, goal_q = self.plan(goal_poses_world[i], current_q, max_attempts)
             if not result.success or goal_q is None:
                 print(f"[cuRobo] Failed at goal {i}.")
-                return PlanResult(success=False, path=full_path, n_iterations=0, n_nodes=len(full_path)), None
+                return PlanResult(
+                    success=False,
+                    path=full_path,
+                    n_iterations=0,
+                    n_nodes=len(full_path),
+                ), None
             full_path.extend(result.path)
             current_q = goal_q
 
-        return PlanResult(success=True, path=full_path, n_iterations=1, n_nodes=len(full_path)), current_q
+        return PlanResult(
+            success=True, path=full_path, n_iterations=1, n_nodes=len(full_path)
+        ), current_q
 
     def __del__(self) -> None:
         try:
@@ -193,7 +223,9 @@ class CuroboPlanner:
             pass
 
 
-def interpolate_path(path: list[torch.Tensor], step: float = 0.02) -> list[torch.Tensor]:
+def interpolate_path(
+    path: list[torch.Tensor], step: float = 0.02
+) -> list[torch.Tensor]:
     """Densify a joint-space path so consecutive frames are at most `step` apart."""
     if len(path) < 2:
         return path

@@ -1,4 +1,5 @@
 """Ground plane helpers: collision geometry, visual grid, and origin frame."""
+
 import numpy as np
 import warp as wp
 import newton
@@ -49,7 +50,6 @@ def make_origin_axes(axis_length: float = 0.1):
     return begins, ends, colors
 
 
-
 def add_ground_grid_to_viser(
     server,
     name: str = "/ground_grid",
@@ -78,7 +78,7 @@ def add_ground_grid_to_viser(
         x = -half + i * step
         segments.append((np.array([x, -half, 0.0]), np.array([x, half, 0.0])))
 
-    points = np.array(segments, dtype=np.float32)          # (N, 2, 3)
+    points = np.array(segments, dtype=np.float32)  # (N, 2, 3)
     colors = np.tile(
         np.array(color, dtype=np.uint8), (len(segments), 2, 1)
     )  # (N, 2, 3)

@@ -26,6 +26,7 @@ def set_global_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
     try:
         import numpy as np
+
         np.random.seed(seed)
     except ImportError:
         pass
@@ -62,7 +63,11 @@ def run_plan(
 ) -> None:
     n_joints = morph.n_links - 1
     dtype = morph.params.dtype
-    start_q = task.start_q.to(dtype) if task.start_q is not None else torch.zeros(n_joints, dtype=dtype)
+    start_q = (
+        task.start_q.to(dtype)
+        if task.start_q is not None
+        else torch.zeros(n_joints, dtype=dtype)
+    )
 
     planner = CuroboPlanner(
         morph,
@@ -80,7 +85,9 @@ def run_plan(
             render_scene(morph, task, curobo_planner=planner)
         return
 
-    print(f"\nSequence complete: {len(result.path)} waypoints through {task.goal_poses.shape[0]} goals.")
+    print(
+        f"\nSequence complete: {len(result.path)} waypoints through {task.goal_poses.shape[0]} goals."
+    )
     if visualize:
         dense = interpolate_path(result.path, step=0.03)
         print(f"Animating — {len(dense)} frames ...")
@@ -133,7 +140,9 @@ def main() -> None:
 
     morph = Morphology(params=initial_morphologies[0])
 
-    print(f"[Info] Initial morphology params:\n{morph.params} \nlink_radius={morph.link_radius}")
+    print(
+        f"[Info] Initial morphology params:\n{morph.params} \nlink_radius={morph.link_radius}"
+    )
 
     optimized_morph, csv_path = optimize_morphology(
         morph=morph,
@@ -150,7 +159,7 @@ def main() -> None:
             "ignore_obstacles": args.ignore_obstacles,
         },
     )
-    
+
     # # for testing the alpha(different learning rate, different input)
     # optimized_morph, csv_path = optimize_morphology(
     #     morph=morph,
@@ -169,7 +178,9 @@ def main() -> None:
     #     },
     # )
 
-    print(f"[Info] Optimized morphology params:\n{optimized_morph.params} \nlink_radius={optimized_morph.link_radius}")
+    print(
+        f"[Info] Optimized morphology params:\n{optimized_morph.params} \nlink_radius={optimized_morph.link_radius}"
+    )
     print(f"[Info] Optimization CSV: {csv_path}")
 
     run_postprocess(Path(csv_path), task, args)

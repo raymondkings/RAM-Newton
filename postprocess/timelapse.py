@@ -1,5 +1,5 @@
 # -----------------------------------------------------------------------------
-# work Copyright (c) 2026 Raymond King 
+# work Copyright (c) 2026 Raymond King
 # -----------------------------------------------------------------------------
 # Postprocess timelapse utilities for CSV logs created by optim.nrm.
 # -----------------------------------------------------------------------------
@@ -12,6 +12,7 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 import pyglet
+
 pyglet.options["headless"] = True
 
 import newton
@@ -22,15 +23,15 @@ from validation.render import build_scene_builder
 from util.csv_log_reader import read_optimization_csv, tensor_from_json_cell
 
 
-_BG       = "#1a1a2e"
+_BG = "#1a1a2e"
 _PANEL_BG = "#12122a"
-_GRID     = "#2a2a4a"
+_GRID = "#2a2a4a"
 
-_C_LOSS     = "#ff6b6b"
-_C_PROB     = "#4ecdc4"
-_C_TICK_2D  = "#888899"
+_C_LOSS = "#ff6b6b"
+_C_PROB = "#4ecdc4"
+_C_TICK_2D = "#888899"
 
-_CAM_POS    = PyVec3(0.95, -0.85, 1.0)
+_CAM_POS = PyVec3(0.95, -0.85, 1.0)
 _CAM_TARGET = (0.10, 0.0, 0.30)
 
 
@@ -41,7 +42,9 @@ class TimeLapseRecorder:
     postprocessing from CSV instead of during optimization.
     """
 
-    def __init__(self, cfg: dict, task: Task, timestamp_label: str | None = None) -> None:
+    def __init__(
+        self, cfg: dict, task: Task, timestamp_label: str | None = None
+    ) -> None:
         self.task = task
         self.stride: int = cfg.get("frame_every_n_steps", 5)
         self.fps: int = cfg.get("fps", 8)
@@ -56,8 +59,12 @@ class TimeLapseRecorder:
         out_dir.mkdir(parents=True, exist_ok=True)
 
         now = datetime.now()
-        self.output_path: Path = out_dir / f"{now.strftime('%Y-%m-%d_%H.%M.%S')}.{self.fmt}"
-        self.timestamp_label: str = timestamp_label or now.strftime("%d %B %Y  ·  %H:%M:%S")
+        self.output_path: Path = (
+            out_dir / f"{now.strftime('%Y-%m-%d_%H.%M.%S')}.{self.fmt}"
+        )
+        self.timestamp_label: str = timestamp_label or now.strftime(
+            "%d %B %Y  ·  %H:%M:%S"
+        )
 
         self.frames: list[np.ndarray] = []
         self._loss_hist: list[float] = []
@@ -177,7 +184,9 @@ def _draw_mdh_table(ax, morph: Morphology) -> None:
     n_links = data.shape[0]
 
     col_labels = ["α  (frozen)", "a", "d"]
-    cell_text = [[f"{data[row, col]:.4f}" for col in range(3)] for row in range(n_links)]
+    cell_text = [
+        [f"{data[row, col]:.4f}" for col in range(3)] for row in range(n_links)
+    ]
     row_labels = [f"link {i}" for i in range(n_links)]
 
     ax.set_axis_off()
@@ -196,7 +205,9 @@ def _draw_mdh_table(ax, morph: Morphology) -> None:
         cell.set_text_props(color="white")
 
 
-def _draw_metric(ax, history: list[float], label: str, color: str, ylim: tuple = (None, None)) -> None:
+def _draw_metric(
+    ax, history: list[float], label: str, color: str, ylim: tuple = (None, None)
+) -> None:
     ax.set_facecolor(_PANEL_BG)
 
     if history:
@@ -216,6 +227,7 @@ def _draw_metric(ax, history: list[float], label: str, color: str, ylim: tuple =
 
 def _save_gif(frames: list[np.ndarray], path: Path, fps: int) -> None:
     import imageio
+
     imageio.mimsave(str(path), frames, format="GIF", loop=0, duration=1000 // fps)
 
 
@@ -226,12 +238,24 @@ def _save_mp4(frames: list[np.ndarray], path: Path, fps: int) -> None:
     frames = [f[:h, :w] for f in frames]
 
     cmd = [
-        "ffmpeg", "-y",
-        "-f", "rawvideo", "-pix_fmt", "rgb24",
-        "-s", f"{w}x{h}", "-r", str(fps),
-        "-i", "pipe:0",
-        "-vcodec", "libx264", "-pix_fmt", "yuv420p",
-        "-crf", "22",
+        "ffmpeg",
+        "-y",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+        "-s",
+        f"{w}x{h}",
+        "-r",
+        str(fps),
+        "-i",
+        "pipe:0",
+        "-vcodec",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-crf",
+        "22",
         str(path),
     ]
 

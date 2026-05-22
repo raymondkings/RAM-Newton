@@ -5,7 +5,12 @@ from .validation_result import ValidationResult
 
 __all__ = [
     "Morphology",
-    "Environment", "Box", "Sphere", "Capsule", "Obstacle",
-    "Task", "ReachableRegion",
+    "Environment",
+    "Box",
+    "Sphere",
+    "Capsule",
+    "Obstacle",
+    "Task",
+    "ReachableRegion",
     "ValidationResult",
 ]

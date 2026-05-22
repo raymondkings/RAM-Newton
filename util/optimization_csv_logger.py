@@ -3,7 +3,6 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-import torch
 from torch import Tensor
 
 
@@ -21,20 +20,15 @@ class OptimizationCSVLogger:
         "iteration",
         "loss",
         "reachability_probability",
-
         "raw_morphology_json",
         "processed_morphology_json",
-
         "sampled_pose_indices_json",
         "sampled_goal_poses_json",
-
         "best_joints_json",
         "fk_reached_poses_best_json",
-
         "best_pos_err_mean",
         "best_rot_err_mean",
         "best_se3_dist_mean",
-
         "best_pos_err_per_pose_json",
         "best_rot_err_per_pose_json",
         "best_se3_dist_per_pose_json",
@@ -116,23 +110,36 @@ class OptimizationCSVLogger:
             "iteration": iteration,
             "loss": self._to_scalar(loss),
             "reachability_probability": self._to_scalar(reachability_probability),
-
             "raw_morphology_json": self._to_json(raw_morphology),
             "processed_morphology_json": self._to_json(processed_morphology),
-
-            "sampled_pose_indices_json": self._to_json(validation_data.get("sampled_pose_indices")),
-            "sampled_goal_poses_json": self._to_json(validation_data.get("sampled_goal_poses")),
-
+            "sampled_pose_indices_json": self._to_json(
+                validation_data.get("sampled_pose_indices")
+            ),
+            "sampled_goal_poses_json": self._to_json(
+                validation_data.get("sampled_goal_poses")
+            ),
             "best_joints_json": self._to_json(validation_data.get("best_joints")),
-            "fk_reached_poses_best_json": self._to_json(validation_data.get("fk_reached_poses_best")),
-
-            "best_pos_err_mean": self._to_scalar(validation_data.get("best_pos_err_mean")),
-            "best_rot_err_mean": self._to_scalar(validation_data.get("best_rot_err_mean")),
-            "best_se3_dist_mean": self._to_scalar(validation_data.get("best_se3_dist_mean")),
-
-            "best_pos_err_per_pose_json": self._to_json(validation_data.get("best_pos_err_per_pose")),
-            "best_rot_err_per_pose_json": self._to_json(validation_data.get("best_rot_err_per_pose")),
-            "best_se3_dist_per_pose_json": self._to_json(validation_data.get("best_se3_dist_per_pose")),
+            "fk_reached_poses_best_json": self._to_json(
+                validation_data.get("fk_reached_poses_best")
+            ),
+            "best_pos_err_mean": self._to_scalar(
+                validation_data.get("best_pos_err_mean")
+            ),
+            "best_rot_err_mean": self._to_scalar(
+                validation_data.get("best_rot_err_mean")
+            ),
+            "best_se3_dist_mean": self._to_scalar(
+                validation_data.get("best_se3_dist_mean")
+            ),
+            "best_pos_err_per_pose_json": self._to_json(
+                validation_data.get("best_pos_err_per_pose")
+            ),
+            "best_rot_err_per_pose_json": self._to_json(
+                validation_data.get("best_rot_err_per_pose")
+            ),
+            "best_se3_dist_per_pose_json": self._to_json(
+                validation_data.get("best_se3_dist_per_pose")
+            ),
         }
 
         self._writer.writerow(row)

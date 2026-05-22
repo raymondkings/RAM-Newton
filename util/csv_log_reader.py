@@ -42,7 +42,9 @@ def read_optimization_csv(csv_path: str | Path) -> list[dict]:
 
             parsed["iteration"] = int(row["iteration"])
             parsed["loss"] = _parse_float_cell(row.get("loss", ""))
-            parsed["reachability_probability"] = _parse_float_cell(row.get("reachability_probability", ""))
+            parsed["reachability_probability"] = _parse_float_cell(
+                row.get("reachability_probability", "")
+            )
 
             for key in [
                 "raw_morphology_json",
@@ -77,6 +79,7 @@ def tensor_from_json_cell(value) -> torch.Tensor | None:
         return None
     return torch.tensor(value, dtype=torch.float32)
 
+
 def load_middle_start_q_from_last_validation(
     csv_path: str | Path,
     device: torch.device | None = None,
@@ -92,10 +95,7 @@ def load_middle_start_q_from_last_validation(
     """
     rows = read_optimization_csv(csv_path)
 
-    validation_rows = [
-        row for row in rows
-        if row.get("best_joints_json") is not None
-    ]
+    validation_rows = [row for row in rows if row.get("best_joints_json") is not None]
 
     if not validation_rows:
         raise ValueError(

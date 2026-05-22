@@ -12,8 +12,8 @@ from util.mdh import add_robot_to_builder
 from validation.ground import add_ground_grid_to_viser, make_origin_axes
 
 # PD gains for joint position control during Newton simulation
-_KE = 500.0   # position stiffness  [N·m/rad]
-_KD = 50.0    # velocity damping    [N·m·s/rad]
+_KE = 500.0  # position stiffness  [N·m/rad]
+_KD = 50.0  # velocity damping    [N·m·s/rad]
 
 
 def add_curobo_scene_to_viser(server, scene, base_pose_f32) -> None:
@@ -37,7 +37,7 @@ def add_curobo_scene_to_viser(server, scene, base_pose_f32) -> None:
 
     _COLOR = (255, 200, 0)  # bright yellow
 
-    for c in (scene.cuboid or []):
+    for c in scene.cuboid or []:
         p = _world_pos(c.pose[:3])
         q = _world_wxyz(c.pose[3:7])
         dims = tuple(float(d) for d in c.dims)
@@ -50,7 +50,7 @@ def add_curobo_scene_to_viser(server, scene, base_pose_f32) -> None:
             position=pos,
         )
 
-    for s in (scene.sphere or []):
+    for s in scene.sphere or []:
         p = _world_pos(s.pose[:3])
         server.scene.add_icosphere(
             f"/curobo/{s.name}",
@@ -68,7 +68,9 @@ def build_scene_builder(morph: Morphology, task: Task) -> newton.ModelBuilder:
         if obs.kind == "box":
             builder.add_shape_box(
                 body=-1,
-                xform=wp.transform(p=wp.vec3(*obs.center.cpu().tolist()), q=wp.quat_identity()),
+                xform=wp.transform(
+                    p=wp.vec3(*obs.center.cpu().tolist()), q=wp.quat_identity()
+                ),
                 hx=obs.half_extents[0].item(),
                 hy=obs.half_extents[1].item(),
                 hz=obs.half_extents[2].item(),
@@ -111,27 +113,41 @@ def build_scene_builder(morph: Morphology, task: Task) -> newton.ModelBuilder:
     return builder
 
 
-def _setup_viewer(model: newton.Model, port: int, share: bool, curobo_planner=None) -> newton.viewer.ViewerViser:
+def _setup_viewer(
+    model: newton.Model, port: int, share: bool, curobo_planner=None
+) -> newton.viewer.ViewerViser:
     viewer = newton.viewer.ViewerViser(port=port, share=share, verbose=False)
     viewer.set_model(model)
     add_ground_grid_to_viser(viewer._server, grid_size=4.0, divisions=8)
-    viewer._server.scene.add_icosphere("/unit_sphere", radius=1.0, color=(180, 180, 255), opacity=0.08)
+    viewer._server.scene.add_icosphere(
+        "/unit_sphere", radius=1.0, color=(180, 180, 255), opacity=0.08
+    )
 
     if curobo_planner is not None:
-        add_curobo_scene_to_viser(viewer._server, curobo_planner.scene, curobo_planner._base_pose_f32)
+        add_curobo_scene_to_viser(
+            viewer._server, curobo_planner.scene, curobo_planner._base_pose_f32
+        )
 
     try:
         host_ip = socket.gethostbyname(socket.gethostname())
     except OSError:
         host_ip = "localhost"
-    print(f"Viewer running — local: http://localhost:{port}  remote: http://{host_ip}:{port}")
+    print(
+        f"Viewer running — local: http://localhost:{port}  remote: http://{host_ip}:{port}"
+    )
     if share and viewer._share_url:
         print(f"Public share URL: {viewer._share_url}")
 
     return viewer
 
 
-def render_scene(morph: Morphology, task: Task, port: int = 8080, share: bool = False, curobo_planner=None) -> None:
+def render_scene(
+    morph: Morphology,
+    task: Task,
+    port: int = 8080,
+    share: bool = False,
+    curobo_planner=None,
+) -> None:
     """Render morphology + task environment in the Newton viewer (static)."""
     builder = build_scene_builder(morph, task)
     model = builder.finalize()
