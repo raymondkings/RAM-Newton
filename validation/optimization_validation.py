@@ -156,14 +156,11 @@ def run_optimization_validation(
     return {
         "sampled_pose_indices": sampled_pose_indices,
         "sampled_goal_poses": sampled_goal_poses,
-
         "best_joints": joints,
         "fk_reached_poses_best": reached,
-
         "best_pos_err_mean": pos_err.mean(),
         "best_rot_err_mean": rot_err.mean(),
         "best_se3_dist_mean": se3_dist.mean(),
-
         "best_pos_err_per_pose": pos_err,
         "best_rot_err_per_pose": rot_err,
         "best_se3_dist_per_pose": se3_dist,

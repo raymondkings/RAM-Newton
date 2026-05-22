@@ -1,5 +1,5 @@
 # -----------------------------------------------------------------------------
-# work Copyright (c) 2026 Julian Arkenau 
+# work Copyright (c) 2026 Julian Arkenau
 # -----------------------------------------------------------------------------
 # Postprocess plotting utilities for CSV logs created by optim.nrm.
 # -----------------------------------------------------------------------------
@@ -74,7 +74,13 @@ def plot_link_lengths(
     ax_d.set_ylabel("d [m]")
 
     handles, labels = ax_a.get_legend_handles_labels()
-    fig.legend(handles, labels, title="link index", loc="center left", bbox_to_anchor=(0.92, 0.5))
+    fig.legend(
+        handles,
+        labels,
+        title="link index",
+        loc="center left",
+        bbox_to_anchor=(0.92, 0.5),
+    )
     fig.tight_layout(rect=[0, 0, 0.92, 1])
     fig.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -107,13 +113,23 @@ def plot_link_lengths_trajectory(
         color = link_colors[j % len(link_colors)]
 
         if len(a) > 2:
-            ax.scatter(a[1:-1], d[1:-1], color=color, s=15, alpha=0.5, zorder=3, label=f"link {j}")
+            ax.scatter(
+                a[1:-1],
+                d[1:-1],
+                color=color,
+                s=15,
+                alpha=0.5,
+                zorder=3,
+                label=f"link {j}",
+            )
         ax.scatter(a[0], d[0], marker="^", color=color, s=80, zorder=5)
         ax.scatter(a[-1], d[-1], marker="s", color=color, s=80, zorder=5)
 
     ax.scatter([], [], marker="^", color="gray", s=80, label="start")
     ax.scatter([], [], marker="s", color="gray", s=80, label="end")
-    ax.legend(title="link index", loc="center left", bbox_to_anchor=(1.02, 0.5), frameon=True)
+    ax.legend(
+        title="link index", loc="center left", bbox_to_anchor=(1.02, 0.5), frameon=True
+    )
     ax.set_xlabel("a — DH link length [m]")
     ax.set_ylabel("d — DH link offset [m]")
 
@@ -170,10 +186,7 @@ def create_plots_from_csv(
         )
         created.append(trajectory_path)
 
-    validation_rows = [
-        row for row in rows
-        if row.get("best_se3_dist_mean") is not None
-    ]
+    validation_rows = [row for row in rows if row.get("best_se3_dist_mean") is not None]
 
     if validation_rows:
         steps = [row["iteration"] for row in validation_rows]

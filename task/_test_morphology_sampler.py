@@ -31,7 +31,6 @@ def main():
     print(morphs[3])
     print(morphs[4])
 
-
     print("\nAll checks passed.")
 
 

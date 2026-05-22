@@ -1,7 +1,7 @@
 # -----------------------------------------------------------------------------
 # Original work Copyright (c) 2023 Tim Walter
-# Source: https://github.com/TimWalter/nrm 
-# 
+# Source: https://github.com/TimWalter/nrm
+#
 # Modified work Copyright (c) 2026 Shiyuan Zhang
 # -----------------------------------------------------------------------------
 #
@@ -24,9 +24,9 @@
 
 from __future__ import annotations
 
-from typing import Optional
 
 import torch
+
 # Same as original _reject_morph: test each candidate morphology on 1000 random joint configurations.
 REJECTION_TEST_CONFIGS = 1000
 from torch import Tensor
@@ -42,6 +42,7 @@ EPS = 1e-4
 # -----------------------------------------------------------------------------
 # Minimal manipulability.py subset
 # -----------------------------------------------------------------------------
+
 
 def geometric_jacobian(poses: Tensor) -> Tensor:
     """
@@ -83,6 +84,7 @@ def yoshikawa_manipulability(jacobian: Tensor, soft: bool = False) -> Tensor:
 
     return torch.sqrt(torch.det(jacobian @ jacobian.transpose(-1, -2)).abs())
 
+
 def signed_distance_capsule_capsule(
     s1: Tensor,
     e1: Tensor,
@@ -102,7 +104,7 @@ def signed_distance_capsule_capsule(
     delta = (l1 * ds).sum(dim=-1, keepdim=True)
     epsilon = (l2 * ds).sum(dim=-1, keepdim=True)
 
-    det = alpha * beta - gamma ** 2
+    det = alpha * beta - gamma**2
 
     t1 = torch.clamp((gamma * epsilon - beta * delta) / (det + 1e-10), 0.0, 1.0)
     t2 = torch.clamp((gamma * t1 + epsilon) / (beta + 1e-10), 0.0, 1.0)
@@ -120,7 +122,9 @@ def signed_distance_capsule_capsule(
     return point_distance - (r1 + r2) ** 2
 
 
-def signed_distance_capsule_ball(s1: Tensor, e1: Tensor, r1: float, s2: Tensor, r2: float) -> Tensor:
+def signed_distance_capsule_ball(
+    s1: Tensor, e1: Tensor, r1: float, s2: Tensor, r2: float
+) -> Tensor:
     """Compute signed squared distance between a capsule and a ball."""
     l1 = e1 - s1
     v = s2 - s1
@@ -134,10 +138,14 @@ def signed_distance_capsule_ball(s1: Tensor, e1: Tensor, r1: float, s2: Tensor, 
     return point_distance - (r1 + r2) ** 2
 
 
-PAIR_COMBINATIONS = [torch.triu_indices(2 * dof, 2 * dof, offset=2) for dof in range(1, 9)]
+PAIR_COMBINATIONS = [
+    torch.triu_indices(2 * dof, 2 * dof, offset=2) for dof in range(1, 9)
+]
 
 
-def collision_check(mdh: Tensor, poses: Tensor, radius: float = LINK_RADIUS, debug: bool = False) -> Tensor:
+def collision_check(
+    mdh: Tensor, poses: Tensor, radius: float = LINK_RADIUS, debug: bool = False
+) -> Tensor:
     """
     Compute whether the robot is in self-collision for each batch element.
 
@@ -167,7 +175,9 @@ def collision_check(mdh: Tensor, poses: Tensor, radius: float = LINK_RADIUS, deb
     e2 = e_all[..., j_idx, :].reshape(-1, num_pairs, 3)
 
     # Ignore distances with missing capsules.
-    collisions = (torch.norm(s1 - e1, dim=-1) > EPS) & (torch.norm(s2 - e2, dim=-1) > EPS)
+    collisions = (torch.norm(s1 - e1, dim=-1) > EPS) & (
+        torch.norm(s2 - e2, dim=-1) > EPS
+    )
     # Ignore adjacent capsules.
     collisions &= torch.norm(e1 - s2, dim=-1) > EPS
 
@@ -178,7 +188,10 @@ def collision_check(mdh: Tensor, poses: Tensor, radius: float = LINK_RADIUS, deb
     s_end = torch.cat([s_all, s_all], dim=-2)
     e_end = torch.cat([e_all, e_all], dim=-2)
     c_end = torch.cat(
-        [s_all[..., :1, :].expand(*expansion_shape), e_all[..., -1:, :].expand(*expansion_shape)],
+        [
+            s_all[..., :1, :].expand(*expansion_shape),
+            e_all[..., -1:, :].expand(*expansion_shape),
+        ],
         dim=-2,
     )
     distance_end = signed_distance_capsule_ball(s_end, e_end, radius, c_end, radius)
@@ -197,7 +210,12 @@ def collision_check(mdh: Tensor, poses: Tensor, radius: float = LINK_RADIUS, deb
 
     critical_distance = (distances * collisions).min(dim=-1).values.reshape(batch_shape)
     critical_distance_end = (distance_end * collisions_end).min(dim=-1).values
-    return torch.stack([critical_distance, critical_distance_end], dim=-1).min(dim=-1).values
+    return (
+        torch.stack([critical_distance, critical_distance_end], dim=-1)
+        .min(dim=-1)
+        .values
+    )
+
 
 def _sample_link_type(batch_size: int, dof: int, device: torch.device) -> Tensor:
     """
@@ -207,7 +225,9 @@ def _sample_link_type(batch_size: int, dof: int, device: torch.device) -> Tensor
         2 <=> a != 0, d == 0  (only a / link length)
         3 <=> a == 0, d == 0  (spherical wrist component)
     """
-    return torch.randint(0, 4 if dof > 1 else 3, size=(batch_size, dof + 1), device=device)
+    return torch.randint(
+        0, 4 if dof > 1 else 3, size=(batch_size, dof + 1), device=device
+    )
 
 
 def _reject_link_type(link_type: Tensor) -> Tensor:
@@ -217,16 +237,28 @@ def _reject_link_type(link_type: Tensor) -> Tensor:
 
 def _sample_link_twist(link_type: Tensor) -> Tensor:
     """Sample alpha uniformly from {0, pi/2, -pi/2}."""
-    link_twist_options = torch.tensor([0.0, torch.pi / 2, -torch.pi / 2], device=link_type.device)
-    link_twist_choice = torch.randint(0, 3, size=link_type.shape, device=link_type.device)
+    link_twist_options = torch.tensor(
+        [0.0, torch.pi / 2, -torch.pi / 2], device=link_type.device
+    )
+    link_twist_choice = torch.randint(
+        0, 3, size=link_type.shape, device=link_type.device
+    )
     return link_twist_options[link_twist_choice]
 
 
 def _reject_link_twist(link_twist: Tensor, link_type: Tensor) -> Tensor:
     """Reject twist/type combinations that cause structural degeneracy or unmanufacturable wrists."""
-    rejected = ((link_twist[:, :-2] == 0) & (link_twist[:, 1:-1] == 0) & (link_twist[:, 2:] == 0)).any(dim=1)
-    rejected |= ((link_twist[:, :-2] == 0) & (link_type[:, 1:-1] == 3) & (link_twist[:, 2:] == 0)).any(dim=1)
-    rejected |= ((link_type[:, :-1] == 1) & (link_type[:, 1:] == 1) & (link_twist[:, 1:] == 0)).any(dim=1)
+    rejected = (
+        (link_twist[:, :-2] == 0)
+        & (link_twist[:, 1:-1] == 0)
+        & (link_twist[:, 2:] == 0)
+    ).any(dim=1)
+    rejected |= (
+        (link_twist[:, :-2] == 0) & (link_type[:, 1:-1] == 3) & (link_twist[:, 2:] == 0)
+    ).any(dim=1)
+    rejected |= (
+        (link_type[:, :-1] == 1) & (link_type[:, 1:] == 1) & (link_twist[:, 1:] == 0)
+    ).any(dim=1)
     rejected |= ((link_type == 3) & (link_twist == 0)).any(dim=1)
     return rejected
 
@@ -246,7 +278,10 @@ def _sample_analytically_solvable_link_types_and_twist(
     if dof == 5:
         types = torch.randint(0, 3, size=(batch_size,), device=device)
 
-        link_type[types == 0, torch.randint(0, 2, ((types == 0).sum().item(),), device=device) * 3 + 1] = 1
+        link_type[
+            types == 0,
+            torch.randint(0, 2, ((types == 0).sum().item(),), device=device) * 3 + 1,
+        ] = 1
 
         axes_choice = torch.randint(0, 2, ((types == 1).sum().item(),), device=device)
         link_type[types == 1, axes_choice * 2 + 2] = 1
@@ -273,7 +308,9 @@ def _sample_analytically_solvable_link_types_and_twist(
         link_twist[types == 2, axes_choice + 1] = 0
 
     elif dof > 6:
-        raise NotImplementedError("Analytically solvable sampling is not implemented for DOF > 6.")
+        raise NotImplementedError(
+            "Analytically solvable sampling is not implemented for DOF > 6."
+        )
 
     return link_type, link_twist
 
@@ -285,11 +322,17 @@ def _sample_link_length(link_type: Tensor) -> Tensor:
     Returns:
         Tensor [batch_size, dofp1, 2], where last dim is [a, d].
     """
-    dist = torch.distributions.exponential.Exponential(torch.tensor([1.0], device=link_type.device))
-    link_lengths = dist.sample(torch.Size((*link_type.shape, 1)))[..., 0].repeat(1, 1, 2)
+    dist = torch.distributions.exponential.Exponential(
+        torch.tensor([1.0], device=link_type.device)
+    )
+    link_lengths = dist.sample(torch.Size((*link_type.shape, 1)))[..., 0].repeat(
+        1, 1, 2
+    )
 
     # Normalize total non-wrist length budget.
-    link_lengths /= (link_lengths * (link_type.unsqueeze(-1) != 3)).sum(dim=1, keepdim=True)
+    link_lengths /= (link_lengths * (link_type.unsqueeze(-1) != 3)).sum(
+        dim=1, keepdim=True
+    )
     link_lengths *= torch.sign(torch.rand_like(link_lengths) - 0.5)
 
     gamma = torch.rand((link_type == 0).sum(), device=link_type.device) * 2 * torch.pi
@@ -303,26 +346,43 @@ def _sample_link_length(link_type: Tensor) -> Tensor:
 
 def _reject_link_length(link_length: Tensor) -> Tensor:
     """Reject nonzero link lengths shorter than 2*LINK_RADIUS and too-large first/last links."""
-    rejected = ((link_length.abs() < 2 * LINK_RADIUS) & (link_length != 0)).any(dim=(1, 2))
+    rejected = ((link_length.abs() < 2 * LINK_RADIUS) & (link_length != 0)).any(
+        dim=(1, 2)
+    )
     if link_length.shape[1] > 2:
-        rejected |= torch.sqrt((link_length[:, 0, :] ** 2).sum(dim=-1)) > 1 / link_length.shape[1]
-        rejected |= torch.sqrt((link_length[:, -1, :] ** 2).sum(dim=-1)) > 1 / link_length.shape[1]
+        rejected |= (
+            torch.sqrt((link_length[:, 0, :] ** 2).sum(dim=-1))
+            > 1 / link_length.shape[1]
+        )
+        rejected |= (
+            torch.sqrt((link_length[:, -1, :] ** 2).sum(dim=-1))
+            > 1 / link_length.shape[1]
+        )
     return rejected
 
 
-def _sample_morph(batch_size: int, dof: int, analytically_solvable: bool, device: torch.device) -> Tensor:
+def _sample_morph(
+    batch_size: int, dof: int, analytically_solvable: bool, device: torch.device
+) -> Tensor:
     """
     Sample raw morphologies [batch_size, dof+1, 3] before final self-collision/manipulability rejection.
     """
     oversampling = 2 * batch_size
 
     if analytically_solvable:
-        link_types, link_twists = _sample_analytically_solvable_link_types_and_twist(oversampling, dof, device)
-        while (mask := _reject_link_type(link_types) | _reject_link_twist(link_twists, link_types)).any():
-            link_types[mask], link_twists[mask] = _sample_analytically_solvable_link_types_and_twist(
-                mask.sum().item(),
-                dof,
-                device,
+        link_types, link_twists = _sample_analytically_solvable_link_types_and_twist(
+            oversampling, dof, device
+        )
+        while (
+            mask := _reject_link_type(link_types)
+            | _reject_link_twist(link_twists, link_types)
+        ).any():
+            link_types[mask], link_twists[mask] = (
+                _sample_analytically_solvable_link_types_and_twist(
+                    mask.sum().item(),
+                    dof,
+                    device,
+                )
             )
     else:
         link_types = _sample_link_type(oversampling, dof, device)
@@ -353,7 +413,9 @@ def get_joint_limits(morph: Tensor) -> Tensor:
     Returns:
         Tensor [..., dofp1, 2], where last dim is [range, offset].
     """
-    joint_limits = torch.zeros(*morph.shape[:-1], 2, device=morph.device, dtype=morph.dtype)
+    joint_limits = torch.zeros(
+        *morph.shape[:-1], 2, device=morph.device, dtype=morph.dtype
+    )
 
     extended_morph = torch.cat([torch.zeros_like(morph[..., :1, :]), morph], dim=-2)
     alpha0, a0, d0 = extended_morph[..., :-2, :].split(1, dim=-1)
@@ -367,7 +429,9 @@ def get_joint_limits(morph: Tensor) -> Tensor:
     )
 
     wrist = (a1[..., 0] == 0) & (d1[..., 0] == 0)
-    coordinate_fix[wrist] = transformation_matrix(alpha0, a0, d0, torch.zeros_like(d0))[wrist]
+    coordinate_fix[wrist] = transformation_matrix(alpha0, a0, d0, torch.zeros_like(d0))[
+        wrist
+    ]
 
     plane_normal = torch.stack(
         [
@@ -392,14 +456,20 @@ def get_joint_limits(morph: Tensor) -> Tensor:
     plane_anchor = torch.sum(coordinate_fix * plane_anchor, dim=-1)[..., :3]
 
     stacked_morph = torch.stack(
-        [extended_morph[..., :-2, :], extended_morph[..., 1:-1, :], extended_morph[..., 2:, :]],
+        [
+            extended_morph[..., :-2, :],
+            extended_morph[..., 1:-1, :],
+            extended_morph[..., 2:, :],
+        ],
         dim=-2,
     )
     stacked_morph[~wrist, 0, :] = 0.0
 
     stacked_poses = forward_kinematics(
         stacked_morph,
-        torch.zeros(*stacked_morph.shape[:-1], 1, device=morph.device, dtype=morph.dtype),
+        torch.zeros(
+            *stacked_morph.shape[:-1], 1, device=morph.device, dtype=morph.dtype
+        ),
     )
     start, end = get_capsules(stacked_morph, stacked_poses)
     capsules = end - start
@@ -414,16 +484,22 @@ def get_joint_limits(morph: Tensor) -> Tensor:
     in_plane = ((pre_capsule - plane_anchor) * plane_normal).sum(dim=-1).abs() < 1e-6
     in_plane &= ((post_capsule - plane_anchor) * plane_normal).sum(dim=-1).abs() < 1e-6
 
-    limited = (pre_capsule.norm(dim=-1) > EPS) & (post_capsule.norm(dim=-1) > EPS) & in_plane
+    limited = (
+        (pre_capsule.norm(dim=-1) > EPS) & (post_capsule.norm(dim=-1) > EPS) & in_plane
+    )
 
     mask = post_capsule.norm(dim=-1) > pre_capsule.norm(dim=-1)
     arc = torch.arcsin(2 * LINK_RADIUS / post_capsule.norm(dim=-1))
     arc[mask] = torch.arcsin(2 * LINK_RADIUS / pre_capsule.norm(dim=-1))[mask]
 
-    joint_limits[..., :-1, 0] = torch.where(limited, 2 * torch.pi - 2 * arc, 2 * torch.pi)
+    joint_limits[..., :-1, 0] = torch.where(
+        limited, 2 * torch.pi - 2 * arc, 2 * torch.pi
+    )
 
     angle = torch.atan2(
-        torch.sum(torch.cross(pre_capsule, post_capsule, dim=-1) * plane_normal, dim=-1),
+        torch.sum(
+            torch.cross(pre_capsule, post_capsule, dim=-1) * plane_normal, dim=-1
+        ),
         torch.sum(pre_capsule * post_capsule, dim=-1),
     )
     # If their angle becomes pi, they collide and are antiparallel.
@@ -443,7 +519,9 @@ def _reject_morph(morph: Tensor) -> Tensor:
     Returns:
         Bool Tensor [batch_size], True means rejected.
     """
-    zero_joints = torch.zeros(*morph.shape[:-1], 1, device=morph.device, dtype=morph.dtype)
+    zero_joints = torch.zeros(
+        *morph.shape[:-1], 1, device=morph.device, dtype=morph.dtype
+    )
     zero_poses = forward_kinematics(morph, zero_joints)
     # Use cuRobo's effective radius (LINK_RADIUS + collision_sphere_buffer) so the
     # sampler's check matches cuRobo's stricter self-collision threshold.
@@ -455,7 +533,10 @@ def _reject_morph(morph: Tensor) -> Tensor:
     joint_limits = joint_limits.unsqueeze(1).expand(-1, REJECTION_TEST_CONFIGS, -1, -1)
     morph_expanded = morph.unsqueeze(1).expand(-1, REJECTION_TEST_CONFIGS, -1, -1)
 
-    joints = torch.rand(*joint_limits.shape[:-1], 1, device=morph.device, dtype=morph.dtype) * joint_limits[..., 0:1]
+    joints = (
+        torch.rand(*joint_limits.shape[:-1], 1, device=morph.device, dtype=morph.dtype)
+        * joint_limits[..., 0:1]
+    )
     joints = joints + joint_limits[..., 1:2]
 
     poses = forward_kinematics(morph_expanded, joints)
@@ -490,7 +571,9 @@ def sample_morph(
     if dof <= 0:
         raise ValueError("dof must be positive.")
     if dof + 1 > len(PAIR_COMBINATIONS):
-        raise ValueError(f"This standalone sampler supports up to dof={len(PAIR_COMBINATIONS) - 1}.")
+        raise ValueError(
+            f"This standalone sampler supports up to dof={len(PAIR_COMBINATIONS) - 1}."
+        )
 
     device = torch.device(device)
 
@@ -498,7 +581,9 @@ def sample_morph(
     morph = _sample_morph(num_samples, dof, analytically_solvable, device)
 
     while num_samples - (mask := _reject_morph(morph)).sum() < num_robots:
-        morph[mask] = _sample_morph(mask.sum().item(), dof, analytically_solvable, device)
+        morph[mask] = _sample_morph(
+            mask.sum().item(), dof, analytically_solvable, device
+        )
 
     return morph[~mask][:num_robots]
 
@@ -506,6 +591,7 @@ def sample_morph(
 # -----------------------------------------------------------------------------
 # API
 # -----------------------------------------------------------------------------
+
 
 @torch.inference_mode()
 def sample_dof6_initial_morphologies(
@@ -539,7 +625,7 @@ def sample_dof6_initial_morphologies(
     """
     if num_initial_samples <= 0:
         raise ValueError("num_initial_samples must be positive.")
-    
+
     if seed is not None:
         torch.manual_seed(seed)
         if device.type == "cuda":

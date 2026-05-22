@@ -1,7 +1,10 @@
 import torch
 from typing import Optional
 
-def get_capsules(mdh: torch.Tensor, poses: Optional[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+
+def get_capsules(
+    mdh: torch.Tensor, poses: Optional[torch.Tensor]
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Given a robot morphology, compute link-enclosing capsule start and endpoints.
 

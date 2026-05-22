@@ -48,7 +48,9 @@ def _load_model(device: torch.device) -> MLP:
 
     model = MLP(**metadata["hyperparameter"])
     model.load_state_dict(
-        torch.load(_WEIGHTS_DIR / "checkpoint.pth", map_location=device, weights_only=True)
+        torch.load(
+            _WEIGHTS_DIR / "checkpoint.pth", map_location=device, weights_only=True
+        )
     )
     model = model.to(device)
 
@@ -153,7 +155,9 @@ def optimize_morphology(
     device = morph.params.device
 
     if logging:
-        print(f"[Info] Starting alpha-STE optimization with {n_iter} iterations on device {device}.")
+        print(
+            f"[Info] Starting alpha-STE optimization with {n_iter} iterations on device {device}."
+        )
         print(
             "[Info] "
             f"lr_angle={lr_angle}, "
@@ -247,18 +251,26 @@ def optimize_morphology(
             optimizer.step()
 
             if logging:
-                progress_bar.set_postfix(loss=f"{loss.item():.4f}", prob=f"{prob.item():.3f}")
+                progress_bar.set_postfix(
+                    loss=f"{loss.item():.4f}", prob=f"{prob.item():.3f}"
+                )
 
         # Final state after n_iter optimizer steps.
         with torch.no_grad():
             final_alpha_raw = alpha_raw.detach().clone()
             final_alpha_mapped = _map_alpha_nearest(final_alpha_raw)
-            final_processed_lengths, _ = _preprocess(lengths.detach(), morph.link_radius)
+            final_processed_lengths, _ = _preprocess(
+                lengths.detach(), morph.link_radius
+            )
 
             final_raw_morphology = torch.cat([final_alpha_raw, lengths.detach()], dim=1)
-            final_processed_morphology = torch.cat([final_alpha_mapped, final_processed_lengths], dim=1)
+            final_processed_morphology = torch.cat(
+                [final_alpha_mapped, final_processed_lengths], dim=1
+            )
 
-            final_loss, final_prob = _compute_loss_and_prob(model, final_processed_morphology, task_vec)
+            final_loss, final_prob = _compute_loss_and_prob(
+                model, final_processed_morphology, task_vec
+            )
 
         # ALWAYS do a validation for the final data!
         final_validation_data = run_optimization_validation(
@@ -282,7 +294,9 @@ def optimize_morphology(
             validation_data=final_validation_data,
         )
 
-        final_se3_err = final_validation_data["best_se3_dist_mean"].detach().cpu().item()
+        final_se3_err = (
+            final_validation_data["best_se3_dist_mean"].detach().cpu().item()
+        )
         print(
             f"[Iter {n_iter:>4}/{n_iter}] "
             f"loss={final_loss.item():.6f}, "

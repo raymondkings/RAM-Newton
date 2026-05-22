@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+
 @dataclass
 class ValidationResult:
     self_collision_free: bool
