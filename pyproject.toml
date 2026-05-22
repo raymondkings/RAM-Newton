@@ -34,3 +34,7 @@ dev = [
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+
+# Suppress false positives from jaxtyping
+[tool.ruff.lint]
+ignore = ["F722", "F821", "E402"]
