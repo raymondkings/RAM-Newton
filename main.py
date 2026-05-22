@@ -16,6 +16,52 @@ from validation.render import animate_plan, render_scene
 DEFAULT_CONFIG = Path(__file__).parent / "config.json"
 
 
+def find_self_collision_free_start_q(
+    morph: Morphology,
+    task: Task,
+    device: torch.device,
+    ignore_ground: bool = False,
+    ignore_obstacles: bool = False,
+) -> torch.Tensor:
+    import os
+    from util.kinematics import build_robot_dict, build_scene, IK
+
+    robot_dict, urdf_path = build_robot_dict(morph)
+    base_pose_inv = torch.linalg.inv(task.environment.base_pose.to(device))
+    scene = build_scene(
+        task,
+        base_pose_inv,
+        ignore_ground=ignore_ground,
+        ignore_obstacles=ignore_obstacles,
+    )
+
+    ik_solver = IK(
+        robot_dict=robot_dict,
+        scene=scene,
+        num_seeds=32,
+        max_batch_size=1,
+        self_collision_check=True,
+    )
+
+    # Home pose: directly above base (base is at z=0.2, so 0.55 gives 35 cm clearance)
+    home_pose = torch.eye(4, device=device)
+    home_pose[2, 3] = 0.55
+
+    joints, success = ik_solver.solve(home_pose.unsqueeze(0), base_pose_inv, device)
+
+    try:
+        os.unlink(urdf_path)
+    except OSError:
+        pass
+
+    if success[0]:
+        print("[Info] Self Collision-free start configuration found via IK.")
+        return joints[0].to(morph.params.dtype)
+
+    print("[Warning] Home-pose IK failed — falling back to zero start configuration.")
+    return torch.zeros(morph.n_links - 1, dtype=morph.params.dtype, device=device)
+
+
 def set_global_seed(seed: int) -> None:
     """Set random seeds used by this pipeline.
     Later modules can also reuse this seed if they support deterministic behavior.
@@ -188,6 +234,16 @@ def main() -> None:
     # from util.csv_log_reader import load_middle_start_q_from_last_validation
     # task.start_q = load_middle_start_q_from_last_validation(csv_path=csv_path, device=optimized_morph.params.device)
     # print(task.start_q)
+
+    task.start_q = find_self_collision_free_start_q(
+        optimized_morph,
+        task,
+        device,
+        ignore_ground=args.ignore_ground,
+        ignore_obstacles=args.ignore_obstacles,
+    )
+
+    print(f"[Info] : Start Configuration : {task.start_q.tolist()}")
 
     run_plan(
         optimized_morph,
