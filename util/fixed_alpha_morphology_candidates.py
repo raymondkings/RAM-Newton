@@ -23,11 +23,14 @@ from task.morphology_sampler import (
     _sample_link_length,
     _reject_link_length,
     _reject_morph,
+    sample_morph,
 )
 
 
 DEFAULT_FIXED_ALPHA_BATCH_SIZE = 512
 DEFAULT_FIXED_ALPHA_RANDOM_TRIES = 5000
+# direct sampling requires high GPU memory... (1000 is the max for 4090 with 32GB)
+DEFAULT_DIRECT_PRESAMPLING_BATCH_SIZE = 1000
 DEFAULT_DYNAMIC_REJECTION_BATCH_SIZE = 128
 
 # Alpha candidate generation constants.  ALPHA_VALUES index 1 is the actual
@@ -204,6 +207,114 @@ def generate_alpha_candidates(
     return alpha_candidates, max_valid, use_all
 
 
+def _alpha_values_to_indices(alpha_values: Tensor) -> Tensor:
+    """Map alpha values in {-pi/2, 0, pi/2} to ALPHA_VALUES indices.
+
+    We use nearest-level mapping instead of exact equality so small dtype or
+    device differences do not break matching.  Returned indices use:
+        0 -> -pi/2
+        1 -> 0
+        2 -> +pi/2
+    """
+    if alpha_values.ndim != 2:
+        raise ValueError(
+            f"Expected alpha_values shape [N, seq_len], got {tuple(alpha_values.shape)}."
+        )
+
+    levels = alpha_values.new_tensor(ALPHA_VALUES)
+    distances = (alpha_values.unsqueeze(-1) - levels.view(1, 1, 3)).abs()
+    return distances.argmin(dim=-1)
+
+
+def _direct_presample_matching_alpha_candidates(
+    alpha_candidates: Tensor,
+    *,
+    num_presamples: int,
+    seed_already_set: bool = True,
+    logging: bool = True,
+) -> tuple[Tensor, Tensor]:
+    """Warm-start fixed-alpha sampling using the original morphology sampler.
+
+    This is only a one-shot shortcut:
+      1. draw num_presamples valid morphologies from the original sampler;
+      2. if a sampled morphology's alpha sequence matches an alpha candidate,
+         keep the first such morphology;
+      3. repeated alpha sequences are ignored;
+      4. unmatched alpha candidates are returned for later fixed-alpha sampling.
+
+    Args:
+        alpha_candidates: Tensor [N, seq_len, 1].
+        num_presamples: Number of original-sampler morphologies to draw once.
+        seed_already_set: Documentation flag only; the caller sets torch RNGs.
+        logging: Whether to print a summary.
+
+    Returns:
+        presampled_result:
+            Tensor [M, seq_len, 3] containing matched morphologies, ordered by
+            the original alpha_candidates order.
+        remaining_mask:
+            Bool Tensor [N], True for alpha candidates still needing fixed-alpha
+            rejection sampling.
+    """
+    del seed_already_set  # RNG state is intentionally controlled by the caller.
+
+    if num_presamples <= 0:
+        remaining_mask = torch.ones(
+            alpha_candidates.shape[0], dtype=torch.bool, device=alpha_candidates.device
+        )
+        empty = torch.empty(
+            0,
+            alpha_candidates.shape[1],
+            3,
+            device=alpha_candidates.device,
+            dtype=alpha_candidates.dtype,
+        )
+        return empty, remaining_mask
+
+    device = alpha_candidates.device
+    dtype = alpha_candidates.dtype
+    num_candidates, seq_len, _ = alpha_candidates.shape
+    dof = seq_len - 1
+
+    candidate_indices = _alpha_values_to_indices(alpha_candidates.squeeze(-1))
+
+    # Alpha candidates should already be unique, but keeping the first index makes
+    # this robust to accidental duplicates.
+    candidate_lookup: dict[tuple[int, ...], int] = {}
+    for i, row in enumerate(candidate_indices.detach().cpu().tolist()):
+        candidate_lookup.setdefault(tuple(int(x) for x in row), i)
+
+    direct_morphs = sample_morph(
+        num_robots=num_presamples,
+        dof=dof,
+        analytically_solvable=False,
+        device=device,
+    ).to(device=device, dtype=dtype)
+
+    direct_alpha_indices = _alpha_values_to_indices(direct_morphs[..., 0])
+
+    result = torch.empty(num_candidates, seq_len, 3, device=device, dtype=dtype)
+    matched = torch.zeros(num_candidates, dtype=torch.bool, device=device)
+
+    for sample_idx, row in enumerate(direct_alpha_indices.detach().cpu().tolist()):
+        candidate_idx = candidate_lookup.get(tuple(int(x) for x in row))
+        if candidate_idx is None:
+            continue
+        if bool(matched[candidate_idx]):
+            continue
+        result[candidate_idx] = direct_morphs[sample_idx]
+        matched[candidate_idx] = True
+
+    if logging:
+        print(
+            "[Info] Direct sampler presampling: "
+            f"matched {int(matched.sum().item())}/{num_candidates} alpha candidates "
+            f"from {num_presamples} original sampler draws."
+        )
+
+    return result[matched], ~matched
+
+
 # ------------------------ fixed-alpha morphology sampler ----------------------
 
 
@@ -367,6 +478,7 @@ def sample_fixed_alpha_morphology_candidates(
     link_radius: float = LINK_RADIUS,
     batch_size: int = DEFAULT_FIXED_ALPHA_BATCH_SIZE,
     max_attempts_per_alpha: int = DEFAULT_FIXED_ALPHA_RANDOM_TRIES,
+    direct_presampling_batch_size: int = DEFAULT_DIRECT_PRESAMPLING_BATCH_SIZE,
     dynamic_rejection_batch_size: int = DEFAULT_DYNAMIC_REJECTION_BATCH_SIZE,
     logging: bool = True,
 ) -> Tensor:
@@ -390,6 +502,11 @@ def sample_fixed_alpha_morphology_candidates(
         max_attempts_per_alpha:
             Hard-coded default is 100.  An alpha is dropped if none of these
             attempts produces a valid morphology.
+        direct_presampling_batch_size:
+            One-shot warm-start count.  First draw this many valid morphologies
+            from the original sampler and use them to immediately satisfy
+            matching alpha candidates.  Remaining candidates then use the
+            fixed-alpha sampler.  Set to 0 to disable.
         dynamic_rejection_batch_size:
             Batch size used for the expensive dynamic _reject_morph call.
         logging:
@@ -408,41 +525,55 @@ def sample_fixed_alpha_morphology_candidates(
         raise ValueError("batch_size must be positive.")
     if max_attempts_per_alpha <= 0:
         raise ValueError("max_attempts_per_alpha must be positive.")
+    if direct_presampling_batch_size < 0:
+        raise ValueError("direct_presampling_batch_size must be non-negative.")
     if dynamic_rejection_batch_size <= 0:
         raise ValueError("dynamic_rejection_batch_size must be positive.")
 
     device = alpha_candidates.device
     _set_sampler_seed(seed, device)
 
-    chunks: list[Tensor] = []
-    total_failed = 0
-    iterator = tqdm(
-        range(0, alpha_candidates.shape[0], batch_size),
-        desc="sampling fixed-alpha initial morphologies",
-        disable=not logging,
-        dynamic_ncols=True,
+    presampled, remaining_mask = _direct_presample_matching_alpha_candidates(
+        alpha_candidates.detach(),
+        num_presamples=direct_presampling_batch_size,
+        logging=logging,
     )
-    for start in iterator:
-        end = min(start + batch_size, alpha_candidates.shape[0])
-        sampled, failed_count = _sample_one_chunk_with_fixed_alpha(
-            alpha_candidates[start:end].detach(),
-            link_radius=link_radius,
-            max_attempts_per_alpha=max_attempts_per_alpha,
-            dynamic_rejection_batch_size=dynamic_rejection_batch_size,
-        )
-        if sampled.numel() > 0:
-            chunks.append(sampled)
-        total_failed += failed_count
 
-        if logging:
-            done = min(end, alpha_candidates.shape[0])
-            kept = sum(chunk.shape[0] for chunk in chunks)
-            iterator.set_postfix(
-                sampled=kept,
-                failed=total_failed,
-                total=done,
-                tries=max_attempts_per_alpha,
+    remaining_alpha = alpha_candidates[remaining_mask].detach()
+    chunks: list[Tensor] = []
+    if presampled.numel() > 0:
+        chunks.append(presampled)
+
+    total_failed = 0
+    if remaining_alpha.shape[0] > 0:
+        iterator = tqdm(
+            range(0, remaining_alpha.shape[0], batch_size),
+            desc="sampling remaining fixed-alpha morphologies",
+            disable=not logging,
+            dynamic_ncols=True,
+        )
+        for start in iterator:
+            end = min(start + batch_size, remaining_alpha.shape[0])
+            sampled, failed_count = _sample_one_chunk_with_fixed_alpha(
+                remaining_alpha[start:end],
+                link_radius=link_radius,
+                max_attempts_per_alpha=max_attempts_per_alpha,
+                dynamic_rejection_batch_size=dynamic_rejection_batch_size,
             )
+            if sampled.numel() > 0:
+                chunks.append(sampled)
+            total_failed += failed_count
+
+            if logging:
+                done_remaining = min(end, remaining_alpha.shape[0])
+                kept_fixed = sum(chunk.shape[0] for chunk in chunks) - presampled.shape[0]
+                iterator.set_postfix(
+                    presampled=presampled.shape[0],
+                    fixed_sampled=kept_fixed,
+                    failed=total_failed,
+                    remaining_done=done_remaining,
+                    tries=max_attempts_per_alpha,
+                )
 
     if not chunks:
         raise RuntimeError(
@@ -454,8 +585,11 @@ def sample_fixed_alpha_morphology_candidates(
         print(
             "[Info] Fixed-alpha initial sampling: "
             f"sampled {result.shape[0]}/{alpha_candidates.shape[0]} candidates "
-            f"with at most {max_attempts_per_alpha} tries per alpha "
-            f"(failed={total_failed})."
+            f"(direct_presampled={presampled.shape[0]}, "
+            f"fixed_alpha_sampled={result.shape[0] - presampled.shape[0]}, "
+            f"failed={total_failed}, "
+            f"direct_presampling_batch_size={direct_presampling_batch_size}, "
+            f"max_fixed_attempts_per_alpha={max_attempts_per_alpha})."
         )
         if total_failed > 0:
             print(
