@@ -11,9 +11,10 @@
 #      - num_alpha_candidates can be "ALL" or an integer.
 #      - candidates with 3 or more consecutive zero-alpha entries are excluded
 #        already during alpha generation.
-#   2. Pre-check candidates with the sampler/distribution checker and remove
-#      invalid candidates before gradient optimization.
-#   3. Optimize all remaining candidates in one batched optimization run.
+#   2. For each fixed alpha candidate, sample a valid initial morphology using
+#      the original sampler's link_type / length / rejection logic. This avoids
+#      blindly reusing one initial morphology's [a, d] for all alpha candidates.
+#   3. Optimize all sampled candidates in one batched optimization run.
 #      - no multi-stage filtering
 #      - no validation during optimization
 #      - per-candidate early stopping based on stable NRM probability
@@ -44,6 +45,11 @@ from tqdm import tqdm
 from optim.model import MLP
 from interface import Morphology, Task
 from util.distribution_checker import check_morphology_distribution
+from util.fixed_alpha_morphology_candidates import (
+    DEFAULT_ZERO_ALPHA_RUN_EXCLUSION_LENGTH,
+    generate_alpha_candidates,
+    sample_fixed_alpha_morphology_candidates,
+)
 from util.optimization_csv_logger import OptimizationCSVLogger
 from validation.optimization_validation import (
     build_optimization_validation_context,
@@ -58,12 +64,17 @@ _WEIGHTS_DIR = _PROJECT_ROOT / "weights"
 # ----------------------------- hard-coded knobs -----------------------------
 
 DEFAULT_NUM_ALPHA_CANDIDATES: int | str = "ALL"
-DEFAULT_CANDIDATE_BATCH_SIZE = 32
-DEFAULT_DISTRIBUTION_BATCH_SIZE = 64
+# number of candidate to be updated at once
+DEFAULT_CANDIDATE_BATCH_SIZE = 64
+# number of candidates to be checked for distribution at once
+DEFAULT_DISTRIBUTION_BATCH_SIZE = 128
 
 # Exclude alpha candidates with this many consecutive zero-alpha entries.
-# For DOF=6 / seq_len=7, this changes the alpha maximum from 3^7=2187 to 1892.
-ZERO_ALPHA_RUN_EXCLUSION_LENGTH = 3
+# The actual alpha-generation/filtering logic lives in
+# util.fixed_alpha_morphology_candidates.generate_alpha_candidates.
+# For DOF=6 / seq_len=7, run_length=3 changes the alpha maximum
+# from 3^7=2187 to 1892.
+ZERO_ALPHA_RUN_EXCLUSION_LENGTH = DEFAULT_ZERO_ALPHA_RUN_EXCLUSION_LENGTH
 
 # Per-candidate early stopping:
 # stop a candidate when its NRM probability changes by less than this threshold
@@ -78,10 +89,6 @@ TOP_PROBABILITY_FRACTION = 0.10
 # Tie tolerance for validation SE3 errors.
 SE3_TIE_EPS = 1e-12
 
-ALPHA_VALUES = (-math.pi / 2.0, 0.0, math.pi / 2.0)
-
-# this is used for checking degeneracy before using the checker
-ZERO_ALPHA_INDEX = 1
 
 
 # ------------------------------- model helpers ------------------------------
@@ -166,105 +173,6 @@ def _build_morphology_tensors(
     raw_morphologies = torch.cat([alpha_candidates, length_candidates], dim=-1)
     processed_morphologies = torch.cat([alpha_candidates, processed_lengths], dim=-1)
     return raw_morphologies, processed_morphologies
-
-
-# ------------------------------ alpha candidates -----------------------------
-# BIG UPDATE is to check the number of consecutive alpha = 0 
-
-
-def _flat_ids_to_base3_digits(flat_ids: Tensor, seq_len: int) -> Tensor:
-    """Convert flat ids in [0, 3^seq_len) to base-3 digits [N, seq_len]."""
-    digits = []
-    x = flat_ids.clone()
-    for _ in range(seq_len):
-        digits.append(x % 3)
-        x = x // 3
-    return torch.stack(digits, dim=1)
-
-
-def _has_forbidden_zero_run(
-    alpha_indices: Tensor,
-    forbidden_run_length: int = ZERO_ALPHA_RUN_EXCLUSION_LENGTH,
-) -> Tensor:
-    """Return True for rows with forbidden_run_length consecutive zero-alpha entries."""
-    if forbidden_run_length <= 1:
-        return (alpha_indices == ZERO_ALPHA_INDEX).any(dim=1)
-
-    run = torch.zeros(alpha_indices.shape[0], dtype=torch.long, device=alpha_indices.device)
-    bad = torch.zeros(alpha_indices.shape[0], dtype=torch.bool, device=alpha_indices.device)
-
-    for j in range(alpha_indices.shape[1]):
-        is_zero = alpha_indices[:, j] == ZERO_ALPHA_INDEX
-        run = torch.where(is_zero, run + 1, torch.zeros_like(run))
-        bad |= run >= forbidden_run_length
-
-    return bad
-
-
-def _valid_alpha_flat_ids(seq_len: int, device: torch.device) -> Tensor:
-    """All alpha ids excluding candidates with forbidden long zero-alpha runs."""
-    total = 3**seq_len
-    flat_ids = torch.arange(total, device=device)
-    alpha_indices = _flat_ids_to_base3_digits(flat_ids, seq_len)
-    valid = ~_has_forbidden_zero_run(alpha_indices)
-    return flat_ids[valid]
-
-
-def _resolve_num_alpha_candidates(
-    requested: int | str | None,
-    max_valid_alpha_candidates: int,
-) -> tuple[int, bool]:
-    """Resolve 'ALL' or numeric candidate count.
-
-    Returns:
-        (num_candidates, use_all)
-    """
-    if requested is None:
-        requested = DEFAULT_NUM_ALPHA_CANDIDATES
-
-    if isinstance(requested, str):
-        if requested.upper() != "ALL":
-            raise ValueError(
-                "num_alpha_candidates must be 'ALL' or a positive integer, "
-                f"got {requested!r}."
-            )
-        return max_valid_alpha_candidates, True
-
-    requested_int = int(requested)
-    if requested_int <= 0:
-        raise ValueError("num_alpha_candidates must be positive or 'ALL'.")
-
-    if requested_int >= max_valid_alpha_candidates:
-        return max_valid_alpha_candidates, True
-
-    return requested_int, False
-
-
-def _generate_alpha_candidates(
-    requested_num_candidates: int | str | None,
-    seq_len: int,
-    device: torch.device,
-    generator: torch.Generator,
-) -> tuple[Tensor, int, bool]:
-    """Generate alpha candidates after excluding long zero-alpha runs."""
-    valid_flat_ids = _valid_alpha_flat_ids(seq_len, device=device)
-    max_valid = int(valid_flat_ids.numel())
-    num_candidates, use_all = _resolve_num_alpha_candidates(
-        requested_num_candidates,
-        max_valid_alpha_candidates=max_valid,
-    )
-
-    if use_all:
-        chosen_ids = valid_flat_ids
-    else:
-        perm = torch.randperm(max_valid, generator=generator, device=device)
-        chosen_ids = valid_flat_ids[perm[:num_candidates]]
-
-    alpha_indices = _flat_ids_to_base3_digits(chosen_ids, seq_len)
-    alpha_values = torch.tensor(ALPHA_VALUES, device=device, dtype=torch.float32)
-    alpha_candidates = alpha_values[alpha_indices].unsqueeze(-1)
-
-    return alpha_candidates, max_valid, use_all
 
 
 # -------------------------- NRM score / optimization -------------------------
@@ -432,7 +340,11 @@ def _optimize_all_candidates_single_round(
             stable_counts[stable_now] += 1
             stable_counts[active_mask & ~stable_now] = 0
 
+            # Do not mark candidates as "early stopped" on the final
+            # optimizer step; at that point they simply reached max iteration.
+            can_stop_early = (update_idx + 1) < num_iterations
             newly_stopped = active_mask & (stable_counts >= EARLY_STOPPING_PATIENCE)
+            newly_stopped &= can_stop_early
             if newly_stopped.any():
                 frozen_lengths[newly_stopped] = length_candidates.detach()[newly_stopped]
                 active_mask[newly_stopped] = False
@@ -444,10 +356,15 @@ def _optimize_all_candidates_single_round(
 
         if logging:
             mean_prob = torch.nanmean(current_probs).item()
+            num_stopped = int((~active_mask).sum().item())
+            num_active_after = int(active_mask.sum().item())
+            num_batches = int(math.ceil(max(num_active, 1) / candidate_batch_size))
             iterator.set_postfix(
-                active=num_active,
+                active=num_active_after,
+                stopped=num_stopped,
+                total=num_candidates,
+                batches=num_batches,
                 mean_prob=f"{mean_prob:.4f}",
-                stopped=int((~active_mask).sum().item()),
             )
 
     final_lengths = length_candidates.detach()
@@ -668,11 +585,12 @@ def optimize_morphology(
         # ------------------------------------------------------------------
         # 1. Generate alpha candidates.
         # ------------------------------------------------------------------
-        alpha_candidates, max_alpha_candidates, using_all = _generate_alpha_candidates(
+        alpha_candidates, max_alpha_candidates, using_all = generate_alpha_candidates(
             requested_num_candidates=num_alpha_candidates,
             seq_len=seq_len,
             device=device,
             generator=alpha_generator,
+            forbidden_zero_run_length=ZERO_ALPHA_RUN_EXCLUSION_LENGTH,
         )
 
         if logging:
@@ -682,50 +600,31 @@ def optimize_morphology(
                 f"(using_all={using_all})."
             )
             print(
-                "[Info] For seq_len=7, excluding 3+ consecutive zeros gives "
-                "max_valid=1892 instead of 3^7=2187."
+                f"[Info] For seq_len={seq_len}, excluding "
+                f"{ZERO_ALPHA_RUN_EXCLUSION_LENGTH}+ consecutive zeros gives "
+                f"max_valid={max_alpha_candidates} instead of 3^{seq_len}={3 ** seq_len}."
             )
 
         # ------------------------------------------------------------------
-        # 2. Create candidates by combining alpha with the initial lengths.
-        #    Pre-check with the distribution checker before backprop.
+        # 2. For every fixed alpha, sample a valid initial morphology from the
+        #    original sampler distribution.  This replaces the old approach of
+        #    reusing one initial morphology's [a, d] lengths for every alpha.
         # ------------------------------------------------------------------
-        initial_lengths = morph.params[:, 1:].clone().to(device)
-        length_candidates = (
-            initial_lengths.unsqueeze(0)
-            .expand(alpha_candidates.shape[0], -1, -1)
-            .clone()
-        )
-
-        _, precheck_processed = _build_morphology_tensors(
-            alpha_candidates,
-            length_candidates,
-            morph.link_radius,
-        )
-
-        pre_valid_mask, _ = _distribution_valid_mask(
-            precheck_processed,
+        initial_candidate_morphologies = sample_fixed_alpha_morphology_candidates(
+            alpha_candidates=alpha_candidates,
+            seed=random_seed,
+            link_radius=morph.link_radius,
             batch_size=distribution_batch_size,
             logging=logging,
-            desc="pre-checking candidate distribution",
         )
-
-        if not pre_valid_mask.any():
-            raise RuntimeError(
-                "All alpha candidates were rejected by the pre-optimization "
-                "distribution checker."
-            )
+        alpha_candidates = initial_candidate_morphologies[..., 0:1].detach()
+        length_candidates = initial_candidate_morphologies[..., 1:].detach()
 
         if logging:
             print(
-                "[Info] Pre-optimization distribution filter: "
-                f"kept {int(pre_valid_mask.sum().item())}/{pre_valid_mask.numel()} candidates."
+                "[Info] Fixed-alpha sampler: generated valid initial morphologies "
+                f"for {alpha_candidates.shape[0]} alpha candidates."
             )
-
-        alpha_candidates = alpha_candidates[pre_valid_mask].detach()
-        length_candidates = length_candidates[pre_valid_mask].detach()
-
-        if logging:
             print(f"[Info] Writing CSV log to: {csv_logger.csv_path}")
 
         # ------------------------------------------------------------------

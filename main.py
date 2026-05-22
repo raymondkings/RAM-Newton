@@ -165,6 +165,8 @@ def main() -> None:
         f"[Info] Initial morphology params:\n{morph.params} \nlink_radius={morph.link_radius}"
     )
 
+    # NOTE: for the candidate selection algorithm, the initial morphology is only used to get the link radius and the device
+    # TODO: update the structure to decude redundancy
     optimized_morph, csv_path = optimize_morphology(
         morph=morph,
         task=task,

@@ -25,6 +25,14 @@ import numpy as np
 from util.csv_log_reader import read_optimization_csv
 
 
+def _csv_time_suffix(csv_path: str | Path) -> str:
+    """Return the run suffix from output/log_<suffix>.csv."""
+    stem = Path(csv_path).stem
+    if stem.startswith("log_"):
+        return stem[len("log_"):]
+    return stem
+
+
 def _load_validated_candidate_rows(csv_path: str | Path) -> list[dict]:
     rows = read_optimization_csv(csv_path)
 
@@ -58,7 +66,7 @@ def _marker_sizes(markers: np.ndarray, base_size: float) -> np.ndarray:
 def create_candidate_morphology_3d_mp4(
     csv_path: str | Path,
     output_dir: str | Path = "output/candidate_plots",
-    filename: str = "candidate_morphology_3d.mp4",
+    filename: str | None = None,
     fps: int = 24,
     num_frames: int = 180,
     dpi: int = 160,
@@ -81,6 +89,8 @@ def create_candidate_morphology_3d_mp4(
     rows = _load_validated_candidate_rows(csv_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    if filename is None:
+        filename = f"candidate_morphology_3d_{_csv_time_suffix(csv_path)}.mp4"
     output_path = output_dir / filename
 
     morphs = np.array([row["processed_morphology_json"] for row in rows], dtype=float)
@@ -148,7 +158,7 @@ def create_candidate_morphology_3d_mp4(
 def create_probability_vs_se3_scatter(
     csv_path: str | Path,
     output_dir: str | Path = "output/candidate_plots",
-    filename: str = "probability_vs_se3.png",
+    filename: str | None = None,
     dpi: int = 200,
 ) -> Path:
     """Create a 2D scatter: NRM probability vs validation SE3 error.
@@ -161,6 +171,8 @@ def create_probability_vs_se3_scatter(
     rows = _load_validated_candidate_rows(csv_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    if filename is None:
+        filename = f"probability_vs_se3_{_csv_time_suffix(csv_path)}.png"
     output_path = output_dir / filename
 
     probs = np.array([row["reachability_probability"] for row in rows], dtype=float)
