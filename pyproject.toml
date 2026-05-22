@@ -24,3 +24,13 @@ packages = ["interface", "validation", "optim", "task", "util"]
 
 [tool.uv.sources]
 nvidia-curobo = { git = "https://github.com/NVlabs/curobo" }
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.6.0",
+    "ruff>=0.15.14",
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
