@@ -58,8 +58,8 @@ def _load_validated_candidate_rows(csv_path: str | Path) -> list[dict]:
 
 def _marker_sizes(markers: np.ndarray, base_size: float) -> np.ndarray:
     sizes = np.full(markers.shape, base_size, dtype=float)
-    sizes[markers == 1] = base_size * 1.5
-    sizes[markers == 2] = base_size * 2.0
+    sizes[markers == 1] = base_size * 6.0
+    sizes[markers == 2] = base_size * 10.0
     return sizes
 
 
@@ -83,8 +83,8 @@ def create_candidate_morphology_3d_mp4(
 
     Point size:
         iteration marker 0 -> base size
-        iteration marker 1 -> 1.5x size
-        iteration marker 2 -> 2.0x size
+        iteration marker 1 -> 6.0x size
+        iteration marker 2 -> 10.0x size
     """
     rows = _load_validated_candidate_rows(csv_path)
     output_dir = Path(output_dir)
@@ -103,7 +103,7 @@ def create_candidate_morphology_3d_mp4(
         )
 
     num_candidates, seq_len, _ = morphs.shape
-    sizes = _marker_sizes(markers, base_size=18.0)
+    sizes = _marker_sizes(markers, base_size=26.0)
 
     fig = plt.figure(figsize=(8.5, 7.0))
     ax = fig.add_subplot(111, projection="3d")
@@ -194,7 +194,7 @@ def create_probability_vs_se3_scatter(
         ax.scatter(
             probs[mask],
             se3[mask],
-            s=_marker_sizes(markers[mask], base_size=35.0),
+            s=_marker_sizes(markers[mask], base_size=55.0),
             color=color,
             alpha=0.82,
             label=label,
