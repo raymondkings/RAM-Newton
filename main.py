@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 
 from task.morphology_sampler import sample_dof6_initial_morphologies
-from optim.nrm import optimize_morphology
+from optim.nrm_alpha_random_selection import optimize_morphology
 from interface import Morphology, Task
 from task.environment import l_environment
 from task.target import create_task
@@ -94,24 +94,45 @@ def run_plan(
         animate_plan(morph, task, dense, curobo_planner=planner)
 
 
+# def run_postprocess(csv_path: Path, task: Task, args: argparse.Namespace) -> None:
+#     """Run optional CSV-based plotting and timelapse generation."""
+#     plot_cfg = getattr(args, "plot", {})
+#     if isinstance(plot_cfg, dict) and plot_cfg.get("enabled", True):
+#         from postprocess.plot import create_plots_from_csv
+
+#         output_dir = plot_cfg.get("output_dir", "output/figures")
+#         paths = create_plots_from_csv(csv_path, output_dir=output_dir)
+#         for path in paths:
+#             print(f"[postprocess] Plot saved: {path}")
+
+#     tl_cfg = getattr(args, "timelapse", None)
+#     if isinstance(tl_cfg, dict) and tl_cfg.get("enabled", False):
+#         from postprocess.timelapse import create_timelapse_from_csv
+
+#         video_path = create_timelapse_from_csv(csv_path, task, tl_cfg)
+#         print(f"[postprocess] Timelapse saved: {video_path}")
+
 def run_postprocess(csv_path: Path, task: Task, args: argparse.Namespace) -> None:
-    """Run optional CSV-based plotting and timelapse generation."""
+    """Run candidate-selection CSV plotting. This is for the candidate selection algorithm
+
+    This reuses the existing config['plot'] section.
+    The old timelapse postprocess is intentionally skipped because the new CSV
+    stores final candidate rows, not an optimization trajectory.
+    """
     plot_cfg = getattr(args, "plot", {})
+
     if isinstance(plot_cfg, dict) and plot_cfg.get("enabled", True):
-        from postprocess.plot import create_plots_from_csv
+        from postprocess.plot_candidate_selection import create_candidate_selection_plots
 
         output_dir = plot_cfg.get("output_dir", "output/figures")
-        paths = create_plots_from_csv(csv_path, output_dir=output_dir)
+
+        paths = create_candidate_selection_plots(
+            csv_path=csv_path,
+            output_dir=output_dir,
+        )
+
         for path in paths:
-            print(f"[postprocess] Plot saved: {path}")
-
-    tl_cfg = getattr(args, "timelapse", None)
-    if isinstance(tl_cfg, dict) and tl_cfg.get("enabled", False):
-        from postprocess.timelapse import create_timelapse_from_csv
-
-        video_path = create_timelapse_from_csv(csv_path, task, tl_cfg)
-        print(f"[postprocess] Timelapse saved: {video_path}")
-
+            print(f"[postprocess] Candidate plot saved: {path}")
 
 def main() -> None:
     args = parse_args()
