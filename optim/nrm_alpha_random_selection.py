@@ -617,13 +617,23 @@ def optimize_morphology(
             batch_size=distribution_batch_size,
             logging=logging,
         )
+        original_alpha_count = alpha_candidates.shape[0]
+        accepted_alpha_count = initial_candidate_morphologies.shape[0]
+        dropped_alpha_count = original_alpha_count - accepted_alpha_count
+
         alpha_candidates = initial_candidate_morphologies[..., 0:1].detach()
         length_candidates = initial_candidate_morphologies[..., 1:].detach()
 
+        if alpha_candidates.shape[0] == 0:
+            raise RuntimeError(
+                "Fixed-alpha sampler generated zero valid initial morphologies."
+            )
+
         if logging:
             print(
-                "[Info] Fixed-alpha sampler: generated valid initial morphologies "
-                f"for {alpha_candidates.shape[0]} alpha candidates."
+                "[Info] Fixed-alpha sampler accepted "
+                f"{accepted_alpha_count}/{original_alpha_count} alpha candidates "
+                f"and dropped {dropped_alpha_count}."
             )
             print(f"[Info] Writing CSV log to: {csv_logger.csv_path}")
 
