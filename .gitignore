@@ -221,3 +221,6 @@ __marimo__/
 curobo/
 
 output/
+
+# Timelapse results
+timelapse/
