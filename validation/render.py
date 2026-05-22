@@ -60,21 +60,62 @@ def add_curobo_scene_to_viser(server, scene, base_pose_f32) -> None:
         )
 
 
-def build_scene_builder(morph: Morphology, task: Task) -> newton.ModelBuilder:
-    """Construct a ModelBuilder with obstacles, goal markers, and the robot."""
-    builder = newton.ModelBuilder()
+_GHOST_COLOR = (160, 60, 255)  # purple — best IK approximation
+_GHOST_OPACITY = 0.45
 
-    for obs in task.environment.obstacles:
-        if obs.kind == "box":
-            builder.add_shape_box(
-                body=-1,
-                xform=wp.transform(
-                    p=wp.vec3(*obs.center.cpu().tolist()), q=wp.quat_identity()
-                ),
-                hx=obs.half_extents[0].item(),
-                hy=obs.half_extents[1].item(),
-                hz=obs.half_extents[2].item(),
-            )
+_GOAL_COLOR_SUCCESS = (50, 180, 50)  # 🟢 green — reached
+_GOAL_COLOR_FAILED = (240, 140, 0)  # 🟠 orange — first unreachable goal
+_GOAL_COLOR_UNREACHED = (210, 40, 40)  # 🔴 red — never attempted
+_GOAL_COLOR_DEFAULT = (190, 190, 190)  # ⚪ light grey — unknown status
+
+
+def _goal_color(i: int, failed_at_goal: int | None, n_goals: int) -> tuple:
+    if failed_at_goal is None:
+        return _GOAL_COLOR_SUCCESS
+    if i < failed_at_goal:
+        return _GOAL_COLOR_SUCCESS
+    if i == failed_at_goal:
+        return _GOAL_COLOR_FAILED
+    return _GOAL_COLOR_UNREACHED
+
+
+def _add_ghost_robot_to_viser(server, curobo_planner, best_ik_q, n_joints: int) -> list:
+    """Add semi-transparent ghost robot at best_ik_q using collision spheres.
+
+    Returns a list of viser IcosphereHandles (empty if no ghost is shown).
+    """
+    if curobo_planner is None or best_ik_q is None:
+        return []
+    spheres = curobo_planner.robot_spheres_world(best_ik_q[:n_joints])
+    handles = []
+    for i, (x, y, z, r) in enumerate(spheres):
+        h = server.scene.add_icosphere(
+            f"/ghost_robot/sphere_{i}",
+            radius=float(r),
+            color=_GHOST_COLOR,
+            opacity=_GHOST_OPACITY,
+            position=(float(x), float(y), float(z)),
+            visible=False,
+        )
+        handles.append(h)
+    return handles
+
+
+def _add_ghost_toggle(server, ghost_handles: list) -> None:
+    """Add a viser checkbox that shows/hides ghost robot spheres."""
+    if not ghost_handles:
+        return
+    toggle = server.gui.add_checkbox("Show ghost robot (best IK)", initial_value=False)
+
+    @toggle.on_update
+    def _on_toggle(_event) -> None:
+        for h in ghost_handles:
+            h.visible = toggle.value
+
+
+def build_scene_builder(morph: Morphology, task: Task) -> newton.ModelBuilder:
+    """Construct a ModelBuilder for the robot and static scene markers."""
+    builder = newton.ModelBuilder()
 
     region = task.reachable_region
     if region is not None:
@@ -96,21 +137,51 @@ def build_scene_builder(morph: Morphology, task: Task) -> newton.ModelBuilder:
             label="reachable_region",
         )
 
-    for i in range(task.goal_poses.shape[0]):
-        pos = task.goal_poses[i, :3, 3].cpu()
-        builder.add_shape_sphere(
-            body=-1,
-            xform=wp.transform(p=wp.vec3(*pos.tolist()), q=wp.quat_identity()),
-            radius=0.03,
-            as_site=True,
-            color=wp.vec3(1.0, 0.2, 0.2),
-        )
-
     poses = compute_link_world_poses(morph)
     poses = (task.environment.base_pose.unsqueeze(0) @ poses).cpu()
     add_robot_to_builder(builder, morph, poses, label="robot")
 
     return builder
+
+
+def add_obstacles_to_viser(server, task) -> None:
+    for i, obs in enumerate(task.environment.obstacles):
+        if obs.kind == "box":
+            center = tuple(float(v) for v in obs.center.cpu().tolist())
+            dims = tuple(float(obs.half_extents[j].item() * 2) for j in range(3))
+            server.scene.add_box(
+                f"/obstacles/box_{i}",
+                color=(170, 170, 170),
+                dimensions=dims,
+                position=center,
+            )
+
+
+def add_goals_to_viser(server, task, failed_at_goal) -> None:
+    n_goals = task.goal_poses.shape[0]
+    for i in range(n_goals):
+        pos = tuple(float(v) for v in task.goal_poses[i, :3, 3].cpu().tolist())
+        color = (
+            _GOAL_COLOR_DEFAULT
+            if failed_at_goal == "unknown"
+            else _goal_color(i, failed_at_goal, n_goals)
+        )
+        server.scene.add_icosphere(
+            f"/goals/sphere_{i}",
+            radius=0.03,
+            color=color,
+            position=pos,
+        )
+
+
+def _add_goal_legend(server) -> None:
+    server.gui.add_markdown(
+        "**Goal status**\n\n"
+        "🟢 &nbsp;Reached\n\n"
+        "🟠 &nbsp;First failure\n\n"
+        "🔴 &nbsp;Not attempted\n\n"
+        "⚪ &nbsp;Unknown"
+    )
 
 
 def _setup_viewer(
@@ -122,6 +193,7 @@ def _setup_viewer(
     viewer._server.scene.add_icosphere(
         "/unit_sphere", radius=1.0, color=(180, 180, 255), opacity=0.08
     )
+    _add_goal_legend(viewer._server)
 
     if curobo_planner is not None:
         add_curobo_scene_to_viser(
@@ -147,6 +219,8 @@ def render_scene(
     port: int = 8080,
     share: bool = False,
     curobo_planner=None,
+    failed_at_goal: int | None = "unknown",
+    best_ik_q=None,
 ) -> None:
     """Render morphology + task environment in the Newton viewer (static)."""
     builder = build_scene_builder(morph, task)
@@ -154,6 +228,13 @@ def render_scene(
     state = model.state()
 
     viewer = _setup_viewer(model, port, share, curobo_planner)
+    add_obstacles_to_viser(viewer._server, task)
+    add_goals_to_viser(viewer._server, task, failed_at_goal)
+    n_joints = morph.n_links - 1
+    ghost_handles = _add_ghost_robot_to_viser(
+        viewer._server, curobo_planner, best_ik_q, n_joints
+    )
+    _add_ghost_toggle(viewer._server, ghost_handles)
     axes_begins, axes_ends, axes_colors = make_origin_axes(axis_length=0.1)
 
     viewer.begin_frame(0.0)
@@ -181,6 +262,8 @@ def animate_plan(
     startup_delay: float = 5.0,
     max_joint_speed: float = math.pi,
     curobo_planner=None,
+    failed_at_goal: int | None = "unknown",
+    best_ik_q=None,
 ) -> None:
     """Execute a planned joint-space trajectory in Newton physics and stream it to the viewer.
 
@@ -208,11 +291,24 @@ def animate_plan(
     frame_dt = 1.0 / fps
 
     viewer = _setup_viewer(model, port, share, curobo_planner)
+    add_obstacles_to_viser(viewer._server, task)
+    add_goals_to_viser(viewer._server, task, failed_at_goal)
+    ghost_handles = _add_ghost_robot_to_viser(
+        viewer._server, curobo_planner, best_ik_q, n_joints
+    )
+    _add_ghost_toggle(viewer._server, ghost_handles)
     axes_begins, axes_ends, axes_colors = make_origin_axes(axis_length=0.1)
 
     speed_slider = viewer._server.gui.add_slider(
-        "Playback speed", min=0.1, max=4.0, step=0.1, initial_value=1.0
+        "Playback speed", min=0.0, max=4.0, step=0.05, initial_value=1.0
     )
+
+    def _sleep(dt: float) -> None:
+        """Sleep for one frame; spin-wait if playback is paused (speed == 0)."""
+        while speed_slider.value == 0.0 and viewer.is_running():
+            time.sleep(0.05)
+        if viewer.is_running():
+            time.sleep(dt / speed_slider.value)
 
     print(f"({len(path)} frames — starting in {startup_delay:.0f}s)")
 
@@ -254,13 +350,13 @@ def animate_plan(
         while time.monotonic() < stop and viewer.is_running():
             render_q(path[0], t)
             t += frame_dt
-            time.sleep(frame_dt / speed_slider.value)
+            _sleep(frame_dt)
 
         while viewer.is_running():
             for _ in range(hold_frames):
                 render_q(path[0], t)
                 t += frame_dt
-                time.sleep(frame_dt / speed_slider.value)
+                _sleep(frame_dt)
                 if not viewer.is_running():
                     break
 
@@ -272,13 +368,13 @@ def animate_plan(
                 frame_time = max(frame_dt, dq / max_joint_speed)
                 render_q(q, t)
                 t += frame_time
-                time.sleep(frame_time / speed_slider.value)
+                _sleep(frame_time)
                 prev_q = q
 
             for _ in range(hold_frames):
                 render_q(path[-1], t)
                 t += frame_dt
-                time.sleep(frame_dt / speed_slider.value)
+                _sleep(frame_dt)
                 if not viewer.is_running():
                     break
 

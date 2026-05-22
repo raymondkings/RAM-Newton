@@ -112,6 +112,18 @@ class CuroboPlanner:
             else np.zeros((0, 4), dtype=np.float32)
         )
 
+    def _get_best_ik_q(self, goal) -> "torch.Tensor | None":
+        """Return best IK joint config for goal, even if IK didn't fully converge."""
+        try:
+            ik_result = self._planner.ik_solver.solve_pose(goal, return_seeds=1)
+            if ik_result is None or ik_result.solution is None:
+                return None
+            n_joints = len(self._planner.joint_names)
+            q = ik_result.solution.reshape(-1, n_joints)[0]
+            return q.cpu().to(self._base_pose_inv.dtype)
+        except Exception:
+            return None
+
     def plan(
         self,
         goal_pose_world: torch.Tensor,
@@ -157,8 +169,6 @@ class CuroboPlanner:
                         print(
                             "[cuRobo]   -> no ground collision; likely self-collision"
                         )
-            else:
-                print("[cuRobo] start state is collision-free")
 
         try:
             result = self._planner.plan_pose(
@@ -169,7 +179,10 @@ class CuroboPlanner:
             raise
 
         if result is None or not result.success.any():
-            return PlanResult(success=False, path=[], n_iterations=0, n_nodes=0), None
+            best_ik_q = self._get_best_ik_q(goal)
+            return PlanResult(
+                success=False, path=[], n_iterations=0, n_nodes=0, best_ik_q=best_ik_q
+            ), None
 
         interp = result.get_interpolated_plan()
         n_joints = len(self._planner.joint_names)
@@ -199,15 +212,15 @@ class CuroboPlanner:
         current_q = start_q
 
         for i in range(goal_poses_world.shape[0]):
-            print(f"[cuRobo] Planning segment {i + 1}/{goal_poses_world.shape[0]} ...")
             result, goal_q = self.plan(goal_poses_world[i], current_q, max_attempts)
             if not result.success or goal_q is None:
-                print(f"[cuRobo] Failed at goal {i}.")
                 return PlanResult(
                     success=False,
                     path=full_path,
                     n_iterations=0,
                     n_nodes=len(full_path),
+                    failed_at_goal=i,
+                    best_ik_q=result.best_ik_q,
                 ), None
             full_path.extend(result.path)
             current_q = goal_q
