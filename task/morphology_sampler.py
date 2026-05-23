@@ -262,21 +262,6 @@ def _reject_link_twist(link_twist: Tensor, link_type: Tensor) -> Tensor:
     rejected |= ((link_type == 3) & (link_twist == 0)).any(dim=1)
     return rejected
 
-def _reject_link_twist_allow_0_0_0(link_twist: Tensor, link_type: Tensor) -> Tensor:
-    """Reject twist/type combinations that cause structural degeneracy or unmanufacturable wrists."""
-    rejected = (
-        (link_twist[:, :-2] == 0)
-        & (link_twist[:, 1:-1] == 0)
-        & (link_twist[:, 2:] == 0)
-    ).any(dim=1)
-    rejected |= (
-        (link_twist[:, :-2] == 0) & (link_type[:, 1:-1] == 3) & (link_twist[:, 2:] == 0)
-    ).any(dim=1)
-    rejected |= (
-        (link_type[:, :-1] == 1) & (link_type[:, 1:] == 1) & (link_twist[:, 1:] == 0)
-    ).any(dim=1)
-    # rejected |= ((link_type == 3) & (link_twist == 0)).any(dim=1)
-    return rejected
 
 def _sample_analytically_solvable_link_types_and_twist(
     batch_size: int,

@@ -16,7 +16,7 @@ from torch import Tensor
 from task.morphology_sampler import (
     LINK_RADIUS,
     _reject_link_type,
-    _reject_link_twist_allow_0_0_0,
+    _reject_link_twist,
     _reject_link_length,
     get_joint_limits,
     forward_kinematics,
@@ -195,7 +195,7 @@ def check_morphology_distribution(
     link_lengths = morph[..., 1:3]
 
     link_type_rejected = _reject_link_type(link_type)
-    link_twist_rejected = _reject_link_twist_allow_0_0_0(alpha, link_type)
+    link_twist_rejected = _reject_link_twist(alpha, link_type)
     link_length_rejected = _reject_link_length(link_lengths)
 
     dynamic = _run_dynamic_sampler_checks(
@@ -221,9 +221,8 @@ def check_morphology_distribution(
             reasons.append("link_length_rejected")
         if bool(dynamic["sampled_always_self_colliding"][i]):
             reasons.append("sampled_always_self_colliding")
-        #NOTE: here only for the check of design we ignore this, casue although out of distribution, it might also work.
-        # if bool(dynamic["sampled_always_low_manipulability"][i]):
-        #     reasons.append("sampled_always_low_manipulability")
+        if bool(dynamic["sampled_always_low_manipulability"][i]):
+            reasons.append("sampled_always_low_manipulability")
 
         reports.append(
             DistributionCheckReport(
