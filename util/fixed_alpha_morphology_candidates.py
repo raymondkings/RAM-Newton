@@ -29,7 +29,7 @@ from task.morphology_sampler import (
 
 DEFAULT_FIXED_ALPHA_BATCH_SIZE = 512
 DEFAULT_FIXED_ALPHA_RANDOM_TRIES = 5000
-# direct sampling requires high GPU memory... (1000 is the max for 4090 with 32GB)
+# direct sampling requires high GPU memory... (1000 is the max for 5090 with 32GB)
 DEFAULT_DIRECT_PRESAMPLING_BATCH_SIZE = 1000
 DEFAULT_DYNAMIC_REJECTION_BATCH_SIZE = 128
 
