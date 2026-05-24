@@ -80,6 +80,8 @@ def tensor_from_json_cell(value) -> torch.Tensor | None:
     return torch.tensor(value, dtype=torch.float32)
 
 
+#This is for loading a specific joint config from the IK solver. (the middle one, can be changed to set a specific one)
+#TODO: if we want to visualize the final joint config, you can pick a specific pose and its joint config
 def load_middle_start_q_from_last_validation(
     csv_path: str | Path,
     device: torch.device | None = None,
