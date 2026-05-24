@@ -140,6 +140,14 @@ def run_plan(
         ignore_ground=ignore_ground,
         ignore_obstacles=ignore_obstacles,
     )
+    if not planner.check_start_feasibility(start_q):
+        raise RuntimeError(
+            f"Start configuration is in collision (self or world) — aborting.\n"
+            f"  start_q = {start_q.tolist()}\n"
+            "  Check that IK candidate poses are reachable for this morphology, or run with "
+            "--ignore-ground / --ignore-obstacles to diagnose."
+        )
+
     result, final_q = planner.plan_sequence(task.goal_poses, start_q)
 
     if final_q is None or not result.success:

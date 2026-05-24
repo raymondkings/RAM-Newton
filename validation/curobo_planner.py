@@ -82,6 +82,14 @@ class CuroboPlanner:
         self._planner = MotionPlanner(config)
         self._planner.warmup(enable_graph=True, num_warmup_iterations=3)
 
+    def check_start_feasibility(self, q: torch.Tensor) -> bool:
+        """Return True if q is free of self-collision, world collision, and joint limits."""
+        gp = self._planner.graph_planner
+        if gp is None:
+            return True
+        q_check = q.float().unsqueeze(0).to(self._device)
+        return bool(gp.check_samples_feasibility(q_check).all())
+
     def robot_spheres_world(self, q: torch.Tensor) -> np.ndarray:
         """Return collision sphere positions for joint config q in world frame.
 
