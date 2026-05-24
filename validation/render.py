@@ -60,7 +60,7 @@ def add_curobo_scene_to_viser(server, scene, base_pose_f32) -> None:
         )
 
 
-def build_scene_builder(morph: Morphology, task: Task) -> newton.ModelBuilder:
+def build_scene_builder(morph: Morphology, task: Task, q=None) -> newton.ModelBuilder:
     """Construct a ModelBuilder with obstacles, goal markers, and the robot."""
     builder = newton.ModelBuilder()
 
@@ -106,7 +106,7 @@ def build_scene_builder(morph: Morphology, task: Task) -> newton.ModelBuilder:
             color=wp.vec3(1.0, 0.2, 0.2),
         )
 
-    poses = compute_link_world_poses(morph)
+    poses = compute_link_world_poses(morph, q=q)
     poses = (task.environment.base_pose.unsqueeze(0) @ poses).cpu()
     add_robot_to_builder(builder, morph, poses, label="robot")
 
@@ -147,9 +147,10 @@ def render_scene(
     port: int = 8080,
     share: bool = False,
     curobo_planner=None,
+    q=None,
 ) -> None:
     """Render morphology + task environment in the Newton viewer (static)."""
-    builder = build_scene_builder(morph, task)
+    builder = build_scene_builder(morph, task, q=q)
     model = builder.finalize()
     state = model.state()
 

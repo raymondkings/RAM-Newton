@@ -71,14 +71,21 @@ def forward_kinematics(mdh: torch.Tensor, theta: torch.Tensor) -> torch.Tensor:
     return torch.cat(poses, dim=-3)
 
 
-def compute_link_world_poses(morph) -> torch.Tensor:
-    """Forward kinematics at the rest pose (all joints zero).
+def compute_link_world_poses(morph, q: torch.Tensor | None = None) -> torch.Tensor:
+    """Forward kinematics at the given joint configuration (defaults to all-zero rest pose).
+
+    Args:
+        morph: Morphology whose MDH params define the robot.
+        q: Joint angles [n_joints], where n_joints = n_links - 1. If None, uses zeros.
 
     Returns:
         Tensor [n_links, 4, 4], base-to-link transforms.
     """
     mdh = morph.params
-    theta = torch.zeros(mdh.shape[0], 1, device=mdh.device, dtype=mdh.dtype)
+    if q is None:
+        theta = torch.zeros(mdh.shape[0], 1, device=mdh.device, dtype=mdh.dtype)
+    else:
+        theta = torch.cat([q.to(dtype=mdh.dtype), q.new_zeros(1)]).unsqueeze(-1)
     return forward_kinematics(mdh, theta)
 
 

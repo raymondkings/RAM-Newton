@@ -139,6 +139,9 @@ def run_plan(
         print(f"Animating — {len(dense)} frames ...")
         animate_plan(morph, task, dense, curobo_planner=planner)
 
+        # To only visualize the static scene without animation, comment out the 3 lines above and call the following funct
+        # render_scene(morph, task, curobo_planner=planner, q=start_q)
+
 
 def run_postprocess(csv_path: Path, task: Task, args: argparse.Namespace) -> None:
     """Run optional CSV-based plotting and timelapse generation."""
