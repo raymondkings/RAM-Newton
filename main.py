@@ -43,22 +43,40 @@ def find_self_collision_free_start_q(
         self_collision_check=True,
     )
 
-    # Home pose: directly above base (base is at z=0.2, so 0.55 gives 35 cm clearance)
-    home_pose = torch.eye(4, device=device)
-    home_pose[2, 3] = 0.55
-
-    joints, success = ik_solver.solve(home_pose.unsqueeze(0), base_pose_inv, device)
+    """
+        We need multiple possible candidates here, since with only one candidate, there might be a 
+        case where IK cannot find the solution. 
+    """
+    candidate_offsets = [
+        (0.0, 0.55),  # above base — primary target
+        (0.0, 0.40),  # lower
+        (0.0, 0.70),  # higher
+        (0.10, 0.55),  # lateral offset
+    ]
+    candidates = []
+    for x, z in candidate_offsets:
+        pose = torch.eye(4, device=device)
+        pose[0, 3] = x
+        pose[2, 3] = z
+        candidates.append(pose)
 
     try:
-        os.unlink(urdf_path)
-    except OSError:
-        pass
+        for i, pose in enumerate(candidates):
+            joints, success = ik_solver.solve(pose.unsqueeze(0), base_pose_inv, device)
+            if success[0]:
+                print(
+                    f"[Info] Self/world collision-free start config found (candidate {i + 1}/{len(candidates)})."
+                )
+                return joints[0].to(morph.params.dtype)
+    finally:
+        try:
+            os.unlink(urdf_path)
+        except OSError:
+            pass
 
-    if success[0]:
-        print("[Info] Self Collision-free start configuration found via IK.")
-        return joints[0].to(morph.params.dtype)
-
-    print("[Warning] Home-pose IK failed — falling back to zero start configuration.")
+    print(
+        "[Warning] All IK candidates failed — falling back to zero start configuration."
+    )
     return torch.zeros(morph.n_links - 1, dtype=morph.params.dtype, device=device)
 
 
