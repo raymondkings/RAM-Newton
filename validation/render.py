@@ -60,7 +60,8 @@ def add_curobo_scene_to_viser(server, scene, base_pose_f32) -> None:
             position=tuple(float(v) for v in p),
         )
 
-#Jiyao: new function to visulize direction, blue shows Z-direction
+
+# Jiyao: new function to visulize direction, blue shows Z-direction
 def make_goal_pose_axes(goal_poses, axis_length: float = 0.05):
     """Return (begins, ends, colors) warp arrays for EEF frame axes at each goal pose.
 
@@ -68,8 +69,12 @@ def make_goal_pose_axes(goal_poses, axis_length: float = 0.05):
     goal_poses: [N, 4, 4] SE3 matrices in world frame.
     """
     begins_list, ends_list, colors_list = [], [], []
-    axis_colors = [wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 1.0, 0.0), wp.vec3(0.0, 0.0, 1.0)]
- #                          r                            g                            b
+    axis_colors = [
+        wp.vec3(1.0, 0.0, 0.0),
+        wp.vec3(0.0, 1.0, 0.0),
+        wp.vec3(0.0, 0.0, 1.0),
+    ]
+    #                          r                            g                            b
     for i in range(goal_poses.shape[0]):
         pos = goal_poses[i, :3, 3].cpu().tolist()
         R = goal_poses[i, :3, :3].cpu().tolist()
@@ -84,22 +89,32 @@ def make_goal_pose_axes(goal_poses, axis_length: float = 0.05):
         wp.array(ends_list, dtype=wp.vec3),
         wp.array(colors_list, dtype=wp.vec3),
     )
-def make_eef_pose_axes(morph, q_joints: torch.Tensor, base_pose: torch.Tensor, axis_length: float = 0.05):
+
+
+def make_eef_pose_axes(
+    morph, q_joints: torch.Tensor, base_pose: torch.Tensor, axis_length: float = 0.05
+):
     """Return (begins, ends, colors) warp arrays for an RGB coordinate triad at the EEF.
 
     X/Y/Z are drawn as red/green/blue line segments, matching the goal-pose triad style.
     """
     n_links = morph.params.shape[0]
     n_joints = n_links - 1
-    theta = torch.zeros(n_links, 1, device=morph.params.device, dtype=morph.params.dtype)
+    theta = torch.zeros(
+        n_links, 1, device=morph.params.device, dtype=morph.params.dtype
+    )
     theta[:n_joints, 0] = q_joints[:n_joints].detach()
     poses = forward_kinematics(morph.params, theta)
     eef_world = (base_pose @ poses[-1]).cpu()
 
     pos = eef_world[:3, 3].tolist()
-    R   = eef_world[:3, :3].tolist()
+    R = eef_world[:3, :3].tolist()
 
-    axis_colors = [wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 1.0, 0.0), wp.vec3(0.0, 0.0, 1.0)]
+    axis_colors = [
+        wp.vec3(1.0, 0.0, 0.0),
+        wp.vec3(0.0, 1.0, 0.0),
+        wp.vec3(0.0, 0.0, 1.0),
+    ]
     begins_list, ends_list, colors_list = [], [], []
     for j in range(3):
         tip = [pos[k] + R[k][j] * axis_length for k in range(3)]
@@ -109,7 +124,7 @@ def make_eef_pose_axes(morph, q_joints: torch.Tensor, base_pose: torch.Tensor, a
 
     return (
         wp.array(begins_list, dtype=wp.vec3),
-        wp.array(ends_list,   dtype=wp.vec3),
+        wp.array(ends_list, dtype=wp.vec3),
         wp.array(colors_list, dtype=wp.vec3),
     )
 
@@ -296,8 +311,10 @@ def render_scene(
     _add_ghost_toggle(viewer._server, ghost_handles)
     axes_begins, axes_ends, axes_colors = make_origin_axes(axis_length=0.1)
     goal_axes_b, goal_axes_e, goal_axes_c = make_goal_pose_axes(task.goal_poses)
-    zero_q = torch.zeros(morph.n_links - 1, dtype=morph.params.dtype, device=morph.params.device)
-    
+    zero_q = torch.zeros(
+        morph.n_links - 1, dtype=morph.params.dtype, device=morph.params.device
+    )
+
     eef_b, eef_e, eef_c = make_eef_pose_axes(morph, zero_q, task.environment.base_pose)
 
     viewer.begin_frame(0.0)

@@ -12,10 +12,10 @@ from task.environment import l_environment
 from validation.curobo_planner import CuroboPlanner, interpolate_path
 from validation.render import animate_plan, render_scene
 
-#target selecting
-#from task.target1 import create_task
+# target selecting
+# from task.target1 import create_task
 from task.target1plus import create_task
-#from task.target2 import create_task
+# from task.target2 import create_task
 
 
 DEFAULT_CONFIG = Path(__file__).parent / "config.json"
@@ -81,7 +81,11 @@ def run_plan(
         ignore_ground=ignore_ground,
         ignore_obstacles=ignore_obstacles,
     )
-    ordered_poses = task.goal_poses[task.goal_order] if task.goal_order is not None else task.goal_poses
+    ordered_poses = (
+        task.goal_poses[task.goal_order]
+        if task.goal_order is not None
+        else task.goal_poses
+    )
     result, final_q = planner.plan_sequence(ordered_poses, start_q)
 
     if not result.success:
@@ -100,7 +104,9 @@ def run_plan(
                 print(
                     f"Animating partial plan — {len(dense)} frames (failure at goal {failed_at}/{n_goals}) ..."
                 )
-                animate_plan(morph, task, dense, curobo_planner=planner, failed_at_goal=failed_at)
+                animate_plan(
+                    morph, task, dense, curobo_planner=planner, failed_at_goal=failed_at
+                )
         elif debug and visualize:
             print("Rendering static scene for debugging.")
             render_scene(
@@ -139,6 +145,7 @@ def run_plan(
 #         video_path = create_timelapse_from_csv(csv_path, task, tl_cfg)
 #         print(f"[postprocess] Timelapse saved: {video_path}")
 
+
 def run_postprocess(csv_path: Path, task: Task, args: argparse.Namespace) -> None:
     """Run candidate-selection CSV plotting. This is for the candidate selection algorithm
 
@@ -149,7 +156,9 @@ def run_postprocess(csv_path: Path, task: Task, args: argparse.Namespace) -> Non
     plot_cfg = getattr(args, "plot", {})
 
     if isinstance(plot_cfg, dict) and plot_cfg.get("enabled", True):
-        from postprocess.plot_candidate_selection import create_candidate_selection_plots
+        from postprocess.plot_candidate_selection import (
+            create_candidate_selection_plots,
+        )
 
         output_dir = plot_cfg.get("output_dir", "output/figures")
 
@@ -160,6 +169,7 @@ def run_postprocess(csv_path: Path, task: Task, args: argparse.Namespace) -> Non
 
         for path in paths:
             print(f"[postprocess] Candidate plot saved: {path}")
+
 
 def main() -> None:
     args = parse_args()
@@ -184,7 +194,7 @@ def main() -> None:
         goal_poses=create_task(),
         reachable_region=None,
         start_q=start_q,
-        goal_order=[0, 1, 2, 3, 4],#0123456789...
+        goal_order=[0, 1, 2, 3, 4],  # 0123456789...
     )
 
     morph = Morphology(params=initial_morphologies[0])

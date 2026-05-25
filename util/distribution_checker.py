@@ -234,11 +234,19 @@ def check_morphology_distribution(
                 link_type_rejected=bool(link_type_rejected[i]),
                 link_twist_rejected=bool(link_twist_rejected[i]),
                 link_length_rejected=bool(link_length_rejected[i]),
-                sampled_always_self_colliding=bool(dynamic["sampled_always_self_colliding"][i]),
-                sampled_self_collision_rate=float(dynamic["sampled_self_collision_rate"][i].detach().cpu().item()),
-                sampled_always_low_manipulability=bool(dynamic["sampled_always_low_manipulability"][i]),
+                sampled_always_self_colliding=bool(
+                    dynamic["sampled_always_self_colliding"][i]
+                ),
+                sampled_self_collision_rate=float(
+                    dynamic["sampled_self_collision_rate"][i].detach().cpu().item()
+                ),
+                sampled_always_low_manipulability=bool(
+                    dynamic["sampled_always_low_manipulability"][i]
+                ),
                 min_yoshikawa=float(dynamic["min_yoshikawa"][i].detach().cpu().item()),
-                mean_yoshikawa=float(dynamic["mean_yoshikawa"][i].detach().cpu().item()),
+                mean_yoshikawa=float(
+                    dynamic["mean_yoshikawa"][i].detach().cpu().item()
+                ),
                 num_joint_samples=num_joint_samples,
             )
         )
