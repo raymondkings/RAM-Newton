@@ -6,8 +6,9 @@ import warp as wp
 import newton
 from scipy.spatial.transform import Rotation
 
+import torch
 from interface import Morphology, Task
-from util.kinematics import compute_link_world_poses
+from util.kinematics import compute_link_world_poses, forward_kinematics
 from util.mdh import add_robot_to_builder
 from validation.ground import add_ground_grid_to_viser, make_origin_axes
 
@@ -58,6 +59,59 @@ def add_curobo_scene_to_viser(server, scene, base_pose_f32) -> None:
             color=_COLOR,
             position=tuple(float(v) for v in p),
         )
+
+#Jiyao: new function to visulize direction, blue shows Z-direction
+def make_goal_pose_axes(goal_poses, axis_length: float = 0.05):
+    """Return (begins, ends, colors) warp arrays for EEF frame axes at each goal pose.
+
+    Draws X/Y/Z axes as red/green/blue line segments of length axis_length.
+    goal_poses: [N, 4, 4] SE3 matrices in world frame.
+    """
+    begins_list, ends_list, colors_list = [], [], []
+    axis_colors = [wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 1.0, 0.0), wp.vec3(0.0, 0.0, 1.0)]
+ #                          r                            g                            b
+    for i in range(goal_poses.shape[0]):
+        pos = goal_poses[i, :3, 3].cpu().tolist()
+        R = goal_poses[i, :3, :3].cpu().tolist()
+        for j in range(3):
+            tip = [pos[k] + R[k][j] * axis_length for k in range(3)]
+            begins_list.append(wp.vec3(*pos))
+            ends_list.append(wp.vec3(*tip))
+            colors_list.append(axis_colors[j])
+
+    return (
+        wp.array(begins_list, dtype=wp.vec3),
+        wp.array(ends_list, dtype=wp.vec3),
+        wp.array(colors_list, dtype=wp.vec3),
+    )
+def make_eef_pose_axes(morph, q_joints: torch.Tensor, base_pose: torch.Tensor, axis_length: float = 0.05):
+    """Return (begins, ends, colors) warp arrays for an RGB coordinate triad at the EEF.
+
+    X/Y/Z are drawn as red/green/blue line segments, matching the goal-pose triad style.
+    """
+    n_links = morph.params.shape[0]
+    n_joints = n_links - 1
+    theta = torch.zeros(n_links, 1, device=morph.params.device, dtype=morph.params.dtype)
+    theta[:n_joints, 0] = q_joints[:n_joints].detach()
+    poses = forward_kinematics(morph.params, theta)
+    eef_world = (base_pose @ poses[-1]).cpu()
+
+    pos = eef_world[:3, 3].tolist()
+    R   = eef_world[:3, :3].tolist()
+
+    axis_colors = [wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 1.0, 0.0), wp.vec3(0.0, 0.0, 1.0)]
+    begins_list, ends_list, colors_list = [], [], []
+    for j in range(3):
+        tip = [pos[k] + R[k][j] * axis_length for k in range(3)]
+        begins_list.append(wp.vec3(*pos))
+        ends_list.append(wp.vec3(*tip))
+        colors_list.append(axis_colors[j])
+
+    return (
+        wp.array(begins_list, dtype=wp.vec3),
+        wp.array(ends_list,   dtype=wp.vec3),
+        wp.array(colors_list, dtype=wp.vec3),
+    )
 
 
 _GHOST_COLOR = (160, 60, 255)  # purple — best IK approximation
@@ -168,7 +222,7 @@ def add_goals_to_viser(server, task, failed_at_goal) -> None:
         )
         server.scene.add_icosphere(
             f"/goals/sphere_{i}",
-            radius=0.03,
+            radius=0.02,
             color=color,
             position=pos,
         )
@@ -180,7 +234,12 @@ def _add_goal_legend(server) -> None:
         "🟢 &nbsp;Reached\n\n"
         "🟠 &nbsp;First failure\n\n"
         "🔴 &nbsp;Not attempted\n\n"
-        "⚪ &nbsp;Unknown"
+        "⚪ &nbsp;Unknown\n\n"
+        "---\n\n"
+        "**Coordinate frames**\n\n"
+        "🟥 &nbsp;X-axis\n\n"
+        "🟩 &nbsp;Y-axis\n\n"
+        "🟦 &nbsp;Z-axis"
     )
 
 
@@ -236,10 +295,16 @@ def render_scene(
     )
     _add_ghost_toggle(viewer._server, ghost_handles)
     axes_begins, axes_ends, axes_colors = make_origin_axes(axis_length=0.1)
+    goal_axes_b, goal_axes_e, goal_axes_c = make_goal_pose_axes(task.goal_poses)
+    zero_q = torch.zeros(morph.n_links - 1, dtype=morph.params.dtype, device=morph.params.device)
+    
+    eef_b, eef_e, eef_c = make_eef_pose_axes(morph, zero_q, task.environment.base_pose)
 
     viewer.begin_frame(0.0)
     viewer.log_state(state)
     viewer.log_lines("/origin_frame", axes_begins, axes_ends, axes_colors)
+    viewer.log_lines("/goals/frames", goal_axes_b, goal_axes_e, goal_axes_c)
+    viewer.log_lines("/eef_frame", eef_b, eef_e, eef_c)
     viewer.end_frame()
 
     try:
@@ -298,6 +363,7 @@ def animate_plan(
     )
     _add_ghost_toggle(viewer._server, ghost_handles)
     axes_begins, axes_ends, axes_colors = make_origin_axes(axis_length=0.1)
+    goal_axes_b, goal_axes_e, goal_axes_c = make_goal_pose_axes(task.goal_poses)
 
     speed_slider = viewer._server.gui.add_slider(
         "Playback speed", min=0.0, max=4.0, step=0.05, initial_value=1.0
@@ -333,13 +399,16 @@ def animate_plan(
         arr = q.detach().cpu().numpy().astype(np.float32)[:n_joints]
         state.joint_q.assign(arr)
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-        if robot_sphere_handles:
+        if curobo_planner is not None and robot_sphere_handles:
             spheres = curobo_planner.robot_spheres_world(q[:n_joints])
             for h, (x, y, z, *_) in zip(robot_sphere_handles, spheres):
                 h.position = (float(x), float(y), float(z))
+        eef_b, eef_e, eef_c = make_eef_pose_axes(morph, q, task.environment.base_pose)
         viewer.begin_frame(t)
         viewer.log_state(state)
         viewer.log_lines("/origin_frame", axes_begins, axes_ends, axes_colors)
+        viewer.log_lines("/goals/frames", goal_axes_b, goal_axes_e, goal_axes_c)
+        viewer.log_lines("/eef_frame", eef_b, eef_e, eef_c)
         viewer.end_frame()
 
     try:
