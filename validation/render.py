@@ -298,7 +298,7 @@ def render_scene(
     viewer.begin_frame(0.0)
     viewer.log_state(state)
     viewer.log_lines("/origin_frame", axes_begins, axes_ends, axes_colors)
-    viewer.log_lines("/goal_frames", goal_axes_b, goal_axes_e, goal_axes_c)
+    viewer.log_lines("/goals/frames", goal_axes_b, goal_axes_e, goal_axes_c)
     viewer.log_lines("/eef_frame", eef_b, eef_e, eef_c)
     viewer.end_frame()
 
@@ -402,7 +402,7 @@ def animate_plan(
         viewer.begin_frame(t)
         viewer.log_state(state)
         viewer.log_lines("/origin_frame", axes_begins, axes_ends, axes_colors)
-        viewer.log_lines("/goal_frames", goal_axes_b, goal_axes_e, goal_axes_c)
+        viewer.log_lines("/goals/frames", goal_axes_b, goal_axes_e, goal_axes_c)
         viewer.log_lines("/eef_frame", eef_b, eef_e, eef_c)
         viewer.end_frame()
 
