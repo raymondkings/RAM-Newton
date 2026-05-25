@@ -100,7 +100,7 @@ def run_plan(
                 print(
                     f"Animating partial plan — {len(dense)} frames (failure at goal {failed_at}/{n_goals}) ..."
                 )
-                animate_plan(morph, task, dense, curobo_planner=planner)
+                animate_plan(morph, task, dense, curobo_planner=planner, failed_at_goal=failed_at)
         elif debug and visualize:
             print("Rendering static scene for debugging.")
             render_scene(

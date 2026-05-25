@@ -84,7 +84,7 @@ def make_goal_pose_axes(goal_poses, axis_length: float = 0.05):
         wp.array(ends_list, dtype=wp.vec3),
         wp.array(colors_list, dtype=wp.vec3),
     )
-def make_eef_pose_axes(morph, q_joints: torch.Tensor, base_pose: torch.Tensor, axis_length: float = 0.08):
+def make_eef_pose_axes(morph, q_joints: torch.Tensor, base_pose: torch.Tensor, axis_length: float = 0.05):
     """Return (begins, ends, colors) warp arrays for an RGB coordinate triad at the EEF.
 
     X/Y/Z are drawn as red/green/blue line segments, matching the goal-pose triad style.
@@ -191,16 +191,6 @@ def build_scene_builder(morph: Morphology, task: Task) -> newton.ModelBuilder:
             label="reachable_region",
         )
 
-    for i in range(task.goal_poses.shape[0]):
-        pos = task.goal_poses[i, :3, 3].cpu()
-        builder.add_shape_sphere(
-            body=-1,
-            xform=wp.transform(p=wp.vec3(*pos.tolist()), q=wp.quat_identity()),
-            radius=0.01,
-            as_site=True,
-            color=wp.vec3(1.0, 0.2, 0.2),
-        )
-
     poses = compute_link_world_poses(morph)
     poses = (task.environment.base_pose.unsqueeze(0) @ poses).cpu()
     add_robot_to_builder(builder, morph, poses, label="robot")
@@ -232,7 +222,7 @@ def add_goals_to_viser(server, task, failed_at_goal) -> None:
         )
         server.scene.add_icosphere(
             f"/goals/sphere_{i}",
-            radius=0.03,
+            radius=0.02,
             color=color,
             position=pos,
         )
