@@ -234,7 +234,12 @@ def _add_goal_legend(server) -> None:
         "🟢 &nbsp;Reached\n\n"
         "🟠 &nbsp;First failure\n\n"
         "🔴 &nbsp;Not attempted\n\n"
-        "⚪ &nbsp;Unknown"
+        "⚪ &nbsp;Unknown\n\n"
+        "---\n\n"
+        "**Coordinate frames**\n\n"
+        "🟥 &nbsp;X-axis\n\n"
+        "🟩 &nbsp;Y-axis\n\n"
+        "🟦 &nbsp;Z-axis"
     )
 
 
