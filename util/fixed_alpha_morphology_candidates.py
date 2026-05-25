@@ -566,7 +566,9 @@ def sample_fixed_alpha_morphology_candidates(
 
             if logging:
                 done_remaining = min(end, remaining_alpha.shape[0])
-                kept_fixed = sum(chunk.shape[0] for chunk in chunks) - presampled.shape[0]
+                kept_fixed = (
+                    sum(chunk.shape[0] for chunk in chunks) - presampled.shape[0]
+                )
                 iterator.set_postfix(
                     presampled=presampled.shape[0],
                     fixed_sampled=kept_fixed,
