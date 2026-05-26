@@ -86,6 +86,11 @@ class CuroboPlanner:
         """Return True if q is free of self-collision, world collision, and joint limits."""
         gp = self._planner.graph_planner
         if gp is None:
+            # Graph planner not initialised (warmup not called with enable_graph=True);
+            # cannot verify feasibility — skip check.
+            print(
+                "[Warning] check_start_feasibility: graph_planner is None, skipping check."
+            )
             return True
         q_check = q.float().unsqueeze(0).to(self._device)
         return bool(gp.check_samples_feasibility(q_check).all())

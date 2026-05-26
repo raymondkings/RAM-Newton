@@ -43,22 +43,21 @@ def find_self_collision_free_start_q(
         self_collision_check=True,
     )
 
-    """
-        We need multiple possible candidates here, since with only one candidate, there might be a 
-        case where IK cannot find the solution. 
-    """
-    candidate_offsets = [
+    # Multiple candidates because a single IK target may be unreachable for some morphologies.
+    # Offsets are in robot-base-local frame (z-up), then transformed to world frame.
+    base_pose = task.environment.base_pose.to(device)
+    candidate_offsets_local = [
         (0.0, 0.55),  # above base — primary target
         (0.0, 0.40),  # lower
         (0.0, 0.70),  # higher
         (0.10, 0.55),  # lateral offset
     ]
     candidates = []
-    for x, z in candidate_offsets:
-        pose = torch.eye(4, device=device)
-        pose[0, 3] = x
-        pose[2, 3] = z
-        candidates.append(pose)
+    for x, z in candidate_offsets_local:
+        pose_local = torch.eye(4, device=device)
+        pose_local[0, 3] = x
+        pose_local[2, 3] = z
+        candidates.append(base_pose @ pose_local)
 
     try:
         for i, pose in enumerate(candidates):
@@ -186,7 +185,7 @@ def run_plan(
         print(f"Animating — {len(dense)} frames ...")
         animate_plan(morph, task, dense, curobo_planner=planner, failed_at_goal=None)
 
-        # To only visualize the static scene without animation, comment out the 3 lines above and call the following funct
+        # To visualize the static scene instead of animating, replace the 3 lines above with:
         # render_scene(morph, task, curobo_planner=planner, q=start_q)
 
 
