@@ -10,6 +10,8 @@
     "learning_rate_angle": 0.05,
     "ignore_ground": true,
     "ignore_obstacles": true,
+    "use_cached_optimized_morphology": false,
+    "cached_optimization_csv": null,
     "plot": {
         "enabled": true,
         "output_dir": "output/figures"

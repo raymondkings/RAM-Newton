@@ -11,6 +11,7 @@ from interface import Morphology, Task
 from task.environment import l_environment
 from validation.curobo_planner import CuroboPlanner, interpolate_path
 from validation.render import animate_plan, render_scene
+from util.csv_log_reader import load_latest_optimized_morphology
 
 # target selecting
 # from task.target1 import create_task
@@ -255,14 +256,6 @@ def main() -> None:
 
     print("[Info] Config:", json.dumps(vars(args), indent=2))
 
-    initial_morphologies = sample_dof6_initial_morphologies(
-        num_initial_samples=1,
-        seed=args.seed,
-        device=device,
-        analytically_solvable=False,
-        as_list=False,
-    )
-
     start_q = torch.tensor([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], device=device)
     task = Task(
         environment=l_environment(),
@@ -271,29 +264,55 @@ def main() -> None:
         start_q=start_q,
     )
 
-    morph = Morphology(params=initial_morphologies[0])
+    # NOTE: for the updated candidate selection algorithm, the initial morphology is only used to get the link radius and the device
+    # possible TODO: update the structure to decude redundancy
+    use_cached_optimized_morphology = getattr(
+        args, "use_cached_optimized_morphology", False
+    )
+    cached_optimization_csv = getattr(args, "cached_optimization_csv", None)
+
+    if use_cached_optimized_morphology:
+        csv_source = (
+            Path(cached_optimization_csv)
+            if cached_optimization_csv is not None
+            else Path(__file__).parent / "output"
+        )
+        optimized_morph, csv_path = load_latest_optimized_morphology(
+            csv_source,
+            device=device,
+        )
+        morph = optimized_morph
+    else:
+        initial_morphologies = sample_dof6_initial_morphologies(
+            num_initial_samples=1,
+            seed=args.seed,
+            device=device,
+            analytically_solvable=False,
+            as_list=False,
+        )
+
+        morph = Morphology(params=initial_morphologies[0])
 
     print(
         f"[Info] Initial morphology params:\n{morph.params} \nlink_radius={morph.link_radius}"
     )
 
-    # NOTE: for the updated candidate selection algorithm, the initial morphology is only used to get the link radius and the device
-    # possible TODO: update the structure to decude redundancy
-    optimized_morph, csv_path = optimize_morphology(
-        morph=morph,
-        task=task,
-        optimization_parameters={
-            "num_iterations": args.num_iterations,
-            "learning_rate": args.learning_rate_length,
-            "logging": args.debug,
-            "eval_interval": args.eval_interval,
-            "random_seed": args.seed,
-            "number_random_seed": args.number_random_seed,
-            "percentage_poses": args.percentage_poses,
-            "ignore_ground": args.ignore_ground,
-            "ignore_obstacles": args.ignore_obstacles,
-        },
-    )
+    if not use_cached_optimized_morphology:
+        optimized_morph, csv_path = optimize_morphology(
+            morph=morph,
+            task=task,
+            optimization_parameters={
+                "num_iterations": args.num_iterations,
+                "learning_rate": args.learning_rate_length,
+                "logging": args.debug,
+                "eval_interval": args.eval_interval,
+                "random_seed": args.seed,
+                "number_random_seed": args.number_random_seed,
+                "percentage_poses": args.percentage_poses,
+                "ignore_ground": args.ignore_ground,
+                "ignore_obstacles": args.ignore_obstacles,
+            },
+        )
 
     # # for testing the alpha(different learning rate, different input)
     # optimized_morph, csv_path = optimize_morphology(
