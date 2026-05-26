@@ -238,10 +238,15 @@ def render_scene(
     model = builder.finalize()
     state = model.state()
 
+    n_joints = morph.n_links - 1
+    if q is not None:
+        arr = q.detach().cpu().float().numpy()[:n_joints]
+        state.joint_q.assign(arr)
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
     viewer = _setup_viewer(model, port, share, curobo_planner)
     add_obstacles_to_viser(viewer._server, task)
     add_goals_to_viser(viewer._server, task, failed_at_goal)
-    n_joints = morph.n_links - 1
     ghost_handles = _add_ghost_robot_to_viser(
         viewer._server, curobo_planner, best_ik_q, n_joints
     )
