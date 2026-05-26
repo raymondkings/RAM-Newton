@@ -90,7 +90,6 @@ TOP_PROBABILITY_FRACTION = 0.10
 SE3_TIE_EPS = 1e-12
 
 
-
 # ------------------------------- model helpers ------------------------------
 
 
@@ -272,11 +271,17 @@ def _optimize_all_candidates_single_round(
     # weight_decay=0 prevents stopped/inactive rows from drifting due to AdamW's
     # decoupled weight decay. We also restore inactive rows after each step to
     # prevent momentum state from moving already-stopped candidates.
-    optimizer = torch.optim.AdamW([length_candidates], lr=learning_rate, weight_decay=0.0)
+    optimizer = torch.optim.AdamW(
+        [length_candidates], lr=learning_rate, weight_decay=0.0
+    )
 
-    active_mask = torch.ones(num_candidates, dtype=torch.bool, device=alpha_candidates.device)
+    active_mask = torch.ones(
+        num_candidates, dtype=torch.bool, device=alpha_candidates.device
+    )
     frozen_lengths = initial_length_candidates.detach().clone()
-    stable_counts = torch.zeros(num_candidates, dtype=torch.long, device=alpha_candidates.device)
+    stable_counts = torch.zeros(
+        num_candidates, dtype=torch.long, device=alpha_candidates.device
+    )
     previous_probs = torch.full(
         (num_candidates,),
         float("nan"),
@@ -300,7 +305,9 @@ def _optimize_all_candidates_single_round(
     for update_idx in iterator:
         if not active_mask.any():
             if logging:
-                tqdm.write(f"[Early stopping] all candidates stopped at iteration {update_idx}.")
+                tqdm.write(
+                    f"[Early stopping] all candidates stopped at iteration {update_idx}."
+                )
             break
 
         optimizer.zero_grad(set_to_none=True)
@@ -346,7 +353,9 @@ def _optimize_all_candidates_single_round(
             newly_stopped = active_mask & (stable_counts >= EARLY_STOPPING_PATIENCE)
             newly_stopped &= can_stop_early
             if newly_stopped.any():
-                frozen_lengths[newly_stopped] = length_candidates.detach()[newly_stopped]
+                frozen_lengths[newly_stopped] = length_candidates.detach()[
+                    newly_stopped
+                ]
                 active_mask[newly_stopped] = False
                 stop_iterations[newly_stopped] = update_idx + 1
 
@@ -533,7 +542,9 @@ def optimize_morphology(
         DEFAULT_NUM_ALPHA_CANDIDATES,
     )
     candidate_batch_size = int(
-        optimization_parameters.get("candidate_batch_size", DEFAULT_CANDIDATE_BATCH_SIZE)
+        optimization_parameters.get(
+            "candidate_batch_size", DEFAULT_CANDIDATE_BATCH_SIZE
+        )
     )
     distribution_batch_size = int(
         optimization_parameters.get(
@@ -551,7 +562,9 @@ def optimize_morphology(
     seq_len = morph.params.shape[0]
 
     if logging:
-        print(f"[Info] Starting single-round alpha candidate optimization on device {device}.")
+        print(
+            f"[Info] Starting single-round alpha candidate optimization on device {device}."
+        )
         print(
             "[Info] "
             f"num_iterations={total_iterations}, "
@@ -602,7 +615,7 @@ def optimize_morphology(
             print(
                 f"[Info] For seq_len={seq_len}, excluding "
                 f"{ZERO_ALPHA_RUN_EXCLUSION_LENGTH}+ consecutive zeros gives "
-                f"max_valid={max_alpha_candidates} instead of 3^{seq_len}={3 ** seq_len}."
+                f"max_valid={max_alpha_candidates} instead of 3^{seq_len}={3**seq_len}."
             )
 
         # ------------------------------------------------------------------
@@ -640,16 +653,18 @@ def optimize_morphology(
         # ------------------------------------------------------------------
         # 3. One single batched NRM optimization round with early stopping.
         # ------------------------------------------------------------------
-        length_candidates, losses, probs, stop_iterations = _optimize_all_candidates_single_round(
-            model=model,
-            alpha_candidates=alpha_candidates,
-            initial_length_candidates=length_candidates,
-            task_vec=task_vec,
-            link_radius=morph.link_radius,
-            num_iterations=total_iterations,
-            learning_rate=lr,
-            candidate_batch_size=candidate_batch_size,
-            logging=logging,
+        length_candidates, losses, probs, stop_iterations = (
+            _optimize_all_candidates_single_round(
+                model=model,
+                alpha_candidates=alpha_candidates,
+                initial_length_candidates=length_candidates,
+                task_vec=task_vec,
+                link_radius=morph.link_radius,
+                num_iterations=total_iterations,
+                learning_rate=lr,
+                candidate_batch_size=candidate_batch_size,
+                logging=logging,
+            )
         )
 
         if logging:

@@ -29,7 +29,7 @@ from task.morphology_sampler import (
 
 DEFAULT_FIXED_ALPHA_BATCH_SIZE = 512
 DEFAULT_FIXED_ALPHA_RANDOM_TRIES = 5000
-# direct sampling requires high GPU memory... (1000 is the max for 4090 with 32GB)
+# direct sampling requires high GPU memory... (1000 is the max for 5090 with 32GB)
 DEFAULT_DIRECT_PRESAMPLING_BATCH_SIZE = 1000
 DEFAULT_DYNAMIC_REJECTION_BATCH_SIZE = 128
 
@@ -566,7 +566,9 @@ def sample_fixed_alpha_morphology_candidates(
 
             if logging:
                 done_remaining = min(end, remaining_alpha.shape[0])
-                kept_fixed = sum(chunk.shape[0] for chunk in chunks) - presampled.shape[0]
+                kept_fixed = (
+                    sum(chunk.shape[0] for chunk in chunks) - presampled.shape[0]
+                )
                 iterator.set_postfix(
                     presampled=presampled.shape[0],
                     fixed_sampled=kept_fixed,

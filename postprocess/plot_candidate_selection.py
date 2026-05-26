@@ -29,7 +29,7 @@ def _csv_time_suffix(csv_path: str | Path) -> str:
     """Return the run suffix from output/log_<suffix>.csv."""
     stem = Path(csv_path).stem
     if stem.startswith("log_"):
-        return stem[len("log_"):]
+        return stem[len("log_") :]
     return stem
 
 

@@ -10,12 +10,15 @@ class Task:
     `start_q` is the joint configuration the robot is in at the start of the
     task — the planner finds a collision-free path from here to a config that
     reaches one of `goal_poses`. If None, defaults to all-zeros (rest pose).
+    `goal_order` controls the visitation sequence for motion planning.
+    If None, goals are visited in natural index order (0, 1, 2, …).
     """
 
     environment: Environment
     goal_poses: Float[torch.Tensor, "n_goals 4 4"]
     reachable_region: "ReachableRegion | None" = None
     start_q: Float[torch.Tensor, "n_joints"] | None = None
+    goal_order: list[int] | None = None
 
 
 @dataclass
