@@ -182,7 +182,7 @@ def _add_ghost_toggle(server, ghost_handles: list) -> None:
             h.visible = toggle.value
 
 
-def build_scene_builder(morph: Morphology, task: Task) -> newton.ModelBuilder:
+def build_scene_builder(morph: Morphology, task: Task, q=None) -> newton.ModelBuilder:
     """Construct a ModelBuilder for the robot and static scene markers."""
     builder = newton.ModelBuilder()
 
@@ -206,7 +206,17 @@ def build_scene_builder(morph: Morphology, task: Task) -> newton.ModelBuilder:
             label="reachable_region",
         )
 
-    poses = compute_link_world_poses(morph)
+    for i in range(task.goal_poses.shape[0]):
+        pos = task.goal_poses[i, :3, 3].cpu()
+        builder.add_shape_sphere(
+            body=-1,
+            xform=wp.transform(p=wp.vec3(*pos.tolist()), q=wp.quat_identity()),
+            radius=0.03,
+            as_site=True,
+            color=wp.vec3(1.0, 0.2, 0.2),
+        )
+
+    poses = compute_link_world_poses(morph, q=q)
     poses = (task.environment.base_pose.unsqueeze(0) @ poses).cpu()
     add_robot_to_builder(builder, morph, poses, label="robot")
 
@@ -293,18 +303,24 @@ def render_scene(
     port: int = 8080,
     share: bool = False,
     curobo_planner=None,
+    q=None,
     failed_at_goal: int | None = "unknown",
     best_ik_q=None,
 ) -> None:
     """Render morphology + task environment in the Newton viewer (static)."""
-    builder = build_scene_builder(morph, task)
+    builder = build_scene_builder(morph, task, q=q)
     model = builder.finalize()
     state = model.state()
+
+    n_joints = morph.n_links - 1
+    if q is not None:
+        arr = q.detach().cpu().float().numpy()[:n_joints]
+        state.joint_q.assign(arr)
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
     viewer = _setup_viewer(model, port, share, curobo_planner)
     add_obstacles_to_viser(viewer._server, task)
     add_goals_to_viser(viewer._server, task, failed_at_goal)
-    n_joints = morph.n_links - 1
     ghost_handles = _add_ghost_robot_to_viser(
         viewer._server, curobo_planner, best_ik_q, n_joints
     )

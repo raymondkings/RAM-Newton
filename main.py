@@ -21,6 +21,69 @@ from task.target1plus import create_task
 DEFAULT_CONFIG = Path(__file__).parent / "config.json"
 
 
+def find_self_collision_free_start_q(
+    morph: Morphology,
+    task: Task,
+    device: torch.device,
+    ignore_ground: bool = False,
+    ignore_obstacles: bool = False,
+) -> torch.Tensor:
+    import os
+    from util.kinematics import build_robot_dict, build_scene, IK
+
+    robot_dict, urdf_path = build_robot_dict(morph)
+    base_pose_inv = torch.linalg.inv(task.environment.base_pose.to(device))
+    scene = build_scene(
+        task,
+        base_pose_inv,
+        ignore_ground=ignore_ground,
+        ignore_obstacles=ignore_obstacles,
+    )
+
+    ik_solver = IK(
+        robot_dict=robot_dict,
+        scene=scene,
+        num_seeds=32,
+        max_batch_size=1,
+        self_collision_check=True,
+    )
+
+    # Multiple candidates because a single IK target may be unreachable for some morphologies.
+    # Offsets are in robot-base-local frame (z-up), then transformed to world frame.
+    base_pose = task.environment.base_pose.to(device)
+    candidate_offsets_local = [
+        (0.0, 0.55),  # above base — primary target
+        (0.0, 0.40),  # lower
+        (0.0, 0.70),  # higher
+        (0.10, 0.55),  # lateral offset
+    ]
+    candidates = []
+    for x, z in candidate_offsets_local:
+        pose_local = torch.eye(4, device=device)
+        pose_local[0, 3] = x
+        pose_local[2, 3] = z
+        candidates.append(base_pose @ pose_local)
+
+    try:
+        for i, pose in enumerate(candidates):
+            joints, success = ik_solver.solve(pose.unsqueeze(0), base_pose_inv, device)
+            if success[0]:
+                print(
+                    f"[Info] Self/world collision-free start config found (candidate {i + 1}/{len(candidates)})."
+                )
+                return joints[0].to(morph.params.dtype)
+    finally:
+        try:
+            os.unlink(urdf_path)
+        except OSError:
+            pass
+
+    print(
+        "[Warning] All IK candidates failed — falling back to zero start configuration."
+    )
+    return torch.zeros(morph.n_links - 1, dtype=morph.params.dtype, device=device)
+
+
 def set_global_seed(seed: int) -> None:
     """Set random seeds used by this pipeline.
     Later modules can also reuse this seed if they support deterministic behavior.
@@ -81,6 +144,14 @@ def run_plan(
         ignore_ground=ignore_ground,
         ignore_obstacles=ignore_obstacles,
     )
+    if not planner.check_start_feasibility(start_q):
+        raise RuntimeError(
+            f"Start configuration is in collision (self or world) — aborting.\n"
+            f"  start_q = {start_q.tolist()}\n"
+            "  Check that IK candidate poses are reachable for this morphology, or run with "
+            "--ignore-ground / --ignore-obstacles to diagnose."
+        )
+
     ordered_poses = (
         task.goal_poses[task.goal_order]
         if task.goal_order is not None
@@ -125,6 +196,9 @@ def run_plan(
         dense = interpolate_path(result.path, step=0.03)
         print(f"Animating — {len(dense)} frames ...")
         animate_plan(morph, task, dense, curobo_planner=planner, failed_at_goal=None)
+
+        # To visualize the static scene instead of animating, replace the 3 lines above with:
+        # render_scene(morph, task, curobo_planner=planner, q=start_q)
 
 
 # def run_postprocess(csv_path: Path, task: Task, args: argparse.Namespace) -> None:
@@ -249,6 +323,16 @@ def main() -> None:
     # from util.csv_log_reader import load_middle_start_q_from_last_validation
     # task.start_q = load_middle_start_q_from_last_validation(csv_path=csv_path, device=optimized_morph.params.device)
     # print(task.start_q)
+
+    task.start_q = find_self_collision_free_start_q(
+        optimized_morph,
+        task,
+        device,
+        ignore_ground=args.ignore_ground,
+        ignore_obstacles=args.ignore_obstacles,
+    )
+
+    print(f"[Info] : Start Configuration : {task.start_q.tolist()}")
 
     run_plan(
         optimized_morph,
