@@ -22,69 +22,6 @@ from task.target1plus import create_task
 DEFAULT_CONFIG = Path(__file__).parent / "config.json"
 
 
-def find_self_collision_free_start_q(
-    morph: Morphology,
-    task: Task,
-    device: torch.device,
-    ignore_ground: bool = False,
-    ignore_obstacles: bool = False,
-) -> torch.Tensor:
-    import os
-    from util.kinematics import build_robot_dict, build_scene, IK
-
-    robot_dict, urdf_path = build_robot_dict(morph)
-    base_pose_inv = torch.linalg.inv(task.environment.base_pose.to(device))
-    scene = build_scene(
-        task,
-        base_pose_inv,
-        ignore_ground=ignore_ground,
-        ignore_obstacles=ignore_obstacles,
-    )
-
-    ik_solver = IK(
-        robot_dict=robot_dict,
-        scene=scene,
-        num_seeds=32,
-        max_batch_size=1,
-        self_collision_check=True,
-    )
-
-    # Multiple candidates because a single IK target may be unreachable for some morphologies.
-    # Offsets are in robot-base-local frame (z-up), then transformed to world frame.
-    base_pose = task.environment.base_pose.to(device)
-    candidate_offsets_local = [
-        (0.0, 0.55),  # above base — primary target
-        (0.0, 0.40),  # lower
-        (0.0, 0.70),  # higher
-        (0.10, 0.55),  # lateral offset
-    ]
-    candidates = []
-    for x, z in candidate_offsets_local:
-        pose_local = torch.eye(4, device=device)
-        pose_local[0, 3] = x
-        pose_local[2, 3] = z
-        candidates.append(base_pose @ pose_local)
-
-    try:
-        for i, pose in enumerate(candidates):
-            joints, success = ik_solver.solve(pose.unsqueeze(0), base_pose_inv, device)
-            if success[0]:
-                print(
-                    f"[Info] Self/world collision-free start config found (candidate {i + 1}/{len(candidates)})."
-                )
-                return joints[0].to(morph.params.dtype)
-    finally:
-        try:
-            os.unlink(urdf_path)
-        except OSError:
-            pass
-
-    print(
-        "[Warning] All IK candidates failed — falling back to zero start configuration."
-    )
-    return torch.zeros(morph.n_links - 1, dtype=morph.params.dtype, device=device)
-
-
 def set_global_seed(seed: int) -> None:
     """Set random seeds used by this pipeline.
     Later modules can also reuse this seed if they support deterministic behavior.
@@ -130,22 +67,25 @@ def run_plan(
     debug: bool = False,
     visualize: bool = True,
 ) -> None:
-    n_joints = morph.n_links - 1
     dtype = morph.params.dtype
-    start_q = (
-        task.start_q.to(dtype)
-        if task.start_q is not None
-        else torch.zeros(n_joints, dtype=dtype)
-    )
-
+    device = morph.params.device
     planner = CuroboPlanner(
         morph,
         task,
-        morph.params.device,
+        device,
         ignore_ground=ignore_ground,
         ignore_obstacles=ignore_obstacles,
     )
-    
+    start_q = (
+        task.start_q.to(dtype)
+        if task.start_q is not None
+        else planner.default_start_q().to(dtype)
+    )
+
+    task.start_q = start_q
+
+    print(f"[Info] Start configuration: {start_q.tolist()}")
+
     if not planner.check_start_feasibility(start_q):
         raise RuntimeError(
             f"Start configuration is in collision (self or world) — aborting.\n"
@@ -154,15 +94,10 @@ def run_plan(
             "--ignore-ground / --ignore-obstacles to diagnose."
         )
 
-    ordered_poses = (
-        task.goal_poses[task.goal_order]
-        if task.goal_order is not None
-        else task.goal_poses
-    )
-    result, final_q = planner.plan_sequence(ordered_poses, start_q)
+    n_goals = task.goal_poses.shape[0]
+    result, final_q = planner.plan_sequence(task.goal_poses, start_q)
 
     if not result.success:
-        n_goals = task.goal_poses.shape[0]
         failed_at = result.failed_at_goal
         if failed_at is not None:
             print(f"[cuRobo] Planning failed at goal {failed_at}/{n_goals}.")
@@ -178,7 +113,12 @@ def run_plan(
                     f"Animating partial plan — {len(dense)} frames (failure at goal {failed_at}/{n_goals}) ..."
                 )
                 animate_plan(
-                    morph, task, dense, curobo_planner=planner, failed_at_goal=failed_at
+                    morph,
+                    task,
+                    dense,
+                    curobo_planner=planner,
+                    failed_at_goal=failed_at,
+                    best_ik_q=result.best_ik_q,
                 )
         elif debug and visualize:
             print("Rendering static scene for debugging.")
@@ -188,16 +128,24 @@ def run_plan(
                 curobo_planner=planner,
                 failed_at_goal=failed_at,
                 best_ik_q=result.best_ik_q,
+                start_q=start_q,
             )
         return
 
     print(
-        f"\nSequence complete: {len(result.path)} waypoints through {task.goal_poses.shape[0]} goals."
+        f"\nSequence complete: {len(result.path)} waypoints through {n_goals} goals."
     )
     if visualize:
         dense = interpolate_path(result.path, step=0.03)
         print(f"Animating — {len(dense)} frames ...")
-        animate_plan(morph, task, dense, curobo_planner=planner, failed_at_goal=None)
+        animate_plan(
+            morph,
+            task,
+            dense,
+            curobo_planner=planner,
+            failed_at_goal=None,
+            best_ik_q=None,
+        )
 
         # To visualize the static scene instead of animating, replace the 3 lines above with:
         # render_scene(morph, task, curobo_planner=planner, q=start_q)
@@ -256,12 +204,11 @@ def main() -> None:
 
     print("[Info] Config:", json.dumps(vars(args), indent=2))
 
-    start_q = torch.tensor([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], device=device)
     task = Task(
         environment=l_environment(),
         goal_poses=create_task(),
         reachable_region=None,
-        start_q=start_q,
+        start_q=None,
     )
 
     # NOTE: for the updated candidate selection algorithm, the initial morphology is only used to get the link radius and the device
@@ -342,16 +289,6 @@ def main() -> None:
     # from util.csv_log_reader import load_middle_start_q_from_last_validation
     # task.start_q = load_middle_start_q_from_last_validation(csv_path=csv_path, device=optimized_morph.params.device)
     # print(task.start_q)
-
-    task.start_q = find_self_collision_free_start_q(
-        optimized_morph,
-        task,
-        device,
-        ignore_ground=args.ignore_ground,
-        ignore_obstacles=args.ignore_obstacles,
-    )
-
-    print(f"[Info] : Start Configuration : {task.start_q.tolist()}")
 
     run_plan(
         optimized_morph,

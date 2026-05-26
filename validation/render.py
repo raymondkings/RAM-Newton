@@ -7,7 +7,6 @@ import warp as wp
 import newton
 from scipy.spatial.transform import Rotation
 
-import torch
 from interface import Morphology, Task
 from util.kinematics import compute_link_world_poses, forward_kinematics
 from util.mdh import add_robot_to_builder
@@ -25,6 +24,8 @@ def add_curobo_scene_to_viser(server, scene, base_pose_f32) -> None:
     cuRobo stores obstacles in robot-local frame; base_pose_f32 (4×4 world←robot)
     is used to transform them back to world frame before rendering.
     """
+    if scene is None:
+        return
     R_base = base_pose_f32[:3, :3].float().cpu().numpy()
     t_base = base_pose_f32[:3, 3].float().cpu().numpy()
 
@@ -172,16 +173,18 @@ def _add_ghost_robot_to_viser(server, curobo_planner, best_ik_q, n_joints: int) 
     return handles
 
 
-def _add_ghost_toggle(server, ghost_handles: list) -> None:
-    """Add a viser checkbox that shows/hides ghost robot spheres."""
+def _add_ghost_toggle(server, ghost_handles: list):
+    """Add a viser checkbox that shows/hides best_ik ghost robot spheres."""
     if not ghost_handles:
-        return
-    toggle = server.gui.add_checkbox("Show ghost robot (best IK)", initial_value=False)
+        return None
+    toggle = server.gui.add_checkbox("Show best_ik", initial_value=False)
 
     @toggle.on_update
     def _on_toggle(_event) -> None:
         for h in ghost_handles:
             h.visible = toggle.value
+
+    return toggle
 
 
 def build_scene_builder(morph: Morphology, task: Task, q=None) -> newton.ModelBuilder:
@@ -206,16 +209,6 @@ def build_scene_builder(morph: Morphology, task: Task, q=None) -> newton.ModelBu
             as_site=True,
             color=wp.vec3(0.0, 0.8, 0.2),
             label="reachable_region",
-        )
-
-    for i in range(task.goal_poses.shape[0]):
-        pos = task.goal_poses[i, :3, 3].cpu()
-        builder.add_shape_sphere(
-            body=-1,
-            xform=wp.transform(p=wp.vec3(*pos.tolist()), q=wp.quat_identity()),
-            radius=0.03,
-            as_site=True,
-            color=wp.vec3(1.0, 0.2, 0.2),
         )
 
     poses = compute_link_world_poses(morph, q=q)
@@ -294,7 +287,8 @@ def _add_joint_limit_panel(
     curobo_planner,
     initial_q: torch.Tensor | None = None,
     on_change=None,
-) -> tuple[list, np.ndarray]:
+    folder_label: str = "Joint limits",
+) -> tuple[list, np.ndarray, "object"]:
     """Add a viser GUI panel of sliders showing each joint within its limits.
 
     If `on_change` is provided, sliders are interactive; the callback is invoked
@@ -312,7 +306,8 @@ def _add_joint_limit_panel(
 
     interactive = on_change is not None
     handles: list = []
-    with server.gui.add_folder("Joint limits"):
+    folder = server.gui.add_folder(folder_label)
+    with folder:
         for i in range(n_joints):
             lo, hi = float(limits[i, 0]), float(limits[i, 1])
             # Slider needs lo < hi; pad degenerate ranges so viser accepts them.
@@ -339,7 +334,7 @@ def _add_joint_limit_panel(
         for h in handles:
             h.on_update(_emit)
 
-    return handles, limits
+    return handles, limits, folder
 
 
 def _update_joint_limit_panel(
@@ -393,6 +388,7 @@ def render_scene(
     q=None,
     failed_at_goal: int | None = "unknown",
     best_ik_q=None,
+    start_q=None,
 ) -> None:
     """Render morphology + task environment in the Newton viewer (static)."""
     builder = build_scene_builder(morph, task, q=q)
@@ -414,11 +410,15 @@ def render_scene(
     _add_ghost_toggle(viewer._server, ghost_handles)
     axes_begins, axes_ends, axes_colors = make_origin_axes(axis_length=0.1)
     goal_axes_b, goal_axes_e, goal_axes_c = make_goal_pose_axes(task.goal_poses)
-    zero_q = torch.zeros(
-        morph.n_links - 1, dtype=morph.params.dtype, device=morph.params.device
+    eef_q = (
+        start_q.to(dtype=morph.params.dtype, device=morph.params.device)
+        if start_q is not None and hasattr(start_q, "to")
+        else torch.zeros(
+            morph.n_links - 1, dtype=morph.params.dtype, device=morph.params.device
+        )
     )
 
-    eef_b, eef_e, eef_c = make_eef_pose_axes(morph, zero_q, task.environment.base_pose)
+    eef_b, eef_e, eef_c = make_eef_pose_axes(morph, eef_q, task.environment.base_pose)
 
     ghost_available = bool(ghost_handles) and curobo_planner is not None
 
@@ -429,7 +429,14 @@ def render_scene(
 
     # Initial config for each target (kept independent so switching back to one
     # restores its prior pose).
-    builder_q = np.zeros(n_joints, dtype=np.float32)
+    if start_q is not None:
+        builder_q = (
+            start_q.detach().cpu().numpy().astype(np.float32)[:n_joints]
+            if hasattr(start_q, "detach")
+            else np.asarray(start_q, dtype=np.float32)[:n_joints]
+        )
+    else:
+        builder_q = np.zeros(n_joints, dtype=np.float32)
     ghost_q = (
         best_ik_q.detach().cpu().numpy().astype(np.float32)[:n_joints]
         if ghost_available
@@ -459,7 +466,7 @@ def render_scene(
             builder_q[:] = q[:n_joints]
             _apply_to_builder(q)
 
-    handles, limits = _add_joint_limit_panel(
+    handles, limits, _ = _add_joint_limit_panel(
         viewer._server,
         morph,
         curobo_planner,
@@ -472,15 +479,13 @@ def render_scene(
         for h in ghost_handles:
             h.visible = True
         target_picker = viewer._server.gui.add_button_group(
-            "Sliders drive", ("Ghost (best IK)", "Builder geometry")
+            "Sliders drive", ("best_ik", "Builder geometry")
         )
 
         @target_picker.on_click
         def _on_target_change(_event) -> None:
             nonlocal target
-            new_target = (
-                "ghost" if target_picker.value == "Ghost (best IK)" else "builder"
-            )
+            new_target = "ghost" if target_picker.value == "best_ik" else "builder"
             if new_target == target:
                 return
             target = new_target
@@ -556,9 +561,31 @@ def animate_plan(
         viewer._server, curobo_planner, best_ik_q, n_joints
     )
     _add_ghost_toggle(viewer._server, ghost_handles)
-    joint_limit_handles, joint_limit_bounds = _add_joint_limit_panel(
+    joint_limit_handles, joint_limit_bounds, _ = _add_joint_limit_panel(
         viewer._server, morph, curobo_planner, initial_q=path[0]
     )
+
+    if ghost_handles and best_ik_q is not None:
+        def _drive_best_ik(q: np.ndarray) -> None:
+            spheres = curobo_planner.robot_spheres_world(
+                torch.from_numpy(q[:n_joints])
+            )
+            for h, (x, y, z, *_) in zip(ghost_handles, spheres):
+                h.position = (float(x), float(y), float(z))
+
+        _, _, best_ik_folder = _add_joint_limit_panel(
+            viewer._server,
+            morph,
+            curobo_planner,
+            initial_q=best_ik_q,
+            on_change=_drive_best_ik,
+            folder_label="best_ik joints",
+        )
+        best_ik_folder.visible = bool(ghost_toggle and ghost_toggle.value)
+        if ghost_toggle is not None:
+            @ghost_toggle.on_update
+            def _sync_best_ik_folder(_event) -> None:
+                best_ik_folder.visible = ghost_toggle.value
     axes_begins, axes_ends, axes_colors = make_origin_axes(axis_length=0.1)
     goal_axes_b, goal_axes_e, goal_axes_c = make_goal_pose_axes(task.goal_poses)
 
@@ -607,6 +634,7 @@ def animate_plan(
         viewer.log_lines("/goals/frames", goal_axes_b, goal_axes_e, goal_axes_c)
         viewer.log_lines("/eef_frame", eef_b, eef_e, eef_c)
         viewer.end_frame()
+        _update_joint_limit_panel(joint_limit_handles, joint_limit_bounds, q)
 
     try:
         t = 0.0
