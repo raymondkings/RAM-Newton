@@ -218,19 +218,6 @@ def build_scene_builder(morph: Morphology, task: Task, q=None) -> newton.ModelBu
     return builder
 
 
-def add_obstacles_to_viser(server, task) -> None:
-    for i, obs in enumerate(task.environment.obstacles):
-        if obs.kind == "box":
-            center = tuple(float(v) for v in obs.center.cpu().tolist())
-            dims = tuple(float(obs.half_extents[j].item() * 2) for j in range(3))
-            server.scene.add_box(
-                f"/obstacles/box_{i}",
-                color=(170, 170, 170),
-                dimensions=dims,
-                position=center,
-            )
-
-
 def add_goals_to_viser(server, task, failed_at_goal) -> None:
     n_goals = task.goal_poses.shape[0]
     for i in range(n_goals):
@@ -402,7 +389,6 @@ def render_scene(
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
     viewer = _setup_viewer(model, port, share, curobo_planner)
-    add_obstacles_to_viser(viewer._server, task)
     add_goals_to_viser(viewer._server, task, failed_at_goal)
     ghost_handles = _add_ghost_robot_to_viser(
         viewer._server, curobo_planner, best_ik_q, n_joints
@@ -555,7 +541,6 @@ def animate_plan(
     frame_dt = 1.0 / fps
 
     viewer = _setup_viewer(model, port, share, curobo_planner)
-    add_obstacles_to_viser(viewer._server, task)
     add_goals_to_viser(viewer._server, task, failed_at_goal)
     ghost_handles = _add_ghost_robot_to_viser(
         viewer._server, curobo_planner, best_ik_q, n_joints
@@ -565,27 +550,6 @@ def animate_plan(
         viewer._server, morph, curobo_planner, initial_q=path[0]
     )
 
-    if ghost_handles and best_ik_q is not None:
-        def _drive_best_ik(q: np.ndarray) -> None:
-            spheres = curobo_planner.robot_spheres_world(
-                torch.from_numpy(q[:n_joints])
-            )
-            for h, (x, y, z, *_) in zip(ghost_handles, spheres):
-                h.position = (float(x), float(y), float(z))
-
-        _, _, best_ik_folder = _add_joint_limit_panel(
-            viewer._server,
-            morph,
-            curobo_planner,
-            initial_q=best_ik_q,
-            on_change=_drive_best_ik,
-            folder_label="best_ik joints",
-        )
-        best_ik_folder.visible = bool(ghost_toggle and ghost_toggle.value)
-        if ghost_toggle is not None:
-            @ghost_toggle.on_update
-            def _sync_best_ik_folder(_event) -> None:
-                best_ik_folder.visible = ghost_toggle.value
     axes_begins, axes_ends, axes_colors = make_origin_axes(axis_length=0.1)
     goal_axes_b, goal_axes_e, goal_axes_c = make_goal_pose_axes(task.goal_poses)
 
