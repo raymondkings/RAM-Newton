@@ -144,6 +144,7 @@ def run_plan(
         ignore_ground=ignore_ground,
         ignore_obstacles=ignore_obstacles,
     )
+    
     if not planner.check_start_feasibility(start_q):
         raise RuntimeError(
             f"Start configuration is in collision (self or world) — aborting.\n"
@@ -268,7 +269,6 @@ def main() -> None:
         goal_poses=create_task(),
         reachable_region=None,
         start_q=start_q,
-        goal_order=[0, 1, 2, 3, 4],  # 0123456789...
     )
 
     morph = Morphology(params=initial_morphologies[0])
