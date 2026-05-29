@@ -21,12 +21,12 @@
 #   4. Post-check optimized morphologies with the distribution checker.
 #   5. Keep the top TOP_PROBABILITY_FRACTION by NRM probability.
 #   6. Run IK/FK validation only on those top-probability candidates.
-#   7. Select final candidate by lowest validation SE3 error; if tied, use
-#      heuristic for the tiebreaker.
+#   7. Select final candidate by highest IK pose success rate, then lowest
+#      validation SE3 error; if tied, use heuristic for the tiebreaker.
 #
 # CSV convention:
-#   iteration = 0  -> validated top-probability candidate, not SE3-best
-#   iteration = 1  -> SE3-best candidate but not finally selected by tiebreak
+#   iteration = 0  -> validated top-probability candidate, not final-tier
+#   iteration = 1  -> final-tier candidate but not selected by tiebreak
 #   iteration = 2  -> final selected candidate
 # -----------------------------------------------------------------------------
 
@@ -747,12 +747,24 @@ def optimize_morphology(
 
         # ------------------------------------------------------------------
         # 7. Select final candidate:
-        #    lowest SE3; tie -> prefer exact zeros, avoid tiny nonzero links,
-        #    and avoid very unbalanced link lengths.
+        #    highest IK success rate -> lowest SE3 -> morphology heuristic.
         # ------------------------------------------------------------------
-        best_se3 = se3_scores.min()
-        best_se3_mask = (se3_scores - best_se3).abs() <= SE3_TIE_EPS
-        tied_indices = torch.nonzero(best_se3_mask, as_tuple=False).squeeze(1)
+        ik_success_rates = torch.tensor(
+            [
+                data["ik_success_pose_rate"].detach().cpu().item()
+                for data in validation_data_list
+            ],
+            dtype=se3_scores.dtype,
+            device=device,
+        )
+
+        best_ik_success_rate = ik_success_rates.max()
+        best_rate_mask = (ik_success_rates - best_ik_success_rate).abs() <= 1e-12
+        best_rate_indices = torch.nonzero(best_rate_mask, as_tuple=False).squeeze(1)
+
+        best_se3 = se3_scores[best_rate_indices].min()
+        final_tier_mask = best_rate_mask & ((se3_scores - best_se3).abs() <= SE3_TIE_EPS)
+        tied_indices = torch.nonzero(final_tier_mask, as_tuple=False).squeeze(1)
 
         ad_abs = processed_top[..., 1:].abs()                      # [K, 7, 2]
         link_mag = torch.linalg.norm(processed_top[..., 1:], dim=-1)  # [K, 7]
@@ -790,18 +802,20 @@ def optimize_morphology(
         if logging:
             print(
                 "[Info] Validation selection: "
-                f"best_se3={best_se3.item():.12f}, "
-                f"num_se3_ties={int(best_se3_mask.sum().item())}, "
+                f"best_ik_success_pose_rate={best_ik_success_rate.item() * 100.0:.2f}%, "
+                f"num_best_rate_candidates={int(best_rate_mask.sum().item())}, "
+                f"best_se3_within_best_rate={best_se3.item():.12f}, "
+                f"num_final_ties={int(final_tier_mask.sum().item())}, "
                 f"final_idx={final_idx}, "
                 f"final_length_sum={length_sums[final_idx].item():.6f}"
             )
 
         # Log all validated top-probability candidates.
-        # iteration marker: 0 = ordinary, 1 = SE3-best tie, 2 = final selected.
+        # iteration marker: 0 = ordinary, 1 = final-tier tie, 2 = final selected.
         for idx in range(processed_top.shape[0]):
             if idx == final_idx:
                 marker = 2
-            elif bool(best_se3_mask[idx]):
+            elif bool(final_tier_mask[idx]):
                 marker = 1
             else:
                 marker = 0
@@ -819,12 +833,16 @@ def optimize_morphology(
         final_processed_morphology = processed_top[final_idx]
         final_validation_data = validation_data_list[final_idx]
         final_se3 = final_validation_data["best_se3_dist_mean"].detach().cpu().item()
+        final_ik_success_rate = (
+            final_validation_data["ik_success_pose_rate"].detach().cpu().item()
+        )
 
         print(
             "[Final candidate] "
             f"loss={losses_top[final_idx].item():.6f}, "
             f"nrm_prob={probs_top[final_idx].item():.6f}, "
             f"final_se3_err={final_se3:.6f}, "
+            f"ik_success_pose_rate={final_ik_success_rate * 100.0:.2f}%, "
             f"length_sum={length_sums[final_idx].item():.6f}"
         )
 

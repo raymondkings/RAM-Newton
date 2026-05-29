@@ -1,5 +1,5 @@
 {
-    "seed": 42,
+    "seed": 0,
     "visualize": true,
     "debug": true,
     "num_iterations": 500,

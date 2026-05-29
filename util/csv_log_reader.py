@@ -47,6 +47,9 @@ def read_optimization_csv(csv_path: str | Path) -> list[dict]:
             parsed["reachability_probability"] = _parse_float_cell(
                 row.get("reachability_probability", "")
             )
+            parsed["ik_success_pose_rate"] = _parse_float_cell(
+                row.get("ik_success_pose_rate", "")
+            )
 
             for key in [
                 "raw_morphology_json",

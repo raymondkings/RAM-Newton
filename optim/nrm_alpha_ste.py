@@ -231,11 +231,15 @@ def optimize_morphology(
                 )
 
                 best_se3 = validation_data["best_se3_dist_mean"].detach().cpu().item()
+                ik_success_rate = (
+                    validation_data["ik_success_pose_rate"].detach().cpu().item()
+                )
                 tqdm.write(
                     f"[Iter {update_idx:>4}/{n_iter}] "
                     f"loss={loss.item():.6f}, "
                     f"nrm_prob={prob.item():.6f}, "
-                    f"best_se3={best_se3:.6f}"
+                    f"best_se3={best_se3:.6f}, "
+                    f"ik_success_pose_rate={ik_success_rate * 100.0:.2f}%"
                 )
 
             csv_logger.log_iteration(
@@ -297,11 +301,15 @@ def optimize_morphology(
         final_se3_err = (
             final_validation_data["best_se3_dist_mean"].detach().cpu().item()
         )
+        final_ik_success_rate = (
+            final_validation_data["ik_success_pose_rate"].detach().cpu().item()
+        )
         print(
             f"[Iter {n_iter:>4}/{n_iter}] "
             f"loss={final_loss.item():.6f}, "
             f"nrm_prob={final_prob.item():.6f}, "
-            f"final_se3_err={final_se3_err:.6f}"
+            f"final_se3_err={final_se3_err:.6f}, "
+            f"ik_success_pose_rate={final_ik_success_rate * 100.0:.2f}%"
         )
 
         if logging:
