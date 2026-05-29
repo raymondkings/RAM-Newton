@@ -22,7 +22,7 @@
 #   5. Keep the top TOP_PROBABILITY_FRACTION by NRM probability.
 #   6. Run IK/FK validation only on those top-probability candidates.
 #   7. Select final candidate by lowest validation SE3 error; if tied, use
-#      smallest total |a|+|d| as the tiebreaker.
+#      heuristic for the tiebreaker.
 #
 # CSV convention:
 #   iteration = 0  -> validated top-probability candidate, not SE3-best
@@ -746,14 +746,45 @@ def optimize_morphology(
         )
 
         # ------------------------------------------------------------------
-        # 7. Select final candidate: lowest SE3; tie -> smallest total |a|+|d|.
+        # 7. Select final candidate:
+        #    lowest SE3; tie -> prefer exact zeros, avoid tiny nonzero links,
+        #    and avoid very unbalanced link lengths.
         # ------------------------------------------------------------------
         best_se3 = se3_scores.min()
         best_se3_mask = (se3_scores - best_se3).abs() <= SE3_TIE_EPS
-
-        length_sums = processed_top[..., 1:].abs().sum(dim=(-2, -1))
         tied_indices = torch.nonzero(best_se3_mask, as_tuple=False).squeeze(1)
-        final_local_in_tied = torch.argmin(length_sums[tied_indices])
+
+        ad_abs = processed_top[..., 1:].abs()                      # [K, 7, 2]
+        link_mag = torch.linalg.norm(processed_top[..., 1:], dim=-1)  # [K, 7]
+
+        eps_zero = 1e-6
+        min_good_nonzero = 4.0 * morph.link_radius   # 0.1 if radius=0.025
+
+        # Keep this for the existing print/log below.
+        length_sums = ad_abs.sum(dim=(-2, -1))
+
+        # Reward exact zeros in a,d.
+        zero_reward = (ad_abs <= eps_zero).float().sum(dim=(-2, -1))
+
+        # Penalize nonzero entries that are too small, e.g. 0.0678.
+        is_tiny_nonzero = (ad_abs > eps_zero) & (ad_abs < min_good_nonzero)
+        tiny_penalty = (min_good_nonzero - ad_abs).clamp_min(0.0)
+        tiny_penalty = (tiny_penalty * is_tiny_nonzero.float()).sum(dim=(-2, -1))
+
+        # Penalize one link being much longer/shorter than the other active links.
+        active_link = link_mag > eps_zero
+        mean_link = (link_mag * active_link.float()).sum(dim=-1) / active_link.float().sum(dim=-1).clamp_min(1.0)
+        balance_penalty = ((link_mag - mean_link[:, None]) ** 2 * active_link.float()).sum(dim=-1)
+
+        # Smaller score wins.
+        tie_score = (
+            10.0 * tiny_penalty
+            + 2.0 * balance_penalty
+            + 0.02 * length_sums
+            - 0.003 * zero_reward
+        )
+
+        final_local_in_tied = torch.argmin(tie_score[tied_indices])
         final_idx = int(tied_indices[final_local_in_tied].item())
 
         if logging:
