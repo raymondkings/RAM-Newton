@@ -5,17 +5,19 @@ from scipy.spatial.transform import Rotation
 import warp as wp
 import xml.etree.ElementTree as ET
 from interface.morphology import Morphology
-
-EPS = 1e-4
+from util.self_collision import get_joint_limits
 
 
 def to_urdf(morph: Morphology) -> str:
-    """Convert an mdh description of a morphology to a URDF string
+    """Convert an mdh description of a morphology to a URDF string.
 
-    NOTE: joint limits are set to +/- 2pi and are not sufficient to guarantee no self-collisions.
+    Joint limits are derived from morphology geometry to avoid self-collisions
+    between the link capsules adjacent to each joint.
     """
     n = morph.n_links
     n_joints = n - 1  # revolute DOFs
+
+    joint_limits = get_joint_limits(morph.params)  # [n_links, 2] = [range, offset]
 
     robot = ET.Element("robot", name="mdh_robot")
     ET.SubElement(robot, "link", name="base_link")
@@ -41,11 +43,15 @@ def to_urdf(morph: Morphology) -> str:
         )
         ET.SubElement(jnt, "axis", xyz="0 0 1")
         if joint_type == "revolute":
+            joint_range = joint_limits[i, 0].item()
+            offset = joint_limits[i, 1].item()
+            lower = offset
+            upper = offset + joint_range
             ET.SubElement(
                 jnt,
                 "limit",
-                lower=f"{-2 * math.pi:.6f}",
-                upper=f"{2 * math.pi:.6f}",
+                lower=f"{lower:.6f}",
+                upper=f"{upper:.6f}",
                 effort="1000",
                 velocity=f"{math.pi:.6f}",
             )
