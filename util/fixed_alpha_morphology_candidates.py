@@ -9,7 +9,9 @@
 
 from __future__ import annotations
 
+import json
 import math
+from pathlib import Path
 
 import torch
 from torch import Tensor
@@ -32,6 +34,9 @@ DEFAULT_FIXED_ALPHA_RANDOM_TRIES = 5000
 # direct sampling requires high GPU memory... (1000 is the max for 5090 with 32GB)
 DEFAULT_DIRECT_PRESAMPLING_BATCH_SIZE = 1000
 DEFAULT_DYNAMIC_REJECTION_BATCH_SIZE = 128
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_INITIAL_CANDIDATE_CACHE_ROOT = _PROJECT_ROOT / "initial_candidates"
+_INITIAL_CANDIDATE_CACHE_FILENAME = "candidates.json"
 
 # Alpha candidate generation constants.  ALPHA_VALUES index 1 is the actual
 # zero-twist alpha value, so checking for zero-alpha means checking index == 1,
@@ -327,6 +332,280 @@ def _set_sampler_seed(seed: int | None, device: torch.device) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def _initial_candidate_cache_path(alpha_candidates: Tensor, seed: int | None) -> Path:
+    dof = alpha_candidates.shape[1] - 1
+    seed_label = "None" if seed is None else str(int(seed))
+    return (
+        _INITIAL_CANDIDATE_CACHE_ROOT
+        / f"DOF{dof}_seed{seed_label}"
+        / _INITIAL_CANDIDATE_CACHE_FILENAME
+    )
+
+
+def _dof_cache_label(dofs: list[int]) -> str:
+    sorted_dofs = sorted(int(dof) for dof in dofs)
+    if len(sorted_dofs) > 1 and sorted_dofs == list(
+        range(sorted_dofs[0], sorted_dofs[-1] + 1)
+    ):
+        return f"{sorted_dofs[0]}-{sorted_dofs[-1]}"
+    return "_".join(str(dof) for dof in sorted_dofs)
+
+
+def _initial_candidate_cache_path_for_dofs(
+    alpha_candidates_by_dof: dict[int, Tensor],
+    seed: int | None,
+) -> Path:
+    seed_label = "None" if seed is None else str(int(seed))
+    return (
+        _INITIAL_CANDIDATE_CACHE_ROOT
+        / f"DOF{_dof_cache_label(list(alpha_candidates_by_dof))}_seed{seed_label}"
+        / _INITIAL_CANDIDATE_CACHE_FILENAME
+    )
+
+
+def _alpha_signature(alpha_candidates: Tensor) -> list[list[int]]:
+    return [
+        [int(v) for v in row]
+        for row in _alpha_values_to_indices(
+            alpha_candidates.detach().squeeze(-1).cpu()
+        ).tolist()
+    ]
+
+
+def _load_cached_initial_candidates(
+    alpha_candidates: Tensor,
+    *,
+    seed: int | None,
+    link_radius: float,
+    logging: bool,
+) -> Tensor | None:
+    """Load cached initial morphologies if they match this alpha set."""
+    cache_path = _initial_candidate_cache_path(alpha_candidates, seed)
+    if not cache_path.is_file():
+        return None
+
+    try:
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+        metadata = data["metadata"]
+        morphologies = data["morphologies"]
+    except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        if logging:
+            print(f"[Warning] Could not read initial candidate cache {cache_path}: {exc}")
+        return None
+
+    dof = alpha_candidates.shape[1] - 1
+    expected_alpha_signature = _alpha_signature(alpha_candidates)
+    cache_is_compatible = (
+        metadata.get("dof") == dof
+        and metadata.get("seq_len") == alpha_candidates.shape[1]
+        and metadata.get("seed") == seed
+        and abs(float(metadata.get("link_radius", float("nan"))) - float(link_radius))
+        <= 1e-9
+        and metadata.get("alpha_signature") == expected_alpha_signature
+    )
+    if not cache_is_compatible:
+        if logging:
+            print(
+                "[Warning] Initial candidate cache metadata does not match current "
+                f"alpha candidates; resampling. cache={cache_path}"
+            )
+        return None
+
+    cached = torch.tensor(
+        morphologies,
+        dtype=alpha_candidates.dtype,
+        device=alpha_candidates.device,
+    )
+    expected_shape_tail = (alpha_candidates.shape[1], 3)
+    if cached.ndim != 3 or tuple(cached.shape[1:]) != expected_shape_tail:
+        if logging:
+            print(
+                "[Warning] Initial candidate cache has unexpected shape "
+                f"{tuple(cached.shape)}; resampling. cache={cache_path}"
+            )
+        return None
+
+    if logging:
+        print(
+            "[Info] Loaded initial candidate morphologies from cache: "
+            f"{cache_path} ({cached.shape[0]} candidates)."
+        )
+
+    return cached
+
+
+def _save_initial_candidate_cache(
+    alpha_candidates: Tensor,
+    morphologies: Tensor,
+    *,
+    seed: int | None,
+    link_radius: float,
+    logging: bool,
+) -> None:
+    """Save initial morphologies for reuse with the same DOF/seed/alpha set."""
+    cache_path = _initial_candidate_cache_path(alpha_candidates, seed)
+    dof = alpha_candidates.shape[1] - 1
+    payload = {
+        "metadata": {
+            "schema_version": 1,
+            "dof": dof,
+            "seq_len": alpha_candidates.shape[1],
+            "seed": seed,
+            "link_radius": float(link_radius),
+            "num_alpha_candidates": int(alpha_candidates.shape[0]),
+            "num_sampled_morphologies": int(morphologies.shape[0]),
+            "alpha_signature": _alpha_signature(alpha_candidates),
+        },
+        "morphologies": morphologies.detach().cpu().tolist(),
+    }
+
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except OSError as exc:
+        if logging:
+            print(f"[Warning] Could not write initial candidate cache {cache_path}: {exc}")
+        return
+
+    if logging:
+        print(f"[Info] Saved initial candidate morphologies to cache: {cache_path}")
+
+
+def _alpha_signatures_by_dof(
+    alpha_candidates_by_dof: dict[int, Tensor],
+) -> dict[str, list[list[int]]]:
+    return {
+        str(int(dof)): _alpha_signature(alpha_candidates)
+        for dof, alpha_candidates in sorted(alpha_candidates_by_dof.items())
+    }
+
+
+def _load_cached_initial_candidates_by_dof(
+    alpha_candidates_by_dof: dict[int, Tensor],
+    *,
+    seed: int | None,
+    link_radius: float,
+    logging: bool,
+) -> dict[int, Tensor] | None:
+    """Load a combined multi-DOF cache if it matches every alpha set."""
+    cache_path = _initial_candidate_cache_path_for_dofs(alpha_candidates_by_dof, seed)
+    if not cache_path.is_file():
+        return None
+
+    try:
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+        metadata = data["metadata"]
+        morphologies_by_dof = data["morphologies_by_dof"]
+    except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        if logging:
+            print(f"[Warning] Could not read initial candidate cache {cache_path}: {exc}")
+        return None
+
+    dofs = sorted(int(dof) for dof in alpha_candidates_by_dof)
+    cache_is_compatible = (
+        metadata.get("dofs") == dofs
+        and metadata.get("seed") == seed
+        and abs(float(metadata.get("link_radius", float("nan"))) - float(link_radius))
+        <= 1e-9
+        and metadata.get("alpha_signatures_by_dof")
+        == _alpha_signatures_by_dof(alpha_candidates_by_dof)
+    )
+    if not cache_is_compatible:
+        if logging:
+            print(
+                "[Warning] Multi-DOF initial candidate cache metadata does not "
+                f"match current alpha candidates; resampling. cache={cache_path}"
+            )
+        return None
+
+    cached_by_dof: dict[int, Tensor] = {}
+    for dof in dofs:
+        alpha_candidates = alpha_candidates_by_dof[dof]
+        try:
+            cached = torch.tensor(
+                morphologies_by_dof[str(dof)],
+                dtype=alpha_candidates.dtype,
+                device=alpha_candidates.device,
+            )
+        except KeyError:
+            if logging:
+                print(
+                    "[Warning] Multi-DOF initial candidate cache is missing "
+                    f"DOF{dof}; resampling. cache={cache_path}"
+                )
+            return None
+
+        expected_shape_tail = (dof + 1, 3)
+        if cached.ndim != 3 or tuple(cached.shape[1:]) != expected_shape_tail:
+            if logging:
+                print(
+                    "[Warning] Multi-DOF initial candidate cache has unexpected "
+                    f"shape for DOF{dof}: {tuple(cached.shape)}; resampling. "
+                    f"cache={cache_path}"
+                )
+            return None
+
+        cached_by_dof[dof] = cached
+
+    if logging:
+        counts = ", ".join(
+            f"DOF{dof}={cached_by_dof[dof].shape[0]}" for dof in dofs
+        )
+        print(
+            "[Info] Loaded multi-DOF initial candidate morphologies from cache: "
+            f"{cache_path} ({counts})."
+        )
+
+    return cached_by_dof
+
+
+def _save_initial_candidate_cache_by_dof(
+    alpha_candidates_by_dof: dict[int, Tensor],
+    morphologies_by_dof: dict[int, Tensor],
+    *,
+    seed: int | None,
+    link_radius: float,
+    logging: bool,
+) -> None:
+    """Save one combined cache for a set of DOFs."""
+    cache_path = _initial_candidate_cache_path_for_dofs(alpha_candidates_by_dof, seed)
+    dofs = sorted(int(dof) for dof in alpha_candidates_by_dof)
+    payload = {
+        "metadata": {
+            "schema_version": 1,
+            "dofs": dofs,
+            "seed": seed,
+            "link_radius": float(link_radius),
+            "num_alpha_candidates_by_dof": {
+                str(dof): int(alpha_candidates_by_dof[dof].shape[0]) for dof in dofs
+            },
+            "num_sampled_morphologies_by_dof": {
+                str(dof): int(morphologies_by_dof[dof].shape[0]) for dof in dofs
+            },
+            "alpha_signatures_by_dof": _alpha_signatures_by_dof(
+                alpha_candidates_by_dof
+            ),
+        },
+        "morphologies_by_dof": {
+            str(dof): morphologies_by_dof[dof].detach().cpu().tolist() for dof in dofs
+        },
+    }
+
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except OSError as exc:
+        if logging:
+            print(f"[Warning] Could not write initial candidate cache {cache_path}: {exc}")
+        return
+
+    if logging:
+        print(
+            "[Info] Saved multi-DOF initial candidate morphologies to cache: "
+            f"{cache_path}"
+        )
+
+
 def _dynamic_reject_morph_batched(
     morph: Tensor,
     *,
@@ -531,6 +810,15 @@ def sample_fixed_alpha_morphology_candidates(
         raise ValueError("dynamic_rejection_batch_size must be positive.")
 
     device = alpha_candidates.device
+    cached = _load_cached_initial_candidates(
+        alpha_candidates,
+        seed=seed,
+        link_radius=link_radius,
+        logging=logging,
+    )
+    if cached is not None:
+        return cached
+
     _set_sampler_seed(seed, device)
 
     presampled, remaining_mask = _direct_presample_matching_alpha_candidates(
@@ -599,4 +887,90 @@ def sample_fixed_alpha_morphology_candidates(
                 "attempts and were dropped."
             )
 
+    _save_initial_candidate_cache(
+        alpha_candidates,
+        result,
+        seed=seed,
+        link_radius=link_radius,
+        logging=logging,
+    )
+
     return result
+
+
+@torch.inference_mode()
+def sample_fixed_alpha_morphology_candidates_by_dof(
+    alpha_candidates_by_dof: dict[int, Tensor],
+    *,
+    seed: int | None = 0,
+    link_radius: float = LINK_RADIUS,
+    batch_size: int = DEFAULT_FIXED_ALPHA_BATCH_SIZE,
+    max_attempts_per_alpha: int = DEFAULT_FIXED_ALPHA_RANDOM_TRIES,
+    direct_presampling_batch_size: int = DEFAULT_DIRECT_PRESAMPLING_BATCH_SIZE,
+    dynamic_rejection_batch_size: int = DEFAULT_DYNAMIC_REJECTION_BATCH_SIZE,
+    logging: bool = True,
+) -> dict[int, Tensor]:
+    """Sample fixed-alpha initial morphologies for several DOFs with one cache.
+
+    The single-DOF sampler and its cache remain unchanged. This wrapper adds a
+    combined cache such as initial_candidates/DOF5-7_seed0/candidates.json and
+    otherwise runs the same fixed-alpha sampling process independently per DOF.
+
+    Returns:
+        Mapping from dof to Tensor [M, dof+1, 3].
+    """
+    if not alpha_candidates_by_dof:
+        raise ValueError("alpha_candidates_by_dof must not be empty.")
+
+    normalized: dict[int, Tensor] = {}
+    for dof, alpha_candidates in sorted(alpha_candidates_by_dof.items()):
+        dof = int(dof)
+        if alpha_candidates.ndim != 3 or alpha_candidates.shape[-1] != 1:
+            raise ValueError(
+                f"Expected alpha_candidates for DOF{dof} to have shape "
+                f"[N, dof+1, 1], got {tuple(alpha_candidates.shape)}."
+            )
+        actual_dof = alpha_candidates.shape[1] - 1
+        if actual_dof != dof:
+            raise ValueError(
+                f"DOF key {dof} does not match alpha candidate shape "
+                f"{tuple(alpha_candidates.shape)}."
+            )
+        normalized[dof] = alpha_candidates
+
+    cached = _load_cached_initial_candidates_by_dof(
+        normalized,
+        seed=seed,
+        link_radius=link_radius,
+        logging=logging,
+    )
+    if cached is not None:
+        return cached
+
+    sampled_by_dof: dict[int, Tensor] = {}
+    for dof, alpha_candidates in normalized.items():
+        if logging:
+            print(
+                f"[Info] Sampling initial candidate morphologies for DOF{dof} "
+                f"({alpha_candidates.shape[0]} alpha candidates)."
+            )
+        sampled_by_dof[dof] = sample_fixed_alpha_morphology_candidates(
+            alpha_candidates=alpha_candidates,
+            seed=seed,
+            link_radius=link_radius,
+            batch_size=batch_size,
+            max_attempts_per_alpha=max_attempts_per_alpha,
+            direct_presampling_batch_size=direct_presampling_batch_size,
+            dynamic_rejection_batch_size=dynamic_rejection_batch_size,
+            logging=logging,
+        )
+
+    _save_initial_candidate_cache_by_dof(
+        normalized,
+        sampled_by_dof,
+        seed=seed,
+        link_radius=link_radius,
+        logging=logging,
+    )
+
+    return sampled_by_dof

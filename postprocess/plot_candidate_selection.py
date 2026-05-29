@@ -2,13 +2,13 @@
 # Candidate-selection CSV plots for nrm_alpha_random_selection.py
 #
 # Expected CSV convention:
-#   iteration = 0  -> validated top-probability candidate, not SE3-best
-#   iteration = 1  -> SE3-best candidate but not finally selected by tiebreak
+#   iteration = 0  -> validated top-probability candidate, not final-tier
+#   iteration = 1  -> final-tier candidate but not finally selected by tiebreak
 #   iteration = 2  -> final selected candidate
 #
 # Outputs:
-#   1. Rotating 3D MP4 scatter: a, d, alpha for all validated candidates.
-#      Each link index has its own color.
+#   1. Rotating 3D MP4 scatter per DOF: a, d, alpha for all validated
+#      candidates. Each link index has its own color.
 #   2. 2D PNG scatter: NRM probability vs validation SE3 error.
 #      marker color: 0=blue, 1=orange, 2=red.
 # -----------------------------------------------------------------------------
@@ -56,6 +56,20 @@ def _load_validated_candidate_rows(csv_path: str | Path) -> list[dict]:
     return candidate_rows
 
 
+def _candidate_dof(row: dict) -> int:
+    morphology = row.get("processed_morphology_json")
+    if morphology is None:
+        raise ValueError("Candidate row is missing processed_morphology_json.")
+    return len(morphology) - 1
+
+
+def _group_rows_by_dof(rows: list[dict]) -> dict[int, list[dict]]:
+    grouped: dict[int, list[dict]] = {}
+    for row in rows:
+        grouped.setdefault(_candidate_dof(row), []).append(row)
+    return dict(sorted(grouped.items()))
+
+
 def _marker_sizes(markers: np.ndarray, base_size: float) -> np.ndarray:
     sizes = np.full(markers.shape, base_size, dtype=float)
     sizes[markers == 1] = base_size * 6.0
@@ -63,36 +77,16 @@ def _marker_sizes(markers: np.ndarray, base_size: float) -> np.ndarray:
     return sizes
 
 
-def create_candidate_morphology_3d_mp4(
-    csv_path: str | Path,
-    output_dir: str | Path = "output/candidate_plots",
-    filename: str | None = None,
-    fps: int = 24,
-    num_frames: int = 180,
-    dpi: int = 160,
+def _create_candidate_morphology_3d_mp4_for_rows(
+    rows: list[dict],
+    output_path: Path,
+    *,
+    dof: int,
+    fps: int,
+    num_frames: int,
+    dpi: int,
 ) -> Path:
-    """Create a rotating 3D scatter MP4 of candidate morphology parameters.
-
-    Axes:
-        x = a
-        y = d
-        z = alpha in degrees
-
-    Point color:
-        link index
-
-    Point size:
-        iteration marker 0 -> base size
-        iteration marker 1 -> 6.0x size
-        iteration marker 2 -> 10.0x size
-    """
-    rows = _load_validated_candidate_rows(csv_path)
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    if filename is None:
-        filename = f"candidate_morphology_3d_{_csv_time_suffix(csv_path)}.mp4"
-    output_path = output_dir / filename
-
+    """Create one rotating 3D scatter MP4 for candidate rows with one DOF."""
     morphs = np.array([row["processed_morphology_json"] for row in rows], dtype=float)
     markers = np.array([int(row["iteration"]) for row in rows], dtype=int)
 
@@ -103,6 +97,13 @@ def create_candidate_morphology_3d_mp4(
         )
 
     num_candidates, seq_len, _ = morphs.shape
+    expected_seq_len = dof + 1
+    if seq_len != expected_seq_len:
+        raise ValueError(
+            f"Expected DOF{dof} morphology seq_len={expected_seq_len}, "
+            f"got seq_len={seq_len}."
+        )
+
     sizes = _marker_sizes(markers, base_size=26.0)
 
     fig = plt.figure(figsize=(8.5, 7.0))
@@ -125,7 +126,10 @@ def create_candidate_morphology_3d_mp4(
             depthshade=True,
         )
 
-    ax.set_title(f"Top validated candidate morphologies ({num_candidates} candidates)")
+    ax.set_title(
+        f"DOF{dof} top validated candidate morphologies "
+        f"({num_candidates} candidates, {seq_len} links)"
+    )
     ax.set_xlabel("a")
     ax.set_ylabel("d")
     ax.set_zlabel("alpha [deg]")
@@ -155,6 +159,91 @@ def create_candidate_morphology_3d_mp4(
     return output_path
 
 
+def create_candidate_morphology_3d_mp4s(
+    csv_path: str | Path,
+    output_dir: str | Path = "output/candidate_plots",
+    filename: str | None = None,
+    fps: int = 24,
+    num_frames: int = 180,
+    dpi: int = 160,
+) -> list[Path]:
+    """Create rotating 3D scatter MP4s of candidate morphology parameters.
+
+    Mixed-DOF CSVs are split into one MP4 per DOF. Single-DOF CSVs keep the old
+    default filename for backwards compatibility.
+
+    Axes:
+        x = a
+        y = d
+        z = alpha in degrees
+
+    Point color:
+        link index
+
+    Point size:
+        iteration marker 0 -> base size
+        iteration marker 1 -> 6.0x size
+        iteration marker 2 -> 10.0x size
+    """
+    rows = _load_validated_candidate_rows(csv_path)
+    grouped_rows = _group_rows_by_dof(rows)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    paths: list[Path] = []
+    single_dof = len(grouped_rows) == 1
+    suffix = _csv_time_suffix(csv_path)
+    for dof, dof_rows in grouped_rows.items():
+        if filename is None:
+            if single_dof:
+                dof_filename = f"candidate_morphology_3d_{suffix}.mp4"
+            else:
+                dof_filename = f"candidate_morphology_3d_DOF{dof}_{suffix}.mp4"
+        else:
+            path = Path(filename)
+            if single_dof:
+                dof_filename = path.name
+            else:
+                dof_filename = f"{path.stem}_DOF{dof}{path.suffix or '.mp4'}"
+
+        paths.append(
+            _create_candidate_morphology_3d_mp4_for_rows(
+                dof_rows,
+                output_dir / dof_filename,
+                dof=dof,
+                fps=fps,
+                num_frames=num_frames,
+                dpi=dpi,
+            )
+        )
+
+    return paths
+
+
+def create_candidate_morphology_3d_mp4(
+    csv_path: str | Path,
+    output_dir: str | Path = "output/candidate_plots",
+    filename: str | None = None,
+    fps: int = 24,
+    num_frames: int = 180,
+    dpi: int = 160,
+) -> Path:
+    """Create one rotating 3D scatter MP4.
+
+    This preserves the historical single-path API. For mixed-DOF CSVs, prefer
+    create_candidate_morphology_3d_mp4s(), which returns every per-DOF MP4.
+    """
+    paths = create_candidate_morphology_3d_mp4s(
+        csv_path=csv_path,
+        output_dir=output_dir,
+        filename=filename,
+        fps=fps,
+        num_frames=num_frames,
+        dpi=dpi,
+    )
+    return paths[0]
+
+
 def create_probability_vs_se3_scatter(
     csv_path: str | Path,
     output_dir: str | Path = "output/candidate_plots",
@@ -178,6 +267,7 @@ def create_probability_vs_se3_scatter(
     probs = np.array([row["reachability_probability"] for row in rows], dtype=float)
     se3 = np.array([row["best_se3_dist_mean"] for row in rows], dtype=float)
     markers = np.array([int(row["iteration"]) for row in rows], dtype=int)
+    dofs = np.array([_candidate_dof(row) for row in rows], dtype=int)
 
     fig, ax = plt.subplots(figsize=(7.2, 5.2))
 
@@ -187,18 +277,30 @@ def create_probability_vs_se3_scatter(
         (2, "tab:red", "final selected"),
     ]
 
+    unique_dofs = sorted(set(int(dof) for dof in dofs.tolist()))
+    dof_symbols = ["o", "s", "^", "D", "P", "X"]
+    symbol_by_dof = {
+        dof: dof_symbols[idx % len(dof_symbols)] for idx, dof in enumerate(unique_dofs)
+    }
+
     for marker, color, label in specs:
         mask = markers == marker
         if not mask.any():
             continue
-        ax.scatter(
-            probs[mask],
-            se3[mask],
-            s=_marker_sizes(markers[mask], base_size=55.0),
-            color=color,
-            alpha=0.82,
-            label=label,
-        )
+        for dof in unique_dofs:
+            dof_mask = mask & (dofs == dof)
+            if not dof_mask.any():
+                continue
+            legend_label = label if len(unique_dofs) == 1 else f"{label}, DOF{dof}"
+            ax.scatter(
+                probs[dof_mask],
+                se3[dof_mask],
+                s=_marker_sizes(markers[dof_mask], base_size=55.0),
+                color=color,
+                marker=symbol_by_dof[dof],
+                alpha=0.82,
+                label=legend_label,
+            )
 
     ax.set_title("Validation SE3 error vs NRM probability")
     ax.set_xlabel("NRM mean reachability probability")
@@ -221,7 +323,7 @@ def create_candidate_selection_plots(
 ) -> list[Path]:
     """Create both candidate-selection plots."""
     output_dir = Path(output_dir)
-    mp4_path = create_candidate_morphology_3d_mp4(
+    mp4_paths = create_candidate_morphology_3d_mp4s(
         csv_path=csv_path,
         output_dir=output_dir,
         fps=fps,
@@ -233,7 +335,7 @@ def create_candidate_selection_plots(
         output_dir=output_dir,
         dpi=max(dpi, 200),
     )
-    return [mp4_path, png_path]
+    return [*mp4_paths, png_path]
 
 
 def _parse_args() -> argparse.Namespace:

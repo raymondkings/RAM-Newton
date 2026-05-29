@@ -84,7 +84,7 @@ EARLY_STOPPING_PATIENCE = 5
 
 # After post-optimization distribution filtering, only validate the top 10% by
 # final NRM probability.
-TOP_PROBABILITY_FRACTION = 0.10
+TOP_PROBABILITY_FRACTION = 0.05
 
 # Tie tolerance for validation SE3 errors.
 SE3_TIE_EPS = 1e-12
@@ -636,6 +636,7 @@ def optimize_morphology(
 
         alpha_candidates = initial_candidate_morphologies[..., 0:1].detach()
         length_candidates = initial_candidate_morphologies[..., 1:].detach()
+        initial_morphologies_for_log = initial_candidate_morphologies.detach()
 
         if alpha_candidates.shape[0] == 0:
             raise RuntimeError(
@@ -674,12 +675,11 @@ def optimize_morphology(
                 f"{n_stopped}/{alpha_candidates.shape[0]} candidates stopped before max iteration."
             )
 
-        raw_morphologies, processed_morphologies = _build_morphology_tensors(
+        _, processed_morphologies = _build_morphology_tensors(
             alpha_candidates,
             length_candidates,
             morph.link_radius,
         )
-        raw_morphologies = raw_morphologies.detach()
         processed_morphologies = processed_morphologies.detach()
 
         # ------------------------------------------------------------------
@@ -698,7 +698,7 @@ def optimize_morphology(
                 "distribution checker."
             )
 
-        raw_valid = raw_morphologies[post_valid_mask]
+        raw_valid = initial_morphologies_for_log[post_valid_mask]
         processed_valid = processed_morphologies[post_valid_mask]
         losses_valid = losses[post_valid_mask]
         probs_valid = probs[post_valid_mask]
