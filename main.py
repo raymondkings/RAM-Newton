@@ -285,7 +285,10 @@ def main() -> None:
     run_postprocess(Path(csv_path), task, args)
 
     from util.csv_log_reader import load_middle_start_q_from_last_validation
-    task.start_q = load_middle_start_q_from_last_validation(csv_path=csv_path, device=optimized_morph.params.device)
+
+    task.start_q = load_middle_start_q_from_last_validation(
+        csv_path=csv_path, device=optimized_morph.params.device
+    )
     print(task.start_q)
 
     run_plan(

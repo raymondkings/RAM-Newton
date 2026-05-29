@@ -390,7 +390,9 @@ def _load_cached_initial_candidates(
         morphologies = data["morphologies"]
     except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
         if logging:
-            print(f"[Warning] Could not read initial candidate cache {cache_path}: {exc}")
+            print(
+                f"[Warning] Could not read initial candidate cache {cache_path}: {exc}"
+            )
         return None
 
     dof = alpha_candidates.shape[1] - 1
@@ -464,7 +466,9 @@ def _save_initial_candidate_cache(
         cache_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     except OSError as exc:
         if logging:
-            print(f"[Warning] Could not write initial candidate cache {cache_path}: {exc}")
+            print(
+                f"[Warning] Could not write initial candidate cache {cache_path}: {exc}"
+            )
         return
 
     if logging:
@@ -498,7 +502,9 @@ def _load_cached_initial_candidates_by_dof(
         morphologies_by_dof = data["morphologies_by_dof"]
     except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
         if logging:
-            print(f"[Warning] Could not read initial candidate cache {cache_path}: {exc}")
+            print(
+                f"[Warning] Could not read initial candidate cache {cache_path}: {exc}"
+            )
         return None
 
     dofs = sorted(int(dof) for dof in alpha_candidates_by_dof)
@@ -548,9 +554,7 @@ def _load_cached_initial_candidates_by_dof(
         cached_by_dof[dof] = cached
 
     if logging:
-        counts = ", ".join(
-            f"DOF{dof}={cached_by_dof[dof].shape[0]}" for dof in dofs
-        )
+        counts = ", ".join(f"DOF{dof}={cached_by_dof[dof].shape[0]}" for dof in dofs)
         print(
             "[Info] Loaded multi-DOF initial candidate morphologies from cache: "
             f"{cache_path} ({counts})."
@@ -596,7 +600,9 @@ def _save_initial_candidate_cache_by_dof(
         cache_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     except OSError as exc:
         if logging:
-            print(f"[Warning] Could not write initial candidate cache {cache_path}: {exc}")
+            print(
+                f"[Warning] Could not write initial candidate cache {cache_path}: {exc}"
+            )
         return
 
     if logging:

@@ -139,9 +139,7 @@ def load_middle_start_q_from_last_validation(
         )
 
     try:
-        selected_idx = [int(idx) for idx in sampled_pose_indices].index(
-            goal_pose_index
-        )
+        selected_idx = [int(idx) for idx in sampled_pose_indices].index(goal_pose_index)
     except ValueError as exc:
         raise ValueError(
             f"Goal pose index {goal_pose_index} was not sampled in selected "

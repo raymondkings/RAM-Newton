@@ -121,7 +121,9 @@ def _generate_alpha_candidates_by_dof(
     return alpha_candidates_by_dof
 
 
-def _tie_score(processed_morphology: Tensor, link_radius: float) -> tuple[Tensor, Tensor]:
+def _tie_score(
+    processed_morphology: Tensor, link_radius: float
+) -> tuple[Tensor, Tensor]:
     """Return morphology heuristic score and length sum for one candidate."""
     ad_abs = processed_morphology[..., 1:].abs()
     link_mag = torch.linalg.norm(processed_morphology[..., 1:], dim=-1)
@@ -137,9 +139,9 @@ def _tie_score(processed_morphology: Tensor, link_radius: float) -> tuple[Tensor
     tiny_penalty = (tiny_penalty * is_tiny_nonzero.float()).sum()
 
     active_link = link_mag > eps_zero
-    mean_link = (link_mag * active_link.float()).sum() / active_link.float().sum().clamp_min(
-        1.0
-    )
+    mean_link = (
+        link_mag * active_link.float()
+    ).sum() / active_link.float().sum().clamp_min(1.0)
     balance_penalty = ((link_mag - mean_link) ** 2 * active_link.float()).sum()
 
     score = (
@@ -399,7 +401,9 @@ def optimize_morphology(
                 "post-optimization distribution checker."
             )
 
-        probs_valid = torch.stack([record["prob"].detach().to(device) for record in records])
+        probs_valid = torch.stack(
+            [record["prob"].detach().to(device) for record in records]
+        )
         num_valid = len(records)
         top_k = max(1, int(math.ceil(num_valid * TOP_PROBABILITY_FRACTION)))
         top_indices = torch.argsort(probs_valid, descending=True)[:top_k]
@@ -440,7 +444,9 @@ def optimize_morphology(
         best_rate_indices = torch.nonzero(best_rate_mask, as_tuple=False).squeeze(1)
 
         best_se3 = se3_scores[best_rate_indices].min()
-        final_tier_mask = best_rate_mask & ((se3_scores - best_se3).abs() <= SE3_TIE_EPS)
+        final_tier_mask = best_rate_mask & (
+            (se3_scores - best_se3).abs() <= SE3_TIE_EPS
+        )
         tied_indices = torch.nonzero(final_tier_mask, as_tuple=False).squeeze(1)
 
         tie_scores = []

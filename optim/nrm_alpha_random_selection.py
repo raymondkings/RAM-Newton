@@ -763,14 +763,16 @@ def optimize_morphology(
         best_rate_indices = torch.nonzero(best_rate_mask, as_tuple=False).squeeze(1)
 
         best_se3 = se3_scores[best_rate_indices].min()
-        final_tier_mask = best_rate_mask & ((se3_scores - best_se3).abs() <= SE3_TIE_EPS)
+        final_tier_mask = best_rate_mask & (
+            (se3_scores - best_se3).abs() <= SE3_TIE_EPS
+        )
         tied_indices = torch.nonzero(final_tier_mask, as_tuple=False).squeeze(1)
 
-        ad_abs = processed_top[..., 1:].abs()                      # [K, 7, 2]
+        ad_abs = processed_top[..., 1:].abs()  # [K, 7, 2]
         link_mag = torch.linalg.norm(processed_top[..., 1:], dim=-1)  # [K, 7]
 
         eps_zero = 1e-6
-        min_good_nonzero = 4.0 * morph.link_radius   # 0.1 if radius=0.025
+        min_good_nonzero = 4.0 * morph.link_radius  # 0.1 if radius=0.025
 
         # Keep this for the existing print/log below.
         length_sums = ad_abs.sum(dim=(-2, -1))
@@ -785,8 +787,12 @@ def optimize_morphology(
 
         # Penalize one link being much longer/shorter than the other active links.
         active_link = link_mag > eps_zero
-        mean_link = (link_mag * active_link.float()).sum(dim=-1) / active_link.float().sum(dim=-1).clamp_min(1.0)
-        balance_penalty = ((link_mag - mean_link[:, None]) ** 2 * active_link.float()).sum(dim=-1)
+        mean_link = (link_mag * active_link.float()).sum(
+            dim=-1
+        ) / active_link.float().sum(dim=-1).clamp_min(1.0)
+        balance_penalty = (
+            (link_mag - mean_link[:, None]) ** 2 * active_link.float()
+        ).sum(dim=-1)
 
         # Smaller score wins.
         tie_score = (
