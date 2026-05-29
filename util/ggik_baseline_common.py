@@ -331,7 +331,9 @@ def _ggik_parameters(optimization_parameters: dict) -> dict[str, Any]:
         "learning_rate_alpha": float(
             optimization_parameters.get("learning_rate_alpha", lr_fallback)
         ),
-        "collision_weight": float(optimization_parameters.get("collision_weight", 10.0)),
+        "collision_weight": float(
+            optimization_parameters.get("collision_weight", 10.0)
+        ),
         "collision_margin": float(optimization_parameters.get("collision_margin", 0.0)),
         "success_eps": float(optimization_parameters.get("success_eps", EPS)),
         "softmin_temperature": float(
@@ -426,9 +428,7 @@ def _ggik_metrics(
         best_score, best_idx = sample_score.min(dim=-1)
         best_se3 = se3.gather(-1, best_idx.unsqueeze(-1)).squeeze(-1)
 
-    success_per_sample = (se3 <= success_eps) & (
-        critical_distance >= collision_margin
-    )
+    success_per_sample = (se3 <= success_eps) & (critical_distance >= collision_margin)
 
     return GGIKMetrics(
         loss_per_candidate=best_score.mean(dim=-1),
@@ -739,7 +739,9 @@ def _distribution_valid_mask(
     )
 
 
-def _tie_score(processed_morphology: Tensor, link_radius: float) -> tuple[Tensor, Tensor]:
+def _tie_score(
+    processed_morphology: Tensor, link_radius: float
+) -> tuple[Tensor, Tensor]:
     ad_abs = processed_morphology[..., 1:].abs()
     link_mag = torch.linalg.norm(processed_morphology[..., 1:], dim=-1)
 
@@ -791,7 +793,9 @@ def _optimize_one_dof_group(
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
 
-    for start in range(0, initial_candidate_morphologies.shape[0], candidate_batch_size):
+    for start in range(
+        0, initial_candidate_morphologies.shape[0], candidate_batch_size
+    ):
         end = min(start + candidate_batch_size, initial_candidate_morphologies.shape[0])
         metrics = run_ggik_morphology_optimization(
             initial_morphologies=initial_candidate_morphologies[start:end],
@@ -850,7 +854,9 @@ def optimize_candidate_selection(
         DEFAULT_NUM_ALPHA_CANDIDATES,
     )
     candidate_batch_size = int(
-        optimization_parameters.get("candidate_batch_size", DEFAULT_CANDIDATE_BATCH_SIZE)
+        optimization_parameters.get(
+            "candidate_batch_size", DEFAULT_CANDIDATE_BATCH_SIZE
+        )
     )
     distribution_batch_size = int(
         optimization_parameters.get(
@@ -858,7 +864,9 @@ def optimize_candidate_selection(
             DEFAULT_DISTRIBUTION_BATCH_SIZE,
         )
     )
-    top_fraction = float(optimization_parameters.get("top_fraction", DEFAULT_TOP_FRACTION))
+    top_fraction = float(
+        optimization_parameters.get("top_fraction", DEFAULT_TOP_FRACTION)
+    )
     max_attempts_per_alpha = int(
         optimization_parameters.get(
             "max_attempts_per_alpha",
