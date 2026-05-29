@@ -188,7 +188,9 @@ def _distribution_valid_mask(
     )
 
 
-def _tie_score(processed_morphology: Tensor, link_radius: float) -> tuple[Tensor, Tensor]:
+def _tie_score(
+    processed_morphology: Tensor, link_radius: float
+) -> tuple[Tensor, Tensor]:
     ad_abs = processed_morphology[..., 1:].abs()
     link_mag = torch.linalg.norm(processed_morphology[..., 1:], dim=-1)
 
@@ -239,7 +241,9 @@ def _optimize_one_dof_group(
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
 
-    for start in range(0, initial_candidate_morphologies.shape[0], candidate_batch_size):
+    for start in range(
+        0, initial_candidate_morphologies.shape[0], candidate_batch_size
+    ):
         end = min(start + candidate_batch_size, initial_candidate_morphologies.shape[0])
         batch_initial = initial_candidate_morphologies[start:end]
 
@@ -319,7 +323,9 @@ def optimize_morphology(
         DEFAULT_NUM_ALPHA_CANDIDATES,
     )
     candidate_batch_size = int(
-        optimization_parameters.get("candidate_batch_size", DEFAULT_CANDIDATE_BATCH_SIZE)
+        optimization_parameters.get(
+            "candidate_batch_size", DEFAULT_CANDIDATE_BATCH_SIZE
+        )
     )
     distribution_batch_size = int(
         optimization_parameters.get(
@@ -327,7 +333,9 @@ def optimize_morphology(
             DEFAULT_DISTRIBUTION_BATCH_SIZE,
         )
     )
-    top_fraction = float(optimization_parameters.get("top_fraction", DEFAULT_TOP_FRACTION))
+    top_fraction = float(
+        optimization_parameters.get("top_fraction", DEFAULT_TOP_FRACTION)
+    )
     max_attempts_per_alpha = int(
         optimization_parameters.get(
             "max_attempts_per_alpha",
@@ -457,8 +465,8 @@ def optimize_morphology(
             )
             validation_data_list.append(validation_data)
             se3_scores[idx] = validation_data["best_se3_dist_mean"].detach().to(device)
-            ik_success_rates[idx] = validation_data["ik_success_pose_rate"].detach().to(
-                device
+            ik_success_rates[idx] = (
+                validation_data["ik_success_pose_rate"].detach().to(device)
             )
 
         best_ik_success_rate = ik_success_rates.max()

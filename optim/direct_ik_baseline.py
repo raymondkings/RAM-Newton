@@ -85,7 +85,9 @@ def _build_morphology_tensors(
     return raw_morphologies, processed_morphologies
 
 
-def _goal_poses_in_robot_frame(task: Task, device: torch.device, dtype: torch.dtype) -> Tensor:
+def _goal_poses_in_robot_frame(
+    task: Task, device: torch.device, dtype: torch.dtype
+) -> Tensor:
     base_pose_inv = torch.linalg.inv(
         task.environment.base_pose.to(device=device, dtype=dtype)
     )
@@ -226,16 +228,24 @@ def _collision_critical_distance(mdh: Tensor, poses: Tensor, radius: float) -> T
     cum_sum = torch.cumsum(active_end, dim=-1)
     active_end &= (cum_sum == 2) | (cum_sum == (cum_sum[..., -1:] - 1))
 
-    critical_distance = torch.where(
-        active_pairs,
-        distances,
-        torch.ones_like(distances),
-    ).min(dim=-1).values.reshape(batch_shape)
-    critical_distance_end = torch.where(
-        active_end,
-        distance_end,
-        torch.ones_like(distance_end),
-    ).min(dim=-1).values
+    critical_distance = (
+        torch.where(
+            active_pairs,
+            distances,
+            torch.ones_like(distances),
+        )
+        .min(dim=-1)
+        .values.reshape(batch_shape)
+    )
+    critical_distance_end = (
+        torch.where(
+            active_end,
+            distance_end,
+            torch.ones_like(distance_end),
+        )
+        .min(dim=-1)
+        .values
+    )
 
     return torch.minimum(critical_distance, critical_distance_end)
 
@@ -301,8 +311,12 @@ def _direct_ik_metrics(
         3,
     )
 
-    flat_morph = morph_expanded.reshape(num_candidates * num_poses * num_joint_seeds, seq_len, 3)
-    flat_joints = full_joints.reshape(num_candidates * num_poses * num_joint_seeds, seq_len, 1)
+    flat_morph = morph_expanded.reshape(
+        num_candidates * num_poses * num_joint_seeds, seq_len, 3
+    )
+    flat_joints = full_joints.reshape(
+        num_candidates * num_poses * num_joint_seeds, seq_len, 1
+    )
 
     reached_poses = forward_kinematics(flat_morph, flat_joints)
     ee_poses = reached_poses[:, -1].reshape(
@@ -338,7 +352,9 @@ def _direct_ik_metrics(
 
     success_per_seed = (se3 <= success_eps) & (critical_distance >= collision_margin)
     pose_success_rate = success_per_seed.any(dim=-1).float().mean(dim=-1)
-    self_collision_pose_rate = (critical_distance < 0.0).any(dim=-1).float().mean(dim=-1)
+    self_collision_pose_rate = (
+        (critical_distance < 0.0).any(dim=-1).float().mean(dim=-1)
+    )
 
     return DirectIKMetrics(
         loss_per_candidate=loss_per_candidate,
@@ -395,8 +411,12 @@ def _run_direct_ik_length_optimization(
         generator=generator,
     ).requires_grad_(True)
 
-    length_optimizer = torch.optim.AdamW([lengths], lr=learning_rate_length, weight_decay=0.0)
-    joint_optimizer = torch.optim.AdamW([joint_raw], lr=learning_rate_joint, weight_decay=0.0)
+    length_optimizer = torch.optim.AdamW(
+        [lengths], lr=learning_rate_length, weight_decay=0.0
+    )
+    joint_optimizer = torch.optim.AdamW(
+        [joint_raw], lr=learning_rate_joint, weight_decay=0.0
+    )
 
     iterator = tqdm(
         range(num_iterations),
@@ -509,7 +529,9 @@ def _direct_ik_parameters(optimization_parameters: dict) -> dict[str, Any]:
         "joint_refinement_steps": int(
             optimization_parameters.get("joint_refinement_steps", 5)
         ),
-        "collision_weight": float(optimization_parameters.get("collision_weight", 10.0)),
+        "collision_weight": float(
+            optimization_parameters.get("collision_weight", 10.0)
+        ),
         "collision_margin": float(optimization_parameters.get("collision_margin", 0.0)),
         "success_eps": float(optimization_parameters.get("success_eps", EPS)),
         "softmin_temperature": float(
@@ -738,4 +760,3 @@ def optimize_morphology(
 
     finally:
         csv_logger.close()
-
