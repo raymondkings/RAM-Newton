@@ -55,7 +55,7 @@ DEFAULT_DISTRIBUTION_BATCH_SIZE = NRM_DEFAULT_DISTRIBUTION_BATCH_SIZE
 DEFAULT_TOP_FRACTION = NRM_TOP_PROBABILITY_FRACTION
 # Number of morphologies optimized together. Internally this becomes
 # morphology batch size * number of poses GGIK graphs per forward chunk.
-DEFAULT_GGIK_MORPHOLOGY_BATCH_SIZE = 300
+DEFAULT_GGIK_MORPHOLOGY_BATCH_SIZE = 325
 ZERO_ALPHA_RUN_EXCLUSION_LENGTH = 3
 
 
@@ -890,6 +890,11 @@ def optimize_single_morphology(
                 number_random_seed=number_random_seed,
                 random_seed=random_seed,
             )
+        else:
+            validation_data = {
+                "ik_success_pose_rate": metrics.pose_success_rate.mean(),
+                "best_se3_dist_mean": metrics.best_se3_mean.mean(),
+            }
 
         csv_logger.log_iteration(
             iteration=ggik_params["num_iterations"],
