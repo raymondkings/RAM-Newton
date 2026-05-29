@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
 import math
 import sys
@@ -24,10 +25,17 @@ from optim.direct_ik_baseline import (
     _pose_se3_distance,
     _run_validation,
 )
+from optim.nrm_alpha_random_selection import (
+    DEFAULT_DISTRIBUTION_BATCH_SIZE as NRM_DEFAULT_DISTRIBUTION_BATCH_SIZE,
+    DEFAULT_NUM_ALPHA_CANDIDATES as NRM_DEFAULT_NUM_ALPHA_CANDIDATES,
+    SE3_TIE_EPS,
+    TOP_PROBABILITY_FRACTION as NRM_TOP_PROBABILITY_FRACTION,
+)
 from util.fixed_alpha_morphology_candidates import (
     DEFAULT_DYNAMIC_REJECTION_BATCH_SIZE,
     DEFAULT_FIXED_ALPHA_RANDOM_TRIES,
     generate_alpha_candidates,
+    sample_fixed_alpha_morphology_candidates_by_dof,
     _sample_one_chunk_with_fixed_alpha,
     _set_sampler_seed,
 )
@@ -41,15 +49,36 @@ PROJECT_ROOT = Path(__file__).parent.parent
 DEFAULT_GGIK_REPO_PATH = Path("/tmp/generative-graphik")
 DEFAULT_GGIK_MODEL_NAME = "67_4mil_480-80_checkpoint_model"
 DEFAULT_CANDIDATE_DOFS = (5, 6, 7)
-DEFAULT_NUM_ALPHA_CANDIDATES: int | str = 64
-DEFAULT_CANDIDATE_BATCH_SIZE = 8
-DEFAULT_DISTRIBUTION_BATCH_SIZE = 64
-DEFAULT_TOP_FRACTION = 0.10
+DEFAULT_NUM_ALPHA_CANDIDATES: int | str = NRM_DEFAULT_NUM_ALPHA_CANDIDATES
+DEFAULT_CANDIDATE_BATCH_SIZE: int | str = "ALL"
+DEFAULT_DISTRIBUTION_BATCH_SIZE = NRM_DEFAULT_DISTRIBUTION_BATCH_SIZE
+DEFAULT_TOP_FRACTION = NRM_TOP_PROBABILITY_FRACTION
 ZERO_ALPHA_RUN_EXCLUSION_LENGTH = 3
 
 
 class GGIKUnavailableError(RuntimeError):
     pass
+
+
+def _patch_networkx_shortest_path_for_graphik() -> None:
+    import networkx as nx
+
+    if getattr(nx.shortest_path, "_nrm_graphik_compat", False):
+        return
+
+    original_shortest_path = nx.shortest_path
+
+    def shortest_path_compat(*args, **kwargs):
+        result = original_shortest_path(*args, **kwargs)
+        if not isinstance(result, (dict, list)):
+            try:
+                return dict(result)
+            except TypeError:
+                return result
+        return result
+
+    shortest_path_compat._nrm_graphik_compat = True
+    nx.shortest_path = shortest_path_compat
 
 
 @dataclass
@@ -111,6 +140,7 @@ class TimGenerativeGraphIKSolver:
 
     def _import_dependencies(self) -> None:
         try:
+            _patch_networkx_shortest_path_for_graphik()
             from graphik.graphs import ProblemGraphRevolute
             from graphik.robots import RobotRevolute
             from graphik.utils.dgp import graph_from_pos
@@ -193,6 +223,9 @@ class TimGenerativeGraphIKSolver:
             state = state["net"]
         model.load_state_dict(state)
         model.eval()
+        self._forward_eval_uses_data_api = (
+            "data" in inspect.signature(model.forward_eval).parameters
+        )
         return model
 
     def _graph_from_morphology(self, morphology: Tensor):
@@ -226,6 +259,14 @@ class TimGenerativeGraphIKSolver:
         ).unsqueeze(0)
         return torch.cat([identity, poses], dim=0)
 
+    def _generate_data_point_from_pose_cpu(self, graph, target_pose_se3):
+        default_device = torch.get_default_device()
+        torch.set_default_device("cpu")
+        try:
+            return self.generate_data_point_from_pose(graph, target_pose_se3)
+        finally:
+            torch.set_default_device(default_device)
+
     def _predict_one_pose(
         self,
         *,
@@ -236,23 +277,29 @@ class TimGenerativeGraphIKSolver:
         seq_len = morphology.shape[0]
         target_pose_np = target_pose.detach().cpu().numpy()
         target_pose_se3 = self.SE3.from_matrix(target_pose_np, normalize=True)
-        data = self.generate_data_point_from_pose(graph, target_pose_se3).to(
+        data = self._generate_data_point_from_pose_cpu(graph, target_pose_se3).to(
             self.device
         )
         data.num_graphs = 1
         data = self.model.preprocess(data)
 
-        p_all = self.model.forward_eval(
-            x=data.pos,
-            h=torch.cat((data.type, data.goal_data_repeated_per_node), dim=-1),
-            edge_attr=data.edge_attr,
-            edge_attr_partial=data.edge_attr_partial,
-            edge_index=data.edge_index_full,
-            partial_goal_mask=data.partial_goal_mask,
-            nodes_per_single_graph=data.pos.shape[0],
-            num_samples=self.num_samples,
-            batch_size=1,
-        ).to(device=self.device, dtype=self.dtype)
+        if self._forward_eval_uses_data_api:
+            p_all = self.model.forward_eval(
+                data,
+                num_samples=self.num_samples,
+            ).to(device=self.device, dtype=self.dtype)
+        else:
+            p_all = self.model.forward_eval(
+                x=data.pos,
+                h=torch.cat((data.type, data.goal_data_repeated_per_node), dim=-1),
+                edge_attr=data.edge_attr,
+                edge_attr_partial=data.edge_attr_partial,
+                edge_index=data.edge_index_full,
+                partial_goal_mask=data.partial_goal_mask,
+                nodes_per_single_graph=data.pos.shape[0],
+                num_samples=self.num_samples,
+                batch_size=1,
+            ).to(device=self.device, dtype=self.dtype)
 
         if self.torch_postprocess:
             t0 = self._differentiable_t0(morphology)
@@ -627,6 +674,19 @@ def _resolve_candidate_dofs(value: Any) -> list[int]:
     return sorted(set(dofs))
 
 
+def _resolve_candidate_batch_size(value: Any, total_candidates: int) -> int:
+    if total_candidates <= 0:
+        raise ValueError("total_candidates must be positive.")
+
+    if isinstance(value, str) and value.strip().upper() == "ALL":
+        return total_candidates
+
+    batch_size = int(value)
+    if batch_size <= 0:
+        raise ValueError("candidate_batch_size must be positive or 'ALL'.")
+    return min(batch_size, total_candidates)
+
+
 def _generate_alpha_candidates_by_dof(
     *,
     dofs: list[int],
@@ -786,17 +846,26 @@ def _optimize_one_dof_group(
     link_radius: float,
     solver: TimGenerativeGraphIKSolver,
     ggik_params: dict[str, Any],
-    candidate_batch_size: int,
+    candidate_batch_size: Any,
     distribution_batch_size: int,
     random_seed: int,
     logging: bool,
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
+    resolved_candidate_batch_size = _resolve_candidate_batch_size(
+        candidate_batch_size,
+        total_candidates=initial_candidate_morphologies.shape[0],
+    )
 
     for start in range(
-        0, initial_candidate_morphologies.shape[0], candidate_batch_size
+        0,
+        initial_candidate_morphologies.shape[0],
+        resolved_candidate_batch_size,
     ):
-        end = min(start + candidate_batch_size, initial_candidate_morphologies.shape[0])
+        end = min(
+            start + resolved_candidate_batch_size,
+            initial_candidate_morphologies.shape[0],
+        )
         metrics = run_ggik_morphology_optimization(
             initial_morphologies=initial_candidate_morphologies[start:end],
             target_poses_local=target_poses_local,
@@ -853,10 +922,9 @@ def optimize_candidate_selection(
         "num_alpha_candidates",
         DEFAULT_NUM_ALPHA_CANDIDATES,
     )
-    candidate_batch_size = int(
-        optimization_parameters.get(
-            "candidate_batch_size", DEFAULT_CANDIDATE_BATCH_SIZE
-        )
+    candidate_batch_size = optimization_parameters.get(
+        "candidate_batch_size",
+        DEFAULT_CANDIDATE_BATCH_SIZE,
     )
     distribution_batch_size = int(
         optimization_parameters.get(
@@ -879,9 +947,17 @@ def optimize_candidate_selection(
             DEFAULT_DYNAMIC_REJECTION_BATCH_SIZE,
         )
     )
+    use_cached_initial_candidates = bool(
+        optimization_parameters.get("use_cached_initial_candidates", True)
+    )
 
-    if candidate_batch_size <= 0:
-        raise ValueError("candidate_batch_size must be positive.")
+    if not (
+        isinstance(candidate_batch_size, str)
+        and candidate_batch_size.strip().upper() == "ALL"
+    ):
+        candidate_batch_size = int(candidate_batch_size)
+        if candidate_batch_size <= 0:
+            raise ValueError("candidate_batch_size must be positive or 'ALL'.")
     if distribution_batch_size <= 0:
         raise ValueError("distribution_batch_size must be positive.")
     if not (0.0 < top_fraction <= 1.0):
@@ -909,17 +985,30 @@ def optimize_candidate_selection(
             logging=logging,
         )
 
-        initial_candidate_morphologies_by_dof = (
-            _sample_fixed_alpha_morphology_candidates_by_dof_no_cache(
-                alpha_candidates_by_dof=alpha_candidates_by_dof,
-                seed=random_seed,
-                link_radius=morph.link_radius,
-                batch_size=distribution_batch_size,
-                max_attempts_per_alpha=max_attempts_per_alpha,
-                dynamic_rejection_batch_size=dynamic_rejection_batch_size,
-                logging=logging,
+        if use_cached_initial_candidates:
+            initial_candidate_morphologies_by_dof = (
+                sample_fixed_alpha_morphology_candidates_by_dof(
+                    alpha_candidates_by_dof=alpha_candidates_by_dof,
+                    seed=random_seed,
+                    link_radius=morph.link_radius,
+                    batch_size=distribution_batch_size,
+                    max_attempts_per_alpha=max_attempts_per_alpha,
+                    dynamic_rejection_batch_size=dynamic_rejection_batch_size,
+                    logging=logging,
+                )
             )
-        )
+        else:
+            initial_candidate_morphologies_by_dof = (
+                _sample_fixed_alpha_morphology_candidates_by_dof_no_cache(
+                    alpha_candidates_by_dof=alpha_candidates_by_dof,
+                    seed=random_seed,
+                    link_radius=morph.link_radius,
+                    batch_size=distribution_batch_size,
+                    max_attempts_per_alpha=max_attempts_per_alpha,
+                    dynamic_rejection_batch_size=dynamic_rejection_batch_size,
+                    logging=logging,
+                )
+            )
 
         records: list[dict[str, Any]] = []
         for dof in candidate_dofs:
@@ -960,18 +1049,36 @@ def optimize_candidate_selection(
             tie_scores.append(tie_score)
             length_sums.append(length_sum)
 
-        tie_scores_tensor = torch.stack(tie_scores).to(device)
-        final_idx = int(torch.argmin(tie_scores_tensor).item())
         length_sums_tensor = torch.stack(length_sums).to(device)
+        ggik_se3_tensor = torch.stack(
+            [record["ggik_se3"].to(device) for record in top_records]
+        )
+        best_ggik_se3 = ggik_se3_tensor.min()
+        final_tier_mask = (ggik_se3_tensor - best_ggik_se3).abs() <= SE3_TIE_EPS
+        tied_indices = torch.nonzero(final_tier_mask, as_tuple=False).squeeze(1)
+
+        tie_scores_tensor = torch.stack(tie_scores).to(device)
+        final_local_in_tied = torch.argmin(tie_scores_tensor[tied_indices])
+        final_idx = int(tied_indices[final_local_in_tied].item())
 
         for idx, record in enumerate(top_records):
+            if idx == final_idx:
+                marker = 2
+            elif bool(final_tier_mask[idx]):
+                marker = 1
+            else:
+                marker = 0
+
             csv_logger.log_iteration(
-                iteration=2 if idx == final_idx else 0,
+                iteration=marker,
                 loss=record["loss"],
                 reachability_probability=record["ggik_success"],
                 raw_morphology=record["raw_morphology"],
                 processed_morphology=record["processed_morphology"],
-                validation_data=None,
+                validation_data={
+                    "ik_success_pose_rate": record["ggik_success"],
+                    "best_se3_dist_mean": record["ggik_se3"],
+                },
             )
 
         final_record = top_records[final_idx]

@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 
 from task.morphology_sampler import sample_dof6_initial_morphologies
-from optim.nrm_alpha_random_selection_5_7 import optimize_morphology
+from optim.ggik_candidate_selection_baseline import optimize_morphology
 from interface import Morphology, Task
 from task.environment import l_environment
 from validation.curobo_planner import CuroboPlanner, interpolate_path
