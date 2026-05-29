@@ -48,7 +48,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 
 DEFAULT_GGIK_REPO_PATH = Path("/tmp/generative-graphik")
 DEFAULT_GGIK_MODEL_NAME = "67_4mil_480-80_checkpoint_model"
-DEFAULT_CANDIDATE_DOFS = (5, 6, 7)
+DEFAULT_CANDIDATE_DOFS = (7, 6, 5)
 DEFAULT_NUM_ALPHA_CANDIDATES: int | str = NRM_DEFAULT_NUM_ALPHA_CANDIDATES
 DEFAULT_CANDIDATE_BATCH_SIZE: int | str = "ALL"
 DEFAULT_DISTRIBUTION_BATCH_SIZE = NRM_DEFAULT_DISTRIBUTION_BATCH_SIZE
@@ -671,7 +671,13 @@ def _resolve_candidate_dofs(value: Any) -> list[int]:
         raise ValueError("candidate_dofs must not be empty.")
     if any(dof <= 0 for dof in dofs):
         raise ValueError(f"candidate_dofs must be positive, got {dofs}.")
-    return sorted(set(dofs))
+    seen: set[int] = set()
+    ordered_dofs: list[int] = []
+    for dof in dofs:
+        if dof not in seen:
+            ordered_dofs.append(dof)
+            seen.add(dof)
+    return ordered_dofs
 
 
 def _resolve_candidate_batch_size(value: Any, total_candidates: int) -> int:

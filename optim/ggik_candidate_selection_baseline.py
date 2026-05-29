@@ -21,6 +21,6 @@ def optimize_morphology(
         morph,
         task,
         optimization_parameters,
-        default_candidate_dofs=(5, 6, 7),
-        label="GGIK DOF5-7 candidate baseline",
+        default_candidate_dofs=(7, 6, 5),
+        label="GGIK DOF7-5 candidate baseline",
     )
