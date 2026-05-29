@@ -50,9 +50,12 @@ DEFAULT_GGIK_REPO_PATH = Path("/tmp/generative-graphik")
 DEFAULT_GGIK_MODEL_NAME = "67_4mil_480-80_checkpoint_model"
 DEFAULT_CANDIDATE_DOFS = (7, 6, 5)
 DEFAULT_NUM_ALPHA_CANDIDATES: int | str = NRM_DEFAULT_NUM_ALPHA_CANDIDATES
-DEFAULT_CANDIDATE_BATCH_SIZE: int | str = "ALL"
+DEFAULT_CANDIDATE_BATCH_SIZE: int | str = "GGIK_FORWARD"
 DEFAULT_DISTRIBUTION_BATCH_SIZE = NRM_DEFAULT_DISTRIBUTION_BATCH_SIZE
 DEFAULT_TOP_FRACTION = NRM_TOP_PROBABILITY_FRACTION
+# Number of morphologies optimized together. Internally this becomes
+# morphology batch size * number of poses GGIK graphs per forward chunk.
+DEFAULT_GGIK_MORPHOLOGY_BATCH_SIZE = 300
 ZERO_ALPHA_RUN_EXCLUSION_LENGTH = 3
 
 
@@ -145,10 +148,14 @@ class TimGenerativeGraphIKSolver:
             from graphik.robots import RobotRevolute
             from graphik.utils.dgp import graph_from_pos
             from liegroups.numpy import SE3
+            from torch_geometric.data import Batch
             from generative_graphik.utils.dataset_generation import (
                 generate_data_point_from_pose,
             )
-            from generative_graphik.utils.torch_utils import batchIKmultiDOF
+            from generative_graphik.utils.torch_utils import (
+                batchIKmultiDOF,
+                repeat_offset_index,
+            )
         except ModuleNotFoundError as exc:
             raise GGIKUnavailableError(
                 "GGIK dependencies are missing. Required packages include "
@@ -161,8 +168,10 @@ class TimGenerativeGraphIKSolver:
         self.RobotRevolute = RobotRevolute
         self.graph_from_pos = graph_from_pos
         self.SE3 = SE3
+        self.Batch = Batch
         self.generate_data_point_from_pose = generate_data_point_from_pose
         self.batchIKmultiDOF = batchIKmultiDOF
+        self.repeat_offset_index = repeat_offset_index
 
     def _resolve_model_dir(
         self,
@@ -267,6 +276,157 @@ class TimGenerativeGraphIKSolver:
         finally:
             torch.set_default_device(default_device)
 
+    def _forward_eval_core(
+        self,
+        *,
+        x: Tensor,
+        h: Tensor,
+        edge_attr: Tensor,
+        edge_attr_partial_full: Tensor,
+        edge_index: Tensor,
+        partial_goal_mask: Tensor,
+        nodes_per_single_graph: int,
+        batch_size: int,
+    ) -> Tensor:
+        nodes = partial_goal_mask[:, None] * x
+        edges = edge_attr_partial_full
+        data_index = edge_index
+        h_current = h
+
+        for ii in range(self.model.max_num_iterations):
+            with torch.no_grad():
+                z_goal_partial = self.model.goal_partial_config_encoder(
+                    x=nodes,
+                    h=h_current,
+                    edge_attr=edges,
+                    edge_index=data_index,
+                )
+
+                if self.model.train_prior:
+                    params = self.model.prior_encoder(z_goal_partial)
+                    pz_c = self.model.pz_c_dist(*params)
+                else:
+                    pz_c = self.model.pz_c_dist(
+                        loc=torch.zeros(
+                            (
+                                batch_size * nodes_per_single_graph,
+                                z_goal_partial.shape[-1],
+                            ),
+                            device=z_goal_partial.device,
+                        ),
+                        scale=torch.ones(
+                            (
+                                batch_size * nodes_per_single_graph,
+                                z_goal_partial.shape[-1],
+                            ),
+                            device=z_goal_partial.device,
+                        ),
+                    )
+
+                if ii == 0:
+                    z_prior = pz_c.sample([self.num_samples])
+                    z_prior = z_prior.reshape(-1, z_prior.shape[-1])
+                    z_goal_partial = z_goal_partial.unsqueeze(0).repeat(
+                        self.num_samples,
+                        1,
+                        1,
+                    )
+                    z_goal_partial = z_goal_partial.reshape(
+                        -1,
+                        z_goal_partial.shape[-1],
+                    )
+                    h_current = h_current.unsqueeze(0).repeat(
+                        self.num_samples,
+                        1,
+                        1,
+                    )
+                    h_current = h_current.reshape(-1, h_current.shape[-1])
+                    data_index = self.repeat_offset_index(
+                        edge_index,
+                        self.num_samples,
+                        batch_size * nodes_per_single_graph,
+                    )
+                    data_index = data_index.reshape(data_index.shape[0], -1)
+                    data_edge_attr = edge_attr.unsqueeze(0).repeat(
+                        self.num_samples,
+                        1,
+                        1,
+                    )
+                    data_edge_attr = data_edge_attr.reshape(
+                        -1,
+                        data_edge_attr.shape[-1],
+                    )
+                else:
+                    z_prior = pz_c.sample()
+
+                inp_decoder_prior = torch.cat(
+                    (
+                        z_prior,
+                        z_goal_partial,
+                    ),
+                    dim=-1,
+                )
+                mu_x_sample = self.model.decoder(
+                    x=inp_decoder_prior,
+                    h=h_current,
+                    edge_attr=0.0 * data_edge_attr,
+                    edge_index=data_index,
+                )
+
+                if self.model.max_num_iterations > 1 and self.model.train_prior:
+                    nodes = mu_x_sample
+                    src, dst = data_index
+                    edges = ((nodes[src] - nodes[dst]) ** 2).sum(dim=-1).sqrt()
+                    edges = edges.unsqueeze(-1)
+
+        return mu_x_sample.reshape(
+            self.num_samples,
+            batch_size * nodes_per_single_graph,
+            -1,
+        )
+
+    def _forward_eval_preprocessed_data(self, data) -> Tensor:
+        batch_size = int(data.num_graphs)
+        nodes_per_single_graph = int(data.num_nodes / batch_size)
+
+        if self._forward_eval_uses_data_api:
+            if batch_size == 1:
+                return self.model.forward_eval(data, num_samples=self.num_samples).to(
+                    device=self.device,
+                    dtype=self.dtype,
+                )
+
+            t_ee = data.T_ee
+            if t_ee.dim() == 1:
+                t_ee = t_ee.reshape(batch_size, -1)
+            dim = t_ee.shape[-1] // 3 + 1
+            goal_data_repeated_per_node = torch.repeat_interleave(
+                t_ee,
+                (dim - 1) * data.num_joints + self.model.num_anchor_nodes,
+                dim=0,
+            )
+            return self._forward_eval_core(
+                x=data.pos,
+                h=torch.cat((data.type, goal_data_repeated_per_node), dim=-1),
+                edge_attr=data.edge_attr,
+                edge_attr_partial_full=data.edge_attr_partial_full,
+                edge_index=data.edge_index_full,
+                partial_goal_mask=data.partial_goal_mask,
+                nodes_per_single_graph=nodes_per_single_graph,
+                batch_size=batch_size,
+            ).to(device=self.device, dtype=self.dtype)
+
+        return self._forward_eval_core(
+            x=data.pos,
+            h=torch.cat((data.type, data.goal_data_repeated_per_node), dim=-1),
+            edge_attr=data.edge_attr,
+            edge_attr_partial_full=data.edge_attr_partial,
+            edge_index=data.edge_index_full,
+            partial_goal_mask=data.partial_goal_mask,
+            nodes_per_single_graph=nodes_per_single_graph,
+            batch_size=batch_size,
+        ).to(device=self.device, dtype=self.dtype)
+
     def _predict_one_pose(
         self,
         *,
@@ -283,23 +443,7 @@ class TimGenerativeGraphIKSolver:
         data.num_graphs = 1
         data = self.model.preprocess(data)
 
-        if self._forward_eval_uses_data_api:
-            p_all = self.model.forward_eval(
-                data,
-                num_samples=self.num_samples,
-            ).to(device=self.device, dtype=self.dtype)
-        else:
-            p_all = self.model.forward_eval(
-                x=data.pos,
-                h=torch.cat((data.type, data.goal_data_repeated_per_node), dim=-1),
-                edge_attr=data.edge_attr,
-                edge_attr_partial=data.edge_attr_partial,
-                edge_index=data.edge_index_full,
-                partial_goal_mask=data.partial_goal_mask,
-                nodes_per_single_graph=data.pos.shape[0],
-                num_samples=self.num_samples,
-                batch_size=1,
-            ).to(device=self.device, dtype=self.dtype)
+        p_all = self._forward_eval_preprocessed_data(data)
 
         if self.torch_postprocess:
             t0 = self._differentiable_t0(morphology)
@@ -341,25 +485,139 @@ class TimGenerativeGraphIKSolver:
         )
         return torch.cat([q_raw[:, 1:], zeros], dim=1).unsqueeze(-1)
 
+    def _predict_pose_batch(self, pending: list[tuple[int, int, Tensor, Any, Tensor]]):
+        if not self.torch_postprocess:
+            return [
+                (
+                    morph_idx,
+                    pose_idx,
+                    self._predict_one_pose(
+                        morphology=morphology,
+                        graph=graph,
+                        target_pose=target_pose,
+                    ),
+                )
+                for morph_idx, pose_idx, morphology, graph, target_pose in pending
+            ]
+
+        data_list = []
+        morphologies = []
+        target_poses = []
+        for _morph_idx, _pose_idx, morphology, graph, target_pose in pending:
+            target_pose_np = target_pose.detach().cpu().numpy()
+            target_pose_se3 = self.SE3.from_matrix(target_pose_np, normalize=True)
+            data_single = self._generate_data_point_from_pose_cpu(
+                graph,
+                target_pose_se3,
+            ).to(self.device)
+            data_single.num_graphs = 1
+            data_list.append(self.model.preprocess(data_single))
+            morphologies.append(morphology)
+            target_poses.append(target_pose)
+
+        data = self.Batch.from_data_list(data_list)
+        p_all = self._forward_eval_preprocessed_data(data)
+
+        batch_size = len(pending)
+        seq_len = morphologies[0].shape[0]
+        t0 = torch.stack(
+            [self._differentiable_t0(morphology) for morphology in morphologies],
+            dim=0,
+        )
+        t0 = (
+            t0.unsqueeze(0)
+            .expand(self.num_samples, -1, -1, -1, -1)
+            .reshape(self.num_samples * batch_size * (seq_len + 1), 4, 4)
+        )
+        num_joints = torch.full(
+            (self.num_samples * batch_size,),
+            seq_len,
+            device=self.device,
+            dtype=torch.long,
+        )
+        target_batch = torch.stack(target_poses, dim=0)
+        target_batch = (
+            target_batch.unsqueeze(0)
+            .expand(self.num_samples, -1, -1, -1)
+            .reshape(self.num_samples * batch_size, 4, 4)
+        )
+
+        q_raw = self.batchIKmultiDOF(
+            p_all.reshape(-1, 3),
+            t0,
+            num_joints,
+            T_final=target_batch,
+        ).reshape(self.num_samples, batch_size, seq_len)
+        q_raw = q_raw.permute(1, 0, 2)
+
+        zeros = torch.zeros(
+            batch_size,
+            self.num_samples,
+            1,
+            device=self.device,
+            dtype=self.dtype,
+        )
+        joints = torch.cat([q_raw[:, :, 1:], zeros], dim=-1).unsqueeze(-1)
+
+        return [
+            (morph_idx, pose_idx, joints[local_idx])
+            for local_idx, (morph_idx, pose_idx, *_rest) in enumerate(pending)
+        ]
+
     def predict_joints(
         self,
         morphologies: Tensor,
         target_poses_local: Tensor,
     ) -> Tensor:
-        joint_rows = []
-        for morphology in morphologies:
+        flat_results: list[Tensor | None] = [
+            None
+            for _ in range(
+                int(morphologies.shape[0]) * int(target_poses_local.shape[0])
+            )
+        ]
+        pending: list[tuple[int, int, Tensor, Any, Tensor]] = []
+        graph_forward_batch_size = max(
+            1,
+            int(morphologies.shape[0]) * int(target_poses_local.shape[0]),
+        )
+
+        def flush_pending() -> None:
+            nonlocal pending
+            if not pending:
+                return
+            for morph_idx, pose_idx, joints in self._predict_pose_batch(pending):
+                flat_results[morph_idx * target_poses_local.shape[0] + pose_idx] = (
+                    joints
+                )
+            pending = []
+
+        for morph_idx, morphology in enumerate(morphologies):
             _robot, graph = self._graph_from_morphology(morphology)
-            pose_rows = []
-            for pose in target_poses_local:
-                pose_rows.append(
-                    self._predict_one_pose(
-                        morphology=morphology,
-                        graph=graph,
-                        target_pose=pose,
+            for pose_idx, pose in enumerate(target_poses_local):
+                pending.append(
+                    (
+                        int(morph_idx),
+                        int(pose_idx),
+                        morphology,
+                        graph,
+                        pose,
                     )
                 )
-            joint_rows.append(torch.stack(pose_rows, dim=0))
-        return torch.stack(joint_rows, dim=0)
+                if len(pending) >= graph_forward_batch_size:
+                    flush_pending()
+        flush_pending()
+
+        if any(result is None for result in flat_results):
+            raise RuntimeError("GGIK joint prediction produced incomplete results.")
+
+        flat_joints = torch.stack([result for result in flat_results if result is not None])
+        return flat_joints.reshape(
+            morphologies.shape[0],
+            target_poses_local.shape[0],
+            self.num_samples,
+            morphologies.shape[1],
+            1,
+        )
 
 
 def _quantize_alpha(alpha: Tensor) -> Tensor:
@@ -680,16 +938,30 @@ def _resolve_candidate_dofs(value: Any) -> list[int]:
     return ordered_dofs
 
 
-def _resolve_candidate_batch_size(value: Any, total_candidates: int) -> int:
+def _resolve_candidate_batch_size(
+    value: Any,
+    *,
+    total_candidates: int,
+    num_poses: int,
+) -> int:
     if total_candidates <= 0:
         raise ValueError("total_candidates must be positive.")
 
-    if isinstance(value, str) and value.strip().upper() == "ALL":
-        return total_candidates
+    if isinstance(value, str):
+        normalized = value.strip().upper()
+        if normalized == "ALL":
+            return total_candidates
+        if normalized in {"AUTO", "GGIK_FORWARD", "FORWARD"}:
+            return min(
+                total_candidates,
+                max(1, int(DEFAULT_GGIK_MORPHOLOGY_BATCH_SIZE)),
+            )
 
     batch_size = int(value)
     if batch_size <= 0:
-        raise ValueError("candidate_batch_size must be positive or 'ALL'.")
+        raise ValueError(
+            "candidate_batch_size must be positive, 'ALL', or 'GGIK_FORWARD'."
+        )
     return min(batch_size, total_candidates)
 
 
@@ -861,7 +1133,18 @@ def _optimize_one_dof_group(
     resolved_candidate_batch_size = _resolve_candidate_batch_size(
         candidate_batch_size,
         total_candidates=initial_candidate_morphologies.shape[0],
+        num_poses=target_poses_local.shape[0],
     )
+    if logging:
+        print(
+            f"[Info] DOF{dof} GGIK optimization batching: "
+            f"candidate_batch_size={resolved_candidate_batch_size}, "
+            f"ggik_morphology_batch_size={DEFAULT_GGIK_MORPHOLOGY_BATCH_SIZE}, "
+            f"ggik_graph_forward_batch_size="
+            f"{resolved_candidate_batch_size * target_poses_local.shape[0]}, "
+            f"num_candidates={initial_candidate_morphologies.shape[0]}, "
+            f"num_poses={target_poses_local.shape[0]}."
+        )
 
     for start in range(
         0,
@@ -957,13 +1240,16 @@ def optimize_candidate_selection(
         optimization_parameters.get("use_cached_initial_candidates", True)
     )
 
-    if not (
-        isinstance(candidate_batch_size, str)
-        and candidate_batch_size.strip().upper() == "ALL"
-    ):
+    if isinstance(candidate_batch_size, str):
+        normalized_candidate_batch_size = candidate_batch_size.strip().upper()
+        if normalized_candidate_batch_size not in {"ALL", "AUTO", "GGIK_FORWARD", "FORWARD"}:
+            candidate_batch_size = int(candidate_batch_size)
+    else:
         candidate_batch_size = int(candidate_batch_size)
-        if candidate_batch_size <= 0:
-            raise ValueError("candidate_batch_size must be positive or 'ALL'.")
+    if isinstance(candidate_batch_size, int) and candidate_batch_size <= 0:
+        raise ValueError(
+            "candidate_batch_size must be positive, 'ALL', or 'GGIK_FORWARD'."
+        )
     if distribution_batch_size <= 0:
         raise ValueError("distribution_batch_size must be positive.")
     if not (0.0 < top_fraction <= 1.0):
