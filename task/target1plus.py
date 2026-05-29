@@ -18,7 +18,9 @@ def create_task():
     goals[1, :3, 3] = torch.tensor([0.39, 0.0, 0.40])
 
     # Top — z_max center, Z points -z
-    goals[2, :3, :3] = torch.tensor([[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]])
+    goals[2, :3, :3] = torch.tensor(
+        [[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]]
+    )
     goals[2, :3, 3] = torch.tensor([0.45, 0.0, 0.40])
 
     # Above back — Z tilted 45° from -z toward -x  (Z col = [-s, 0, -s])

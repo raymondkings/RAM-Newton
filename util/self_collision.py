@@ -55,7 +55,9 @@ def get_joint_limits(morph: torch.Tensor) -> torch.Tensor:
     """
     from util.kinematics import forward_kinematics, transformation_matrix
 
-    joint_limits = torch.zeros(*morph.shape[:-1], 2, device=morph.device, dtype=morph.dtype)
+    joint_limits = torch.zeros(
+        *morph.shape[:-1], 2, device=morph.device, dtype=morph.dtype
+    )
 
     extended_morph = torch.cat([torch.zeros_like(morph[..., :1, :]), morph], dim=-2)
     alpha0, a0, d0 = extended_morph[..., :-2, :].split(1, dim=-1)
@@ -65,30 +67,41 @@ def get_joint_limits(morph: torch.Tensor) -> torch.Tensor:
         *morph.shape[:-2], morph.shape[-2] - 1, 1, 1
     )
     wrist = (a1[..., 0] == 0) & (d1[..., 0] == 0)
-    coordinate_fix[wrist] = transformation_matrix(alpha0, a0, d0, torch.zeros_like(d0))[wrist]
+    coordinate_fix[wrist] = transformation_matrix(alpha0, a0, d0, torch.zeros_like(d0))[
+        wrist
+    ]
 
-    plane_normal = torch.stack([
-        torch.zeros_like(alpha1),
-        -torch.sin(alpha1),
-        torch.cos(alpha1),
-        torch.zeros_like(alpha1)], dim=-1)
-    plane_anchor = torch.stack([
-        a1,
-        -d1 * torch.sin(alpha1),
-        d1 * torch.cos(alpha1),
-        torch.ones_like(alpha1)], dim=-1)
+    plane_normal = torch.stack(
+        [
+            torch.zeros_like(alpha1),
+            -torch.sin(alpha1),
+            torch.cos(alpha1),
+            torch.zeros_like(alpha1),
+        ],
+        dim=-1,
+    )
+    plane_anchor = torch.stack(
+        [a1, -d1 * torch.sin(alpha1), d1 * torch.cos(alpha1), torch.ones_like(alpha1)],
+        dim=-1,
+    )
 
     plane_normal = torch.sum(coordinate_fix * plane_normal, dim=-1)[..., :3]
     plane_anchor = torch.sum(coordinate_fix * plane_anchor, dim=-1)[..., :3]
 
     stacked_morph = torch.stack(
-        [extended_morph[..., :-2, :], extended_morph[..., 1:-1, :], extended_morph[..., 2:, :]],
+        [
+            extended_morph[..., :-2, :],
+            extended_morph[..., 1:-1, :],
+            extended_morph[..., 2:, :],
+        ],
         dim=-2,
     )
     stacked_morph[~wrist, 0, :] = 0.0
     stacked_poses = forward_kinematics(
         stacked_morph,
-        torch.zeros(*stacked_morph.shape[:-1], 1, device=morph.device, dtype=morph.dtype),
+        torch.zeros(
+            *stacked_morph.shape[:-1], 1, device=morph.device, dtype=morph.dtype
+        ),
     )
     start, end = get_capsules(stacked_morph, stacked_poses)
     capsules = end - start
@@ -105,15 +118,21 @@ def get_joint_limits(morph: torch.Tensor) -> torch.Tensor:
     in_plane = ((pre_capsule - plane_anchor) * plane_normal).sum(dim=-1).abs() < 1e-6
     in_plane &= ((post_capsule - plane_anchor) * plane_normal).sum(dim=-1).abs() < 1e-6
 
-    limited = (pre_capsule.norm(dim=-1) > EPS) & (post_capsule.norm(dim=-1) > EPS) & in_plane
+    limited = (
+        (pre_capsule.norm(dim=-1) > EPS) & (post_capsule.norm(dim=-1) > EPS) & in_plane
+    )
 
     mask = post_capsule.norm(dim=-1) > pre_capsule.norm(dim=-1)
     arc = torch.arcsin(2 * LINK_RADIUS / post_capsule.norm(dim=-1))
     arc[mask] = torch.arcsin(2 * LINK_RADIUS / pre_capsule.norm(dim=-1))[mask]
 
-    joint_limits[..., :-1, 0] = torch.where(limited, 2 * torch.pi - 2 * arc, 2 * torch.pi)
+    joint_limits[..., :-1, 0] = torch.where(
+        limited, 2 * torch.pi - 2 * arc, 2 * torch.pi
+    )
     angle = torch.atan2(
-        torch.sum(torch.cross(pre_capsule, post_capsule, dim=-1) * plane_normal, dim=-1),
+        torch.sum(
+            torch.cross(pre_capsule, post_capsule, dim=-1) * plane_normal, dim=-1
+        ),
         torch.sum(pre_capsule * post_capsule, dim=-1),
     )
     # If their angle becomes pi, they collide and are antiparallel.

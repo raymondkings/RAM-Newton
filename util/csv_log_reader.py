@@ -153,7 +153,9 @@ def load_latest_optimized_morphology(
     """
     csv_source = Path(csv_source)
     if csv_source.is_dir():
-        candidates = sorted(csv_source.glob("log_*.csv"), key=lambda p: p.stat().st_mtime)
+        candidates = sorted(
+            csv_source.glob("log_*.csv"), key=lambda p: p.stat().st_mtime
+        )
         if not candidates:
             raise FileNotFoundError(
                 f"No optimization CSV files found in directory: {csv_source}"

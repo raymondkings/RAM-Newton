@@ -132,9 +132,7 @@ def run_plan(
             )
         return
 
-    print(
-        f"\nSequence complete: {len(result.path)} waypoints through {n_goals} goals."
-    )
+    print(f"\nSequence complete: {len(result.path)} waypoints through {n_goals} goals.")
     if visualize:
         dense = interpolate_path(result.path, step=0.03)
         print(f"Animating — {len(dense)} frames ...")
