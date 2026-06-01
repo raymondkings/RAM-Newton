@@ -10,7 +10,7 @@ def l_environment() -> Environment:
     ROOM_HEIGHT = 0.35
 
     # Room is shifted from the origin so the robot's base sits beside the left wall midpoint
-    ROOM_OFFSET_X = 0.35
+    ROOM_OFFSET_X = 0.45
 
     obstacles = [
         # Back wall — far end at +y
@@ -24,7 +24,7 @@ def l_environment() -> Environment:
         # ),
         # Left wall — the obstacle the robot must reach around
         Box(
-            center=torch.tensor([ROOM_OFFSET_X, 0.0, ROOM_HEIGHT / 2]),
+            center=torch.tensor([ROOM_OFFSET_X, 0.0, ROOM_HEIGHT / 2 - 0.075]),
             half_extents=torch.tensor(
                 [WALL_THICKNESS / 2, ROOM_DEPTH / 2, ROOM_HEIGHT / 2]
             ),

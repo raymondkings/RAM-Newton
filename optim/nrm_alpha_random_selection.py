@@ -89,11 +89,6 @@ TOP_PROBABILITY_FRACTION = 0.025
 # Tie tolerance for validation SE3 errors.
 SE3_TIE_EPS = 1e-12
 
-# Final candidate must not put the terminal d segment on the negative local z
-# side. A tiny tolerance keeps exact-zero values from being rejected by roundoff.
-LAST_D_NONNEGATIVE_EPS = 1e-9
-
-
 # ------------------------------- model helpers ------------------------------
 
 
@@ -184,7 +179,7 @@ def _last_d_nonnegative_mask(processed_morphologies: Tensor) -> Tensor:
         raise ValueError(
             "Expected processed_morphologies with shape [..., n_links, 3]."
         )
-    return processed_morphologies[..., -1, 2] >= -LAST_D_NONNEGATIVE_EPS
+    return processed_morphologies[..., -1, 2] >= 0.0
 
 
 # -------------------------- NRM score / optimization -------------------------
@@ -718,7 +713,6 @@ def optimize_morphology(
                 f"kept {processed_valid.shape[0]}/{processed_morphologies.shape[0]} candidates."
             )
 
-        # here we deliberately pick only the last d >= 0, otherwise the robot goes under the wall insead of over the wall
         last_d_mask = _last_d_nonnegative_mask(processed_valid)
         if not last_d_mask.any():
             raise RuntimeError(
@@ -776,7 +770,7 @@ def optimize_morphology(
 
         # ------------------------------------------------------------------
         # 7. Select final candidate:
-        #    highest IK success rate -> lowest SE3 -> morphology heuristic.
+        #    highest IK success rate -> morphology heuristic.
         # ------------------------------------------------------------------
         ik_success_rates = torch.tensor(
             [
@@ -789,12 +783,7 @@ def optimize_morphology(
 
         best_ik_success_rate = ik_success_rates.max()
         best_rate_mask = (ik_success_rates - best_ik_success_rate).abs() <= 1e-12
-        best_rate_indices = torch.nonzero(best_rate_mask, as_tuple=False).squeeze(1)
-
-        best_se3 = se3_scores[best_rate_indices].min()
-        final_tier_mask = best_rate_mask & (
-            (se3_scores - best_se3).abs() <= SE3_TIE_EPS
-        )
+        final_tier_mask = best_rate_mask
         tied_indices = torch.nonzero(final_tier_mask, as_tuple=False).squeeze(1)
 
         ad_abs = processed_top[..., 1:].abs()  # [K, 7, 2]
@@ -839,8 +828,7 @@ def optimize_morphology(
                 "[Info] Validation selection: "
                 f"best_ik_success_pose_rate={best_ik_success_rate.item() * 100.0:.2f}%, "
                 f"num_best_rate_candidates={int(best_rate_mask.sum().item())}, "
-                f"best_se3_within_best_rate={best_se3.item():.12f}, "
-                f"num_final_ties={int(final_tier_mask.sum().item())}, "
+                f"num_tie_break_candidates={int(final_tier_mask.sum().item())}, "
                 f"final_idx={final_idx}, "
                 f"final_length_sum={length_sums[final_idx].item():.6f}"
             )
@@ -878,8 +866,7 @@ def optimize_morphology(
             f"nrm_prob={probs_top[final_idx].item():.6f}, "
             f"final_se3_err={final_se3:.6f}, "
             f"ik_success_pose_rate={final_ik_success_rate * 100.0:.2f}%, "
-            f"length_sum={length_sums[final_idx].item():.6f}, "
-            f"final_last_d={final_processed_morphology[-1, 2].item():.6f}"
+            f"length_sum={length_sums[final_idx].item():.6f}"
         )
 
         if logging:

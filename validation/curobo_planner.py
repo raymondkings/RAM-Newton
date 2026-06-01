@@ -73,7 +73,7 @@ class CuroboPlanner:
                 "collision_spheres": sphere_dict,
                 "collision_link_names": list(sphere_dict.keys()),
                 "collision_sphere_buffer": 0.01,
-                "self_collision_buffer": {k: 0.005 for k in sphere_dict},
+                "self_collision_buffer": {k: 0.0 for k in sphere_dict},
                 "self_collision_ignore": self._self_collision_ignore,
             }
         }
