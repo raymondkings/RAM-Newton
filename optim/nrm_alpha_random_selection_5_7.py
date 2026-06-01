@@ -26,7 +26,6 @@ from optim.nrm_alpha_random_selection import (
     DEFAULT_NUM_ALPHA_CANDIDATES,
     DELTA_EARLY_STOPPING,
     EARLY_STOPPING_PATIENCE,
-    SE3_TIE_EPS,
     TOP_PROBABILITY_FRACTION,
     ZERO_ALPHA_RUN_EXCLUSION_LENGTH,
     _build_morphology_tensors,
@@ -400,7 +399,6 @@ def optimize_morphology(
                 "post-optimization distribution checker."
             )
 
-        # here we deliberately pick only the last d >= 0, otherwise the robot goes under the wall insead of over the wall
         before_last_d_filter = len(records)
         records = [
             record
@@ -420,7 +418,6 @@ def optimize_morphology(
                 f"kept {len(records)}/{before_last_d_filter} candidates "
                 "with processed params[-1, 2] >= 0."
             )
-        # end of selection last d >= 0
 
         probs_valid = torch.stack(
             [record["prob"].detach().to(device) for record in records]
@@ -461,12 +458,7 @@ def optimize_morphology(
 
         best_ik_success_rate = ik_success_rates.max()
         best_rate_mask = (ik_success_rates - best_ik_success_rate).abs() <= 1e-12
-        best_rate_indices = torch.nonzero(best_rate_mask, as_tuple=False).squeeze(1)
-
-        best_se3 = se3_scores[best_rate_indices].min()
-        final_tier_mask = best_rate_mask & (
-            (se3_scores - best_se3).abs() <= SE3_TIE_EPS
-        )
+        final_tier_mask = best_rate_mask
         tied_indices = torch.nonzero(final_tier_mask, as_tuple=False).squeeze(1)
 
         tie_scores = []
@@ -490,8 +482,7 @@ def optimize_morphology(
                 "[Info] DOF5-7 validation selection: "
                 f"best_ik_success_pose_rate={best_ik_success_rate.item() * 100.0:.2f}%, "
                 f"num_best_rate_candidates={int(best_rate_mask.sum().item())}, "
-                f"best_se3_within_best_rate={best_se3.item():.12f}, "
-                f"num_final_ties={int(final_tier_mask.sum().item())}, "
+                f"num_tie_break_candidates={int(final_tier_mask.sum().item())}, "
                 f"final_idx={final_idx}, "
                 f"final_dof={top_records[final_idx]['dof']}, "
                 f"final_length_sum={length_sums_tensor[final_idx].item():.6f}"
@@ -530,8 +521,7 @@ def optimize_morphology(
             f"nrm_prob={final_record['prob'].item():.6f}, "
             f"final_se3_err={final_se3:.6f}, "
             f"ik_success_pose_rate={final_ik_success_rate * 100.0:.2f}%, "
-            f"length_sum={length_sums_tensor[final_idx].item():.6f}, "
-            f"final_last_d={final_processed_morphology[-1, 2].item():.6f}"
+            f"length_sum={length_sums_tensor[final_idx].item():.6f}"
         )
 
         if logging:

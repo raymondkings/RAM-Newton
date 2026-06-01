@@ -8,7 +8,7 @@ from typing import Any
 import torch
 
 
-NUM_SAMPLES = 100
+NUM_SAMPLES = 50
 NUM_GAUSSIAN_NOISE_SAMPLES = 2
 GAUSSIAN_MEAN = 0.0
 # 90% of Gaussian z-axis noise samples are within +-5 degrees.
@@ -16,7 +16,7 @@ _GAUSSIAN_90_PERCENT_Z = 1.6448536269514722
 GAUSSIAN_STD_DEGREES = 5.0 / _GAUSSIAN_90_PERCENT_Z
 GAUSSIAN_VARIANCE = math.radians(GAUSSIAN_STD_DEGREES) ** 2
 ALPHA_RANGE_DEGREES = (0.0, 180.0)
-REPEAT_START_GOAL = 10
+REPEAT_START_GOAL = 5
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CACHE_DIR = PROJECT_ROOT / "initial_candidates"
@@ -25,9 +25,9 @@ CACHE_DIR = PROJECT_ROOT / "initial_candidates"
 # missing +x tool-axis entry restored in the first row.
 START_POSE = torch.tensor(
     [
-        [0.0, 0.0, 1.0, 0.15],
+        [0.0, 0.0, 1.0, 0.20],
         [0.0, -1.0, 0.0, 0.0],
-        [1.0, 0.0, 0.0, 0.175],
+        [1.0, 0.0, 0.0, 0.1],
         [0.0, 0.0, 0.0, 1.0],
     ],
     dtype=torch.float32,
@@ -62,7 +62,7 @@ def _pose_from_alpha(alpha: torch.Tensor, *, dtype: torch.dtype) -> torch.Tensor
 
     Translation follows the corrected formula:
         x = 0.40 - 0.25*cos(alpha)
-        z = 0.175 + 0.25*sin(alpha)
+        z = 0.1 + 0.25*sin(alpha)
     """
     alpha = alpha.to(dtype=dtype)
     s = torch.sin(alpha)
@@ -80,9 +80,9 @@ def _pose_from_alpha(alpha: torch.Tensor, *, dtype: torch.dtype) -> torch.Tensor
     poses[:, 2, 1] = 0.0
     poses[:, 2, 2] = -s
 
-    poses[:, 0, 3] = 0.40 - 0.25 * c
+    poses[:, 0, 3] = 0.45 - 0.25 * c
     poses[:, 1, 3] = 0.0
-    poses[:, 2, 3] = 0.175 + 0.25 * s
+    poses[:, 2, 3] = 0.1 + 0.25 * s
     return poses
 
 
