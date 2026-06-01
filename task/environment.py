@@ -14,14 +14,14 @@ def l_environment() -> Environment:
 
     obstacles = [
         # Back wall — far end at +y
-        Box(
-            center=torch.tensor(
-                [ROOM_OFFSET_X + ROOM_WIDTH / 2, ROOM_DEPTH / 2, ROOM_HEIGHT / 2]
-            ),
-            half_extents=torch.tensor(
-                [ROOM_WIDTH / 2, WALL_THICKNESS / 2, ROOM_HEIGHT / 2]
-            ),
-        ),
+        # Box(
+        #     center=torch.tensor(
+        #         [ROOM_OFFSET_X + ROOM_WIDTH / 2, ROOM_DEPTH / 2, ROOM_HEIGHT / 2]
+        #     ),
+        #     half_extents=torch.tensor(
+        #         [ROOM_WIDTH / 2, WALL_THICKNESS / 2, ROOM_HEIGHT / 2]
+        #     ),
+        # ),
         # Left wall — the obstacle the robot must reach around
         Box(
             center=torch.tensor([ROOM_OFFSET_X, 0.0, ROOM_HEIGHT / 2]),

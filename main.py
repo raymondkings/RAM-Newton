@@ -15,7 +15,8 @@ from util.csv_log_reader import load_latest_optimized_morphology
 
 # target selecting
 # from task.target1 import create_task
-from task.target1plus import create_task
+# from task.target1plus import create_task
+from task.task_pose_sampler import create_task
 # from task.target2 import create_task
 
 
@@ -204,7 +205,7 @@ def main() -> None:
 
     task = Task(
         environment=l_environment(),
-        goal_poses=create_task(),
+        goal_poses=create_task(seed=args.seed, device=device),
         reachable_region=None,
         start_q=None,
     )
