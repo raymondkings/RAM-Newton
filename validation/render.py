@@ -488,8 +488,8 @@ def render_scene(
     viewer.begin_frame(0.0)
     viewer.log_state(state)
     viewer.log_lines("/origin_frame", axes_begins, axes_ends, axes_colors)
-    viewer.log_lines("/goals/frames", goal_axes_b, goal_axes_e, goal_axes_c)
-    viewer.log_lines("/eef_frame", eef_b, eef_e, eef_c)
+    viewer.log_lines("/goals/frames", goal_axes_b, goal_axes_e, goal_axes_c, width=0.04)
+    viewer.log_lines("/eef_frame", eef_b, eef_e, eef_c, width=0.04)
     viewer.end_frame()
 
     try:
@@ -595,8 +595,10 @@ def animate_plan(
         viewer.begin_frame(t)
         viewer.log_state(state)
         viewer.log_lines("/origin_frame", axes_begins, axes_ends, axes_colors)
-        viewer.log_lines("/goals/frames", goal_axes_b, goal_axes_e, goal_axes_c)
-        viewer.log_lines("/eef_frame", eef_b, eef_e, eef_c)
+        viewer.log_lines(
+            "/goals/frames", goal_axes_b, goal_axes_e, goal_axes_c, width=0.04
+        )
+        viewer.log_lines("/eef_frame", eef_b, eef_e, eef_c, width=0.04)
         viewer.end_frame()
         _update_joint_limit_panel(joint_limit_handles, joint_limit_bounds, q)
 
