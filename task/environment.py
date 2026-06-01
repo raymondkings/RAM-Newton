@@ -5,7 +5,7 @@ from interface import Environment, Box
 def l_environment() -> Environment:
     """L-shaped room with the robot base frame aligned to the world frame."""
     WALL_THICKNESS = 0.025
-    ROOM_WIDTH = 0.5
+    # ROOM_WIDTH = 0.5
     ROOM_DEPTH = 0.5
     ROOM_HEIGHT = 0.35
 
