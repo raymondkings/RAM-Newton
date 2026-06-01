@@ -147,7 +147,7 @@ def optimize_morphology(
             f"percentage_poses={percentage_poses}"
         )
 
-    base_pose_inv, scene = build_optimization_validation_context(
+    scene = build_optimization_validation_context(
         task=task,
         device=device,
         ignore_ground=ignore_ground,
@@ -198,7 +198,6 @@ def optimize_morphology(
                     morph=morph,
                     task=task,
                     scene=scene,
-                    base_pose_inv=base_pose_inv,
                     device=device,
                     percentage_poses=percentage_poses,
                     number_random_seed=number_random_seed,
@@ -264,7 +263,6 @@ def optimize_morphology(
             morph=morph,
             task=task,
             scene=scene,
-            base_pose_inv=base_pose_inv,
             device=device,
             percentage_poses=percentage_poses,
             number_random_seed=number_random_seed,

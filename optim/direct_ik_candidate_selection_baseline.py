@@ -11,7 +11,6 @@ from tqdm import tqdm
 from interface import Morphology, Task
 from optim.direct_ik_baseline import (
     _direct_ik_parameters,
-    _goal_poses_in_robot_frame,
     _run_direct_ik_length_optimization,
     _run_validation,
 )
@@ -370,13 +369,13 @@ def optimize_morphology(
             f"direct_params={direct_params}"
         )
 
-    base_pose_inv, scene = build_optimization_validation_context(
+    scene = build_optimization_validation_context(
         task=task,
         device=device,
         ignore_ground=ignore_ground,
         ignore_obstacles=ignore_obstacles,
     )
-    target_poses_local = _goal_poses_in_robot_frame(task, device, dtype)
+    target_poses_local = task.goal_poses.to(device=device, dtype=dtype)
     csv_logger = OptimizationCSVLogger(root_dir=_PROJECT_ROOT)
 
     alpha_generator = torch.Generator(device=device)
@@ -457,7 +456,6 @@ def optimize_morphology(
                 morph=morph,
                 task=task,
                 scene=scene,
-                base_pose_inv=base_pose_inv,
                 device=device,
                 percentage_poses=percentage_poses,
                 number_random_seed=number_random_seed,

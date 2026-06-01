@@ -84,10 +84,14 @@ EARLY_STOPPING_PATIENCE = 5
 
 # After post-optimization distribution filtering, only validate the top 10% by
 # final NRM probability.
-TOP_PROBABILITY_FRACTION = 0.05
+TOP_PROBABILITY_FRACTION = 0.025
 
 # Tie tolerance for validation SE3 errors.
 SE3_TIE_EPS = 1e-12
+
+# Final candidate must not put the terminal d segment on the negative local z
+# side. A tiny tolerance keeps exact-zero values from being rejected by roundoff.
+LAST_D_NONNEGATIVE_EPS = 1e-9
 
 
 # ------------------------------- model helpers ------------------------------
@@ -172,6 +176,15 @@ def _build_morphology_tensors(
     raw_morphologies = torch.cat([alpha_candidates, length_candidates], dim=-1)
     processed_morphologies = torch.cat([alpha_candidates, processed_lengths], dim=-1)
     return raw_morphologies, processed_morphologies
+
+
+def _last_d_nonnegative_mask(processed_morphologies: Tensor) -> Tensor:
+    """Return candidates whose final processed d is positive or zero."""
+    if processed_morphologies.ndim < 2 or processed_morphologies.shape[-1] < 3:
+        raise ValueError(
+            "Expected processed_morphologies with shape [..., n_links, 3]."
+        )
+    return processed_morphologies[..., -1, 2] >= -LAST_D_NONNEGATIVE_EPS
 
 
 # -------------------------- NRM score / optimization -------------------------
@@ -438,7 +451,6 @@ def _validate_candidate(
     morph: Morphology,
     task: Task,
     scene,
-    base_pose_inv: Tensor,
     device: torch.device,
     percentage_poses: float,
     number_random_seed: int,
@@ -450,7 +462,6 @@ def _validate_candidate(
         morph=morph,
         task=task,
         scene=scene,
-        base_pose_inv=base_pose_inv,
         device=device,
         percentage_poses=percentage_poses,
         number_random_seed=number_random_seed,
@@ -463,7 +474,6 @@ def _validate_top_candidates(
     morph: Morphology,
     task: Task,
     scene,
-    base_pose_inv: Tensor,
     device: torch.device,
     percentage_poses: float,
     number_random_seed: int,
@@ -485,7 +495,6 @@ def _validate_top_candidates(
             morph=morph,
             task=task,
             scene=scene,
-            base_pose_inv=base_pose_inv,
             device=device,
             percentage_poses=percentage_poses,
             number_random_seed=number_random_seed,
@@ -580,7 +589,7 @@ def optimize_morphology(
             f"percentage_poses={percentage_poses}"
         )
 
-    base_pose_inv, scene = build_optimization_validation_context(
+    scene = build_optimization_validation_context(
         task=task,
         device=device,
         ignore_ground=ignore_ground,
@@ -709,6 +718,27 @@ def optimize_morphology(
                 f"kept {processed_valid.shape[0]}/{processed_morphologies.shape[0]} candidates."
             )
 
+        # here we deliberately pick only the last d >= 0, otherwise the robot goes under the wall insead of over the wall
+        last_d_mask = _last_d_nonnegative_mask(processed_valid)
+        if not last_d_mask.any():
+            raise RuntimeError(
+                "All post-optimization candidates were rejected by the final-link "
+                "d filter (requires processed morphology params[-1, 2] >= 0)."
+            )
+
+        before_last_d_filter = processed_valid.shape[0]
+        raw_valid = raw_valid[last_d_mask]
+        processed_valid = processed_valid[last_d_mask]
+        losses_valid = losses_valid[last_d_mask]
+        probs_valid = probs_valid[last_d_mask]
+
+        if logging:
+            print(
+                "[Info] Final-link d filter: "
+                f"kept {processed_valid.shape[0]}/{before_last_d_filter} candidates "
+                "with processed params[-1, 2] >= 0."
+            )
+
         # ------------------------------------------------------------------
         # 5. Keep only the top 10% by final NRM probability.
         # ------------------------------------------------------------------
@@ -737,7 +767,6 @@ def optimize_morphology(
             morph=morph,
             task=task,
             scene=scene,
-            base_pose_inv=base_pose_inv,
             device=device,
             percentage_poses=percentage_poses,
             number_random_seed=number_random_seed,
@@ -849,7 +878,8 @@ def optimize_morphology(
             f"nrm_prob={probs_top[final_idx].item():.6f}, "
             f"final_se3_err={final_se3:.6f}, "
             f"ik_success_pose_rate={final_ik_success_rate * 100.0:.2f}%, "
-            f"length_sum={length_sums[final_idx].item():.6f}"
+            f"length_sum={length_sums[final_idx].item():.6f}, "
+            f"final_last_d={final_processed_morphology[-1, 2].item():.6f}"
         )
 
         if logging:
