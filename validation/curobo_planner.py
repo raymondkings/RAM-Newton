@@ -53,10 +53,7 @@ class CuroboPlanner:
         n = morph.n_links
         ee_link = f"link_{n - 1}"
 
-        dtype = morph.params.dtype
-        base_pose_f32 = task.environment.base_pose.to(torch.float32)
-        self._base_pose_f32 = base_pose_f32
-        self._base_pose_inv = torch.linalg.inv(base_pose_f32).to(dtype)
+        self._dtype = morph.params.dtype
 
         urdf_str = to_urdf(morph)
         tmp = tempfile.NamedTemporaryFile(suffix=".urdf", delete=False, mode="w")
@@ -85,7 +82,6 @@ class CuroboPlanner:
         else:
             self.scene = build_scene(
                 task,
-                torch.linalg.inv(base_pose_f32),
                 ignore_ground=self._ignore_ground,
                 ignore_obstacles=self._ignore_obstacles,
             )
@@ -125,17 +121,17 @@ class CuroboPlanner:
 
     def plan(
         self,
-        goal_pose_world: torch.Tensor,
+        goal_pose: torch.Tensor,
         start_q: torch.Tensor | None = None,
         max_attempts: int = 5,
     ) -> tuple[PlanResult, torch.Tensor | None]:
-        """Plan a trajectory from start_q to goal_pose_world.
+        """Plan a trajectory from start_q to a goal pose in the shared world/base frame.
 
         Returns (PlanResult, goal_q) where goal_q is the final joint config,
         or None if no solution was found.
         """
         result, goal, start_q = self._plan_pose_raw(
-            goal_pose_world, start_q, max_attempts
+            goal_pose, start_q, max_attempts
         )
 
         if result is None or not result.success.any():
@@ -152,7 +148,7 @@ class CuroboPlanner:
 
     def plan_sequence(
         self,
-        goal_poses_world: torch.Tensor,
+        goal_poses: torch.Tensor,
         start_q: torch.Tensor | None = None,
         max_attempts: int = 5,
     ) -> tuple[PlanResult, torch.Tensor | None]:
@@ -161,7 +157,7 @@ class CuroboPlanner:
         Chains individual plans: start_q → goal[0] → goal[1] → … → goal[N-1].
         Returns the concatenated path and the final joint config, or None on failure.
         """
-        n_total = goal_poses_world.shape[0]
+        n_total = goal_poses.shape[0]
         print(
             f"Planning sequence of {n_total} goals with cuRobo (GPU TrajOpt + graph search)..."
         )
@@ -170,7 +166,7 @@ class CuroboPlanner:
 
         for i in range(n_total):
             result, goal, start_q_used = self._plan_pose_raw(
-                goal_poses_world[i], current_q, max_attempts
+                goal_poses[i], current_q, max_attempts
             )
             if result is None or not result.success.any():
                 best_ik_q = self._diagnose_failure(
@@ -199,27 +195,25 @@ class CuroboPlanner:
     def default_start_q(self) -> torch.Tensor:
         """IK to a candidate pose above the base; falls back to zeros if all candidates fail.
 
-        Candidate offsets are in robot-base-local frame (z-up). The planner's own IK solver
+        Candidate offsets are in the shared world/base frame (z-up). The planner's own IK solver
         is reused so the start config is checked against the same scene and self-collision
         config used for planning.
         """
-        dtype = self._base_pose_inv.dtype
+        dtype = self._dtype
         n_actuated = len(self._planner.joint_names)
 
-        # Robot-local frame — planner.ik_solver.solve_pose expects local-frame goals
-        # (see _plan_pose_raw, where world goals are pre-multiplied by base_pose_inv).
-        candidate_offsets_local = [
+        candidate_offsets = [
             (0.0, 0.55),
             (0.0, 0.40),
             (0.0, 0.70),
             (0.10, 0.55),
         ]
-        for i, (x, z) in enumerate(candidate_offsets_local):
-            pose_local = torch.eye(4, dtype=torch.float32)
-            pose_local[0, 3] = x
-            pose_local[2, 3] = z
+        for i, (x, z) in enumerate(candidate_offsets):
+            pose = torch.eye(4, dtype=torch.float32)
+            pose[0, 3] = x
+            pose[2, 3] = z
             goal = _mat_to_goal_pose(
-                pose_local, self._planner.tool_frames, self._device
+                pose, self._planner.tool_frames, self._device
             )
             ik_result = self._planner.ik_solver.solve_pose(goal)
             if (
@@ -235,7 +229,7 @@ class CuroboPlanner:
             best_idx = int(success.nonzero(as_tuple=False)[0].item())
             print(
                 f"[Info] Self/world collision-free start config found "
-                f"(candidate {i + 1}/{len(candidate_offsets_local)})."
+                f"(candidate {i + 1}/{len(candidate_offsets)})."
             )
             return solutions[best_idx].cpu().to(dtype)
 
@@ -255,11 +249,11 @@ class CuroboPlanner:
         theta = torch.zeros(n, 1, device="cpu")
         theta[: n - 1] = q_cpu.unsqueeze(1)
         mdh = self._morph.params.float().cpu()
-        link_poses = forward_kinematics(mdh, theta)  # [n, 4, 4] in robot-local frame
-        base = self._base_pose_f32.float().cpu()
-        link_poses_world = (base @ link_poses).numpy()  # [n, 4, 4] in world frame
+        link_poses_world = forward_kinematics(mdh, theta).numpy()
 
         results = []
+        for s in self._sphere_dict.get("base_link", []):
+            results.append([*s["center"], s["radius"]])
         for j in range(n):
             T = link_poses_world[j]
             for s in self._sphere_dict.get(f"link_{j}", []):
@@ -279,7 +273,7 @@ class CuroboPlanner:
 
     def _plan_pose_raw(
         self,
-        goal_pose_world: torch.Tensor,
+        goal_pose: torch.Tensor,
         start_q: torch.Tensor | None,
         max_attempts: int,
     ):
@@ -288,12 +282,12 @@ class CuroboPlanner:
         Diagnostics are left to callers so each call site can attach its own context
         (e.g. the goal index inside a sequence).
         """
-        dtype = self._base_pose_inv.dtype
         if start_q is None:
             start_q = self.default_start_q()
 
-        goal_local = self._base_pose_inv @ goal_pose_world.to(dtype)
-        goal = _mat_to_goal_pose(goal_local, self._planner.tool_frames, self._device)
+        goal = _mat_to_goal_pose(
+            goal_pose.to(self._dtype), self._planner.tool_frames, self._device
+        )
 
         start_state = JointState.from_position(
             start_q.float().unsqueeze(0).to(self._device),
@@ -313,10 +307,9 @@ class CuroboPlanner:
         return result, goal, start_q
 
     def _result_to_path(self, result) -> list[torch.Tensor]:
-        dtype = self._base_pose_inv.dtype
         n_joints = len(self._planner.joint_names)
         interp = result.get_interpolated_plan()
-        positions = interp.position.cpu().to(dtype).reshape(-1, n_joints)
+        positions = interp.position.cpu().to(self._dtype).reshape(-1, n_joints)
         return [positions[t] for t in range(positions.shape[0])]
 
     # ----------------------------------------------------------------------
@@ -366,7 +359,7 @@ class CuroboPlanner:
     ) -> "tuple[tuple[float, str, str] | None, tuple[float, str, str, float] | None]":
         """Inspect collision-sphere positions for world- and self-overlaps.
 
-        Sphere positions are in robot-local frame (same frame as scene cuboids).
+        Sphere positions are in the shared world/base frame.
         Returns (worst_world, worst_self), each ``None`` if no overlap; otherwise
         ``(penetration_m, cuboid_or_link_a, link_or_link_b[, center_dist_m])``.
         """
@@ -556,7 +549,7 @@ class CuroboPlanner:
                 best = int(score.argmin().item())
             else:
                 best = 0
-            return solutions[best].cpu().to(self._base_pose_inv.dtype)
+            return solutions[best].cpu().to(self._dtype)
         except Exception:
             return None
 
@@ -675,7 +668,7 @@ class CuroboPlanner:
                 best_is_free = True
             else:
                 best_idx = int(score.argmin().item())
-            best_q = solutions[best_idx].cpu().to(self._base_pose_inv.dtype)
+            best_q = solutions[best_idx].cpu().to(self._dtype)
 
         # IK had valid solutions but plan_pose still returned None → graph seeding rejected them.
         if n_ik_success > 0 and solutions is not None:

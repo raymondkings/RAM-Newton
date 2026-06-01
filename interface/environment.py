@@ -39,4 +39,3 @@ class Environment:
     """A scene of static obstacles."""
 
     obstacles: list[Obstacle] = field(default_factory=list)
-    base_pose: torch.Tensor = field(default_factory=lambda: torch.eye(4))  # robot mount

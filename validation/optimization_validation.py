@@ -22,23 +22,16 @@ def build_optimization_validation_context(
     """Build reusable validation context for optimization.
 
     Returns:
-        base_pose_inv:
-            [4, 4] inverse of task.environment.base_pose.
         scene:
-            cuRobo Scene built in the robot-local frame.
+            cuRobo Scene built in the shared world/base frame.
     """
-    base_pose_inv = torch.linalg.inv(
-        task.environment.base_pose.to(device=device, dtype=torch.float32)
-    )
-
     scene = build_scene(
         task,
-        base_pose_inv,
         ignore_ground=ignore_ground,
         ignore_obstacles=ignore_obstacles,
     )
 
-    return base_pose_inv, scene
+    return scene
 
 
 def _num_sampled_poses(total_poses: int, percentage_poses: float) -> int:
@@ -111,7 +104,6 @@ def run_optimization_validation(
     morph: Morphology,
     task: Task,
     scene,
-    base_pose_inv: torch.Tensor,
     device: torch.device,
     percentage_poses: float,
     number_random_seed: int,
@@ -122,7 +114,7 @@ def run_optimization_validation(
     Logic:
         1. Build a temporary cuRobo robot from the current processed morphology.
         2. Randomly sample a subset of task.goal_poses.
-        3. Run cuRobo IK on the sampled poses.
+        3. Run cuRobo IK on the sampled poses in the shared world/base frame.
         4. Run FK for the returned joint solutions.
         5. Compute pose errors.
         6. Compute sampled goal pose IK success rate.
@@ -152,13 +144,11 @@ def run_optimization_validation(
 
         joints, ik_success = ik_solver.solve(
             sampled_goal_poses,
-            base_pose_inv,
             device,
         )
 
         reached = fk_solver.compute(
             joints,
-            base_pose_inv,
             device,
         )
 

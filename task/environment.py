@@ -3,7 +3,7 @@ from interface import Environment, Box
 
 
 def l_environment() -> Environment:
-    """L-shaped room offset from the robot. Robot is at the origin and must reach around the left wall."""
+    """L-shaped room with the robot base frame aligned to the world frame."""
     WALL_THICKNESS = 0.025
     ROOM_WIDTH = 0.5
     ROOM_DEPTH = 0.5
@@ -31,11 +31,4 @@ def l_environment() -> Environment:
         ),
     ]
 
-    # Robot base at origin
-    base_pose = torch.eye(4)
-
-    # Lift robot above ground: worst-case first link reaches z = -(d[0] + link_radius)
-    # relative to base. Sampler allows |d[0]| <= 1/7 ≈ 0.143 m, link_radius = 0.025 m → 0.168 m min.
-    base_pose[2, 3] = 0.2
-
-    return Environment(obstacles=obstacles, base_pose=base_pose)
+    return Environment(obstacles=obstacles)

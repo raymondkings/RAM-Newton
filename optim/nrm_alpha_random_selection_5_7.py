@@ -233,7 +233,6 @@ def _validate_top_records(
     morph: Morphology,
     task: Task,
     scene,
-    base_pose_inv: Tensor,
     device: torch.device,
     percentage_poses: float,
     number_random_seed: int,
@@ -255,7 +254,6 @@ def _validate_top_records(
             morph=morph,
             task=task,
             scene=scene,
-            base_pose_inv=base_pose_inv,
             device=device,
             percentage_poses=percentage_poses,
             number_random_seed=number_random_seed,
@@ -332,7 +330,7 @@ def optimize_morphology(
         )
         print(f"[Info] Loading NRM checkpoint: {_CHECKPOINT_PATH}")
 
-    base_pose_inv, scene = build_optimization_validation_context(
+    scene = build_optimization_validation_context(
         task=task,
         device=device,
         ignore_ground=ignore_ground,
@@ -431,7 +429,6 @@ def optimize_morphology(
             morph=morph,
             task=task,
             scene=scene,
-            base_pose_inv=base_pose_inv,
             device=device,
             percentage_poses=percentage_poses,
             number_random_seed=number_random_seed,

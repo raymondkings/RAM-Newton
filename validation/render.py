@@ -5,7 +5,6 @@ import numpy as np
 import torch
 import warp as wp
 import newton
-from scipy.spatial.transform import Rotation
 
 from interface import Morphology, Task
 from util.kinematics import compute_link_world_poses, forward_kinematics
@@ -18,34 +17,20 @@ _KE = 500.0  # position stiffness  [N·m/rad]
 _KD = 50.0  # velocity damping    [N·m·s/rad]
 
 
-def add_curobo_scene_to_viser(server, scene, base_pose_f32) -> None:
+def add_curobo_scene_to_viser(server, scene) -> None:
     """Draw cuRobo collision geometry as wireframe overlays in the Viser scene.
 
-    cuRobo stores obstacles in robot-local frame; base_pose_f32 (4×4 world←robot)
-    is used to transform them back to world frame before rendering.
+    cuRobo and the viewer use the same world/base frame.
     """
     if scene is None:
         return
-    R_base = base_pose_f32[:3, :3].float().cpu().numpy()
-    t_base = base_pose_f32[:3, 3].float().cpu().numpy()
-
-    def _world_pos(p_local):
-        return R_base @ np.asarray(p_local, dtype=np.float64) + t_base
-
-    def _world_wxyz(wxyz_local):
-        # wxyz_local: [qw, qx, qy, qz]
-        xyzw = np.array([wxyz_local[1], wxyz_local[2], wxyz_local[3], wxyz_local[0]])
-        R_world = R_base @ Rotation.from_quat(xyzw).as_matrix()
-        xyzw_w = Rotation.from_matrix(R_world).as_quat()
-        return (float(xyzw_w[3]), float(xyzw_w[0]), float(xyzw_w[1]), float(xyzw_w[2]))
 
     _COLOR = (255, 200, 0)  # bright yellow
 
     for c in scene.cuboid or []:
-        p = _world_pos(c.pose[:3])
-        q = _world_wxyz(c.pose[3:7])
         dims = tuple(float(d) for d in c.dims)
-        pos = tuple(float(v) for v in p)
+        pos = tuple(float(v) for v in c.pose[:3])
+        q = tuple(float(v) for v in c.pose[3:7])
         server.scene.add_box(
             f"/curobo/{c.name}",
             color=_COLOR,
@@ -55,12 +40,11 @@ def add_curobo_scene_to_viser(server, scene, base_pose_f32) -> None:
         )
 
     for s in scene.sphere or []:
-        p = _world_pos(s.pose[:3])
         server.scene.add_icosphere(
             f"/curobo/{s.name}",
             radius=float(s.radius),
             color=_COLOR,
-            position=tuple(float(v) for v in p),
+            position=tuple(float(v) for v in s.pose[:3]),
         )
 
 
@@ -94,9 +78,7 @@ def make_goal_pose_axes(goal_poses, axis_length: float = 0.05):
     )
 
 
-def make_eef_pose_axes(
-    morph, q_joints: torch.Tensor, base_pose: torch.Tensor, axis_length: float = 0.05
-):
+def make_eef_pose_axes(morph, q_joints: torch.Tensor, axis_length: float = 0.05):
     """Return (begins, ends, colors) warp arrays for an RGB coordinate triad at the EEF.
 
     X/Y/Z are drawn as red/green/blue line segments, matching the goal-pose triad style.
@@ -108,7 +90,7 @@ def make_eef_pose_axes(
     )
     theta[:n_joints, 0] = q_joints[:n_joints].detach()
     poses = forward_kinematics(morph.params, theta)
-    eef_world = (base_pose @ poses[-1]).cpu()
+    eef_world = poses[-1].cpu()
 
     pos = eef_world[:3, 3].tolist()
     R = eef_world[:3, :3].tolist()
@@ -139,6 +121,9 @@ _GOAL_COLOR_SUCCESS = (50, 180, 50)  # 🟢 green — reached
 _GOAL_COLOR_FAILED = (240, 140, 0)  # 🟠 orange — first unreachable goal
 _GOAL_COLOR_UNREACHED = (210, 40, 40)  # 🔴 red — never attempted
 _GOAL_COLOR_DEFAULT = (190, 190, 190)  # ⚪ light grey — unknown status
+_GOAL_FRAME_AXIS_LENGTH = 0.08
+_EEF_FRAME_AXIS_LENGTH = 0.08
+_POSE_FRAME_LINE_WIDTH = 0.035
 
 
 def _goal_color(i: int, failed_at_goal: int | None, n_goals: int) -> tuple:
@@ -212,7 +197,7 @@ def build_scene_builder(morph: Morphology, task: Task, q=None) -> newton.ModelBu
         )
 
     poses = compute_link_world_poses(morph, q=q)
-    poses = (task.environment.base_pose.unsqueeze(0) @ poses).cpu()
+    poses = poses.cpu()
     add_robot_to_builder(builder, morph, poses, label="robot")
 
     return builder
@@ -349,9 +334,7 @@ def _setup_viewer(
     _add_goal_legend(viewer._server)
 
     if curobo_planner is not None:
-        add_curobo_scene_to_viser(
-            viewer._server, curobo_planner.scene, curobo_planner._base_pose_f32
-        )
+        add_curobo_scene_to_viser(viewer._server, curobo_planner.scene)
 
     try:
         host_ip = socket.gethostbyname(socket.gethostname())
@@ -395,7 +378,9 @@ def render_scene(
     )
     _add_ghost_toggle(viewer._server, ghost_handles)
     axes_begins, axes_ends, axes_colors = make_origin_axes(axis_length=0.1)
-    goal_axes_b, goal_axes_e, goal_axes_c = make_goal_pose_axes(task.goal_poses)
+    goal_axes_b, goal_axes_e, goal_axes_c = make_goal_pose_axes(
+        task.goal_poses, axis_length=_GOAL_FRAME_AXIS_LENGTH
+    )
     eef_q = (
         start_q.to(dtype=morph.params.dtype, device=morph.params.device)
         if start_q is not None and hasattr(start_q, "to")
@@ -404,7 +389,9 @@ def render_scene(
         )
     )
 
-    eef_b, eef_e, eef_c = make_eef_pose_axes(morph, eef_q, task.environment.base_pose)
+    eef_b, eef_e, eef_c = make_eef_pose_axes(
+        morph, eef_q, axis_length=_EEF_FRAME_AXIS_LENGTH
+    )
 
     ghost_available = bool(ghost_handles) and curobo_planner is not None
 
@@ -488,8 +475,16 @@ def render_scene(
     viewer.begin_frame(0.0)
     viewer.log_state(state)
     viewer.log_lines("/origin_frame", axes_begins, axes_ends, axes_colors)
-    viewer.log_lines("/goals/frames", goal_axes_b, goal_axes_e, goal_axes_c)
-    viewer.log_lines("/eef_frame", eef_b, eef_e, eef_c)
+    viewer.log_lines(
+        "/goals/frames",
+        goal_axes_b,
+        goal_axes_e,
+        goal_axes_c,
+        width=_POSE_FRAME_LINE_WIDTH,
+    )
+    viewer.log_lines(
+        "/eef_frame", eef_b, eef_e, eef_c, width=_POSE_FRAME_LINE_WIDTH
+    )
     viewer.end_frame()
 
     try:
@@ -551,7 +546,9 @@ def animate_plan(
     )
 
     axes_begins, axes_ends, axes_colors = make_origin_axes(axis_length=0.1)
-    goal_axes_b, goal_axes_e, goal_axes_c = make_goal_pose_axes(task.goal_poses)
+    goal_axes_b, goal_axes_e, goal_axes_c = make_goal_pose_axes(
+        task.goal_poses, axis_length=_GOAL_FRAME_AXIS_LENGTH
+    )
 
     speed_slider = viewer._server.gui.add_slider(
         "Playback speed", min=0.0, max=4.0, step=0.05, initial_value=1.0
@@ -591,12 +588,22 @@ def animate_plan(
             spheres = curobo_planner.robot_spheres_world(q[:n_joints])
             for h, (x, y, z, *_) in zip(robot_sphere_handles, spheres):
                 h.position = (float(x), float(y), float(z))
-        eef_b, eef_e, eef_c = make_eef_pose_axes(morph, q, task.environment.base_pose)
+        eef_b, eef_e, eef_c = make_eef_pose_axes(
+            morph, q, axis_length=_EEF_FRAME_AXIS_LENGTH
+        )
         viewer.begin_frame(t)
         viewer.log_state(state)
         viewer.log_lines("/origin_frame", axes_begins, axes_ends, axes_colors)
-        viewer.log_lines("/goals/frames", goal_axes_b, goal_axes_e, goal_axes_c)
-        viewer.log_lines("/eef_frame", eef_b, eef_e, eef_c)
+        viewer.log_lines(
+            "/goals/frames",
+            goal_axes_b,
+            goal_axes_e,
+            goal_axes_c,
+            width=_POSE_FRAME_LINE_WIDTH,
+        )
+        viewer.log_lines(
+            "/eef_frame", eef_b, eef_e, eef_c, width=_POSE_FRAME_LINE_WIDTH
+        )
         viewer.end_frame()
         _update_joint_limit_panel(joint_limit_handles, joint_limit_bounds, q)
 

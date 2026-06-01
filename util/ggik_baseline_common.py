@@ -21,7 +21,6 @@ from optim.direct_ik_baseline import (
     EPS,
     _build_morphology_tensors,
     _collision_critical_distance,
-    _goal_poses_in_robot_frame,
     _pose_se3_distance,
     _run_validation,
 )
@@ -847,14 +846,13 @@ def optimize_single_morphology(
 
     device = morph.params.device
     dtype = morph.params.dtype
-    target_poses_local = _goal_poses_in_robot_frame(task, device, dtype)
+    target_poses_local = task.goal_poses.to(device=device, dtype=dtype)
     solver = _build_ggik_solver(optimization_parameters, device=device, dtype=dtype)
     csv_logger = OptimizationCSVLogger(root_dir=PROJECT_ROOT)
 
     scene = None
-    base_pose_inv = None
     if validate_with_curobo:
-        base_pose_inv, scene = build_optimization_validation_context(
+        scene = build_optimization_validation_context(
             task=task,
             device=device,
             ignore_ground=ignore_ground,
@@ -886,7 +884,6 @@ def optimize_single_morphology(
                 morph=morph,
                 task=task,
                 scene=scene,
-                base_pose_inv=base_pose_inv,
                 device=device,
                 percentage_poses=percentage_poses,
                 number_random_seed=number_random_seed,
@@ -1269,7 +1266,7 @@ def optimize_candidate_selection(
 
     device = morph.params.device
     dtype = morph.params.dtype
-    target_poses_local = _goal_poses_in_robot_frame(task, device, dtype)
+    target_poses_local = task.goal_poses.to(device=device, dtype=dtype)
     solver = _build_ggik_solver(optimization_parameters, device=device, dtype=dtype)
     csv_logger = OptimizationCSVLogger(root_dir=PROJECT_ROOT)
 

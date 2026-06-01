@@ -85,15 +85,6 @@ def _build_morphology_tensors(
     return raw_morphologies, processed_morphologies
 
 
-def _goal_poses_in_robot_frame(
-    task: Task, device: torch.device, dtype: torch.dtype
-) -> Tensor:
-    base_pose_inv = torch.linalg.inv(
-        task.environment.base_pose.to(device=device, dtype=dtype)
-    )
-    return base_pose_inv @ task.goal_poses.to(device=device, dtype=dtype)
-
-
 def _wrap_joints(joint_raw: Tensor) -> Tensor:
     return torch.atan2(torch.sin(joint_raw), torch.cos(joint_raw))
 
@@ -496,7 +487,6 @@ def _run_validation(
     morph: Morphology,
     task: Task,
     scene,
-    base_pose_inv: Tensor,
     device: torch.device,
     percentage_poses: float,
     number_random_seed: int,
@@ -507,7 +497,6 @@ def _run_validation(
         morph=morph,
         task=task,
         scene=scene,
-        base_pose_inv=base_pose_inv,
         device=device,
         percentage_poses=percentage_poses,
         number_random_seed=number_random_seed,
@@ -578,13 +567,13 @@ def optimize_morphology(
             f"random_seed={random_seed}"
         )
 
-    base_pose_inv, scene = build_optimization_validation_context(
+    scene = build_optimization_validation_context(
         task=task,
         device=device,
         ignore_ground=ignore_ground,
         ignore_obstacles=ignore_obstacles,
     )
-    target_poses_local = _goal_poses_in_robot_frame(task, device, dtype)
+    target_poses_local = task.goal_poses.to(device=device, dtype=dtype)
     csv_logger = OptimizationCSVLogger(root_dir=_PROJECT_ROOT)
 
     initial_params = morph.params.detach().clone()
@@ -664,7 +653,6 @@ def optimize_morphology(
                     morph=morph,
                     task=task,
                     scene=scene,
-                    base_pose_inv=base_pose_inv,
                     device=device,
                     percentage_poses=percentage_poses,
                     number_random_seed=number_random_seed,
@@ -720,7 +708,6 @@ def optimize_morphology(
             morph=morph,
             task=task,
             scene=scene,
-            base_pose_inv=base_pose_inv,
             device=device,
             percentage_poses=percentage_poses,
             number_random_seed=number_random_seed,
