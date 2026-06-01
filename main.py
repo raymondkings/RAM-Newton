@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 
 from task.morphology_sampler import sample_dof6_initial_morphologies
-from optim.nrm_alpha_random_selection import optimize_morphology
+from optim.ggik_candidate_selection_baseline import optimize_morphology
 from interface import Morphology, Task
 from task.environment import l_environment
 from validation.curobo_planner import CuroboPlanner, interpolate_path
@@ -284,9 +284,12 @@ def main() -> None:
 
     run_postprocess(Path(csv_path), task, args)
 
-    # from util.csv_log_reader import load_middle_start_q_from_last_validation
-    # task.start_q = load_middle_start_q_from_last_validation(csv_path=csv_path, device=optimized_morph.params.device)
-    # print(task.start_q)
+    from util.csv_log_reader import load_middle_start_q_from_last_validation
+
+    task.start_q = load_middle_start_q_from_last_validation(
+        csv_path=csv_path, device=optimized_morph.params.device
+    )
+    print(task.start_q)
 
     run_plan(
         optimized_morph,

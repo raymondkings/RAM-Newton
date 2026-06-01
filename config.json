@@ -1,8 +1,8 @@
 {
-    "seed": 42,
+    "seed": 0,
     "visualize": true,
     "debug": true,
-    "num_iterations": 500,
+    "num_iterations": 250,
     "eval_interval": 20,
     "number_random_seed": 32,
     "percentage_poses": 1,

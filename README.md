@@ -12,9 +12,51 @@ Practical course project — TUM CPS, Summer 2026.
 
 ## Requirements
 
-- Python ≥ 3.10
+- Python ≥ 3.11
 - NVIDIA GPU with CUDA (required by cuRobo for motion planning; optimization also benefits significantly)
 - [cuRobo](https://nvlabs.github.io/curobo/latest/getting-started/installation.html) installed separately (not in `uv.lock`)
+
+### GGIK Baseline And cuRobo Environment
+
+The GGIK baseline uses Tim Walter / UTIAS generative-graphIK code and extra
+dependencies that are not installed by the default `uv sync`. The current
+adapter expects the generative-graphIK repo at `/tmp/generative-graphik` by
+default:
+
+```bash
+git clone --branch revisions https://github.com/utiasSTARS/generative-graphik /tmp/generative-graphik
+```
+
+If `/tmp` is cleaned by the system, clone this repo again before running GGIK.
+
+Install GGIK dependencies into the same virtual environment that contains
+cuRobo. For example, after activating the cuRobo environment:
+
+```bash
+source /path/to/curobo/.venv/bin/activate
+
+git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+git config --global url."https://github.com/".insteadOf "git@github.com:"
+
+UV_CACHE_DIR=/tmp/uv-cache uv pip install "graphIK @ git+https://github.com/utiasSTARS/graphIK.git@generative_ik"
+UV_CACHE_DIR=/tmp/uv-cache uv pip install torch-geometric
+```
+
+Check the installation:
+
+```bash
+python -c "import graphik, liegroups, torch_geometric; print('GGIK deps ok')"
+```
+
+When the cuRobo environment is active, run `main.py` with `--active` so `uv`
+uses that environment instead of the project `.venv`:
+
+```bash
+uv run --active python main.py
+```
+
+Without `--active`, `uv run` may ignore the active cuRobo environment and fail
+to import `graphik`, `liegroups`, `torch_geometric`, or cuRobo.
 
 ## Setup
 

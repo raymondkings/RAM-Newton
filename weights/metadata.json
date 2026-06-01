@@ -1,15 +1,9 @@
 {
-    "num_training_samples": 10000000000,
-    "num_validation_samples": 10000000,
     "model_class": "MLP",
     "hyperparameter": {
         "encoder_config": {
             "dim_encoding": 128
         },
         "decoder_config": {}
-    },
-    "epochs": 1,
-    "batch_size": 1000,
-    "early_stopping": -1,
-    "lr": 0.0003
+    }
 }

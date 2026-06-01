@@ -21,12 +21,12 @@
 #   4. Post-check optimized morphologies with the distribution checker.
 #   5. Keep the top TOP_PROBABILITY_FRACTION by NRM probability.
 #   6. Run IK/FK validation only on those top-probability candidates.
-#   7. Select final candidate by lowest validation SE3 error; if tied, use
-#      smallest total |a|+|d| as the tiebreaker.
+#   7. Select final candidate by highest IK pose success rate, then lowest
+#      validation SE3 error; if tied, use heuristic for the tiebreaker.
 #
 # CSV convention:
-#   iteration = 0  -> validated top-probability candidate, not SE3-best
-#   iteration = 1  -> SE3-best candidate but not finally selected by tiebreak
+#   iteration = 0  -> validated top-probability candidate, not final-tier
+#   iteration = 1  -> final-tier candidate but not selected by tiebreak
 #   iteration = 2  -> final selected candidate
 # -----------------------------------------------------------------------------
 
@@ -84,7 +84,7 @@ EARLY_STOPPING_PATIENCE = 5
 
 # After post-optimization distribution filtering, only validate the top 10% by
 # final NRM probability.
-TOP_PROBABILITY_FRACTION = 0.10
+TOP_PROBABILITY_FRACTION = 0.05
 
 # Tie tolerance for validation SE3 errors.
 SE3_TIE_EPS = 1e-12
@@ -636,6 +636,7 @@ def optimize_morphology(
 
         alpha_candidates = initial_candidate_morphologies[..., 0:1].detach()
         length_candidates = initial_candidate_morphologies[..., 1:].detach()
+        initial_morphologies_for_log = initial_candidate_morphologies.detach()
 
         if alpha_candidates.shape[0] == 0:
             raise RuntimeError(
@@ -674,12 +675,11 @@ def optimize_morphology(
                 f"{n_stopped}/{alpha_candidates.shape[0]} candidates stopped before max iteration."
             )
 
-        raw_morphologies, processed_morphologies = _build_morphology_tensors(
+        _, processed_morphologies = _build_morphology_tensors(
             alpha_candidates,
             length_candidates,
             morph.link_radius,
         )
-        raw_morphologies = raw_morphologies.detach()
         processed_morphologies = processed_morphologies.detach()
 
         # ------------------------------------------------------------------
@@ -698,7 +698,7 @@ def optimize_morphology(
                 "distribution checker."
             )
 
-        raw_valid = raw_morphologies[post_valid_mask]
+        raw_valid = initial_morphologies_for_log[post_valid_mask]
         processed_valid = processed_morphologies[post_valid_mask]
         losses_valid = losses[post_valid_mask]
         probs_valid = probs[post_valid_mask]
@@ -746,31 +746,82 @@ def optimize_morphology(
         )
 
         # ------------------------------------------------------------------
-        # 7. Select final candidate: lowest SE3; tie -> smallest total |a|+|d|.
+        # 7. Select final candidate:
+        #    highest IK success rate -> lowest SE3 -> morphology heuristic.
         # ------------------------------------------------------------------
-        best_se3 = se3_scores.min()
-        best_se3_mask = (se3_scores - best_se3).abs() <= SE3_TIE_EPS
+        ik_success_rates = torch.tensor(
+            [
+                data["ik_success_pose_rate"].detach().cpu().item()
+                for data in validation_data_list
+            ],
+            dtype=se3_scores.dtype,
+            device=device,
+        )
 
-        length_sums = processed_top[..., 1:].abs().sum(dim=(-2, -1))
-        tied_indices = torch.nonzero(best_se3_mask, as_tuple=False).squeeze(1)
-        final_local_in_tied = torch.argmin(length_sums[tied_indices])
+        best_ik_success_rate = ik_success_rates.max()
+        best_rate_mask = (ik_success_rates - best_ik_success_rate).abs() <= 1e-12
+        best_rate_indices = torch.nonzero(best_rate_mask, as_tuple=False).squeeze(1)
+
+        best_se3 = se3_scores[best_rate_indices].min()
+        final_tier_mask = best_rate_mask & (
+            (se3_scores - best_se3).abs() <= SE3_TIE_EPS
+        )
+        tied_indices = torch.nonzero(final_tier_mask, as_tuple=False).squeeze(1)
+
+        ad_abs = processed_top[..., 1:].abs()  # [K, 7, 2]
+        link_mag = torch.linalg.norm(processed_top[..., 1:], dim=-1)  # [K, 7]
+
+        eps_zero = 1e-6
+        min_good_nonzero = 4.0 * morph.link_radius  # 0.1 if radius=0.025
+
+        # Keep this for the existing print/log below.
+        length_sums = ad_abs.sum(dim=(-2, -1))
+
+        # Reward exact zeros in a,d.
+        zero_reward = (ad_abs <= eps_zero).float().sum(dim=(-2, -1))
+
+        # Penalize nonzero entries that are too small, e.g. 0.0678.
+        is_tiny_nonzero = (ad_abs > eps_zero) & (ad_abs < min_good_nonzero)
+        tiny_penalty = (min_good_nonzero - ad_abs).clamp_min(0.0)
+        tiny_penalty = (tiny_penalty * is_tiny_nonzero.float()).sum(dim=(-2, -1))
+
+        # Penalize one link being much longer/shorter than the other active links.
+        active_link = link_mag > eps_zero
+        mean_link = (link_mag * active_link.float()).sum(
+            dim=-1
+        ) / active_link.float().sum(dim=-1).clamp_min(1.0)
+        balance_penalty = (
+            (link_mag - mean_link[:, None]) ** 2 * active_link.float()
+        ).sum(dim=-1)
+
+        # Smaller score wins.
+        tie_score = (
+            10.0 * tiny_penalty
+            + 2.0 * balance_penalty
+            + 0.02 * length_sums
+            - 0.003 * zero_reward
+        )
+
+        final_local_in_tied = torch.argmin(tie_score[tied_indices])
         final_idx = int(tied_indices[final_local_in_tied].item())
 
         if logging:
             print(
                 "[Info] Validation selection: "
-                f"best_se3={best_se3.item():.12f}, "
-                f"num_se3_ties={int(best_se3_mask.sum().item())}, "
+                f"best_ik_success_pose_rate={best_ik_success_rate.item() * 100.0:.2f}%, "
+                f"num_best_rate_candidates={int(best_rate_mask.sum().item())}, "
+                f"best_se3_within_best_rate={best_se3.item():.12f}, "
+                f"num_final_ties={int(final_tier_mask.sum().item())}, "
                 f"final_idx={final_idx}, "
                 f"final_length_sum={length_sums[final_idx].item():.6f}"
             )
 
         # Log all validated top-probability candidates.
-        # iteration marker: 0 = ordinary, 1 = SE3-best tie, 2 = final selected.
+        # iteration marker: 0 = ordinary, 1 = final-tier tie, 2 = final selected.
         for idx in range(processed_top.shape[0]):
             if idx == final_idx:
                 marker = 2
-            elif bool(best_se3_mask[idx]):
+            elif bool(final_tier_mask[idx]):
                 marker = 1
             else:
                 marker = 0
@@ -788,12 +839,16 @@ def optimize_morphology(
         final_processed_morphology = processed_top[final_idx]
         final_validation_data = validation_data_list[final_idx]
         final_se3 = final_validation_data["best_se3_dist_mean"].detach().cpu().item()
+        final_ik_success_rate = (
+            final_validation_data["ik_success_pose_rate"].detach().cpu().item()
+        )
 
         print(
             "[Final candidate] "
             f"loss={losses_top[final_idx].item():.6f}, "
             f"nrm_prob={probs_top[final_idx].item():.6f}, "
             f"final_se3_err={final_se3:.6f}, "
+            f"ik_success_pose_rate={final_ik_success_rate * 100.0:.2f}%, "
             f"length_sum={length_sums[final_idx].item():.6f}"
         )
 

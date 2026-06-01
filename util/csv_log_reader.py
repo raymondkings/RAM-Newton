@@ -47,6 +47,9 @@ def read_optimization_csv(csv_path: str | Path) -> list[dict]:
             parsed["reachability_probability"] = _parse_float_cell(
                 row.get("reachability_probability", "")
             )
+            parsed["ik_success_pose_rate"] = _parse_float_cell(
+                row.get("ik_success_pose_rate", "")
+            )
 
             for key in [
                 "raw_morphology_json",
@@ -82,32 +85,37 @@ def tensor_from_json_cell(value) -> torch.Tensor | None:
     return torch.tensor(value, dtype=torch.float32)
 
 
-# This is for loading a specific joint config from the IK solver. (the middle one, can be changed to set a specific one)
-# TODO: if we want to visualize the final joint config, you can pick a specific pose and its joint config
 def load_middle_start_q_from_last_validation(
     csv_path: str | Path,
     device: torch.device | None = None,
     dtype: torch.dtype = torch.float32,
+    goal_pose_index: int = 1,
 ) -> torch.Tensor:
-    """Load middle joint solution from the last CSV row that contains validation data.
+    """Load the joint solution for one original goal pose from validation CSV data.
 
-    The selected row is the last row with non-empty best_joints_json.
-    If best_joints has shape [P, dof], choose index P // 2.
-    Example:
-        P = 8 -> index 4
-        P = 3 -> index 1
+    The CSV stores sampled_pose_indices_json in the same order as best_joints_json.
+    By default, this picks the joint solution for task.goal_poses[1].
     """
     rows = read_optimization_csv(csv_path)
 
-    validation_rows = [row for row in rows if row.get("best_joints_json") is not None]
+    validation_rows = [
+        row
+        for row in rows
+        if row.get("best_joints_json") is not None
+        and row.get("sampled_pose_indices_json") is not None
+    ]
 
     if not validation_rows:
         raise ValueError(
-            f"No validation row with best_joints_json found in CSV: {csv_path}"
+            f"No validation row with best_joints_json and sampled_pose_indices_json "
+            f"found in CSV: {csv_path}"
         )
 
-    last_validation_row = validation_rows[-1]
+    max_iteration = max(row["iteration"] for row in validation_rows)
+    final_rows = [row for row in validation_rows if row["iteration"] == max_iteration]
+    last_validation_row = final_rows[-1]
     best_joints = tensor_from_json_cell(last_validation_row["best_joints_json"])
+    sampled_pose_indices = last_validation_row["sampled_pose_indices_json"]
 
     if best_joints is None:
         raise ValueError(
@@ -124,17 +132,31 @@ def load_middle_start_q_from_last_validation(
     if num_poses == 0:
         raise ValueError("best_joints_json contains zero joint solutions.")
 
-    middle_idx = num_poses // 2
-    start_q = best_joints[middle_idx].to(dtype=dtype)
+    if len(sampled_pose_indices) != num_poses:
+        raise ValueError(
+            f"sampled_pose_indices length ({len(sampled_pose_indices)}) does not "
+            f"match best_joints rows ({num_poses}) in CSV: {csv_path}"
+        )
+
+    try:
+        selected_idx = [int(idx) for idx in sampled_pose_indices].index(goal_pose_index)
+    except ValueError as exc:
+        raise ValueError(
+            f"Goal pose index {goal_pose_index} was not sampled in selected "
+            f"validation row. sampled_pose_indices={sampled_pose_indices}"
+        ) from exc
+
+    start_q = best_joints[selected_idx].to(dtype=dtype)
 
     if device is not None:
         start_q = start_q.to(device)
 
     print(
-        f"[Info] Loaded start_q from last validation row: "
+        f"[Info] Loaded start_q from selected validation row: "
         f"iteration={last_validation_row['iteration']}, "
         f"best_joints_shape={tuple(best_joints.shape)}, "
-        f"selected_index={middle_idx}"
+        f"goal_pose_index={goal_pose_index}, "
+        f"selected_sampled_pose_index={selected_idx}"
     )
 
     return start_q
