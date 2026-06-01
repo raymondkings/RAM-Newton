@@ -610,7 +610,9 @@ class TimGenerativeGraphIKSolver:
         if any(result is None for result in flat_results):
             raise RuntimeError("GGIK joint prediction produced incomplete results.")
 
-        flat_joints = torch.stack([result for result in flat_results if result is not None])
+        flat_joints = torch.stack(
+            [result for result in flat_results if result is not None]
+        )
         return flat_joints.reshape(
             morphologies.shape[0],
             target_poses_local.shape[0],
@@ -1247,7 +1249,12 @@ def optimize_candidate_selection(
 
     if isinstance(candidate_batch_size, str):
         normalized_candidate_batch_size = candidate_batch_size.strip().upper()
-        if normalized_candidate_batch_size not in {"ALL", "AUTO", "GGIK_FORWARD", "FORWARD"}:
+        if normalized_candidate_batch_size not in {
+            "ALL",
+            "AUTO",
+            "GGIK_FORWARD",
+            "FORWARD",
+        }:
             candidate_batch_size = int(candidate_batch_size)
     else:
         candidate_batch_size = int(candidate_batch_size)
