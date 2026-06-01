@@ -5,7 +5,7 @@
     "num_iterations": 500,
     "eval_interval": 20,
     "number_random_seed": 32,
-    "percentage_poses": 1,
+    "percentage_poses": 0.2,
     "learning_rate_length": 0.01,
     "learning_rate_angle": 0.05,
     "ignore_ground": true,

@@ -10,7 +10,7 @@ def l_environment() -> Environment:
     ROOM_HEIGHT = 0.35
 
     # Room is shifted from the origin so the robot's base sits beside the left wall midpoint
-    ROOM_OFFSET_X = 0.45
+    ROOM_OFFSET_X = 0.35
 
     obstacles = [
         # Back wall — far end at +y

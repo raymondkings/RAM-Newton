@@ -31,6 +31,7 @@ from optim.nrm_alpha_random_selection import (
     ZERO_ALPHA_RUN_EXCLUSION_LENGTH,
     _build_morphology_tensors,
     _distribution_valid_mask,
+    _last_d_nonnegative_mask,
     _log_candidate,
     _optimize_all_candidates_single_round,
     _se3_to_vector,
@@ -399,6 +400,28 @@ def optimize_morphology(
                 "post-optimization distribution checker."
             )
 
+        # here we deliberately pick only the last d >= 0, otherwise the robot goes under the wall insead of over the wall
+        before_last_d_filter = len(records)
+        records = [
+            record
+            for record in records
+            if bool(_last_d_nonnegative_mask(record["processed_morphology"]).item())
+        ]
+
+        if not records:
+            raise RuntimeError(
+                "All optimized DOF5-7 candidates were rejected by the final-link "
+                "d filter (requires processed morphology params[-1, 2] >= 0)."
+            )
+
+        if logging:
+            print(
+                "[Info] DOF5-7 final-link d filter: "
+                f"kept {len(records)}/{before_last_d_filter} candidates "
+                "with processed params[-1, 2] >= 0."
+            )
+        # end of selection last d >= 0
+
         probs_valid = torch.stack(
             [record["prob"].detach().to(device) for record in records]
         )
@@ -507,7 +530,8 @@ def optimize_morphology(
             f"nrm_prob={final_record['prob'].item():.6f}, "
             f"final_se3_err={final_se3:.6f}, "
             f"ik_success_pose_rate={final_ik_success_rate * 100.0:.2f}%, "
-            f"length_sum={length_sums_tensor[final_idx].item():.6f}"
+            f"length_sum={length_sums_tensor[final_idx].item():.6f}, "
+            f"final_last_d={final_processed_morphology[-1, 2].item():.6f}"
         )
 
         if logging:
