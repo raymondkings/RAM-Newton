@@ -130,9 +130,7 @@ class CuroboPlanner:
         Returns (PlanResult, goal_q) where goal_q is the final joint config,
         or None if no solution was found.
         """
-        result, goal, start_q = self._plan_pose_raw(
-            goal_pose, start_q, max_attempts
-        )
+        result, goal, start_q = self._plan_pose_raw(goal_pose, start_q, max_attempts)
 
         if result is None or not result.success.any():
             best_ik_q = self._diagnose_failure(result, goal, start_q)
@@ -212,9 +210,7 @@ class CuroboPlanner:
             pose = torch.eye(4, dtype=torch.float32)
             pose[0, 3] = x
             pose[2, 3] = z
-            goal = _mat_to_goal_pose(
-                pose, self._planner.tool_frames, self._device
-            )
+            goal = _mat_to_goal_pose(pose, self._planner.tool_frames, self._device)
             ik_result = self._planner.ik_solver.solve_pose(goal)
             if (
                 ik_result is None

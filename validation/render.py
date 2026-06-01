@@ -482,9 +482,7 @@ def render_scene(
         goal_axes_c,
         width=_POSE_FRAME_LINE_WIDTH,
     )
-    viewer.log_lines(
-        "/eef_frame", eef_b, eef_e, eef_c, width=_POSE_FRAME_LINE_WIDTH
-    )
+    viewer.log_lines("/eef_frame", eef_b, eef_e, eef_c, width=_POSE_FRAME_LINE_WIDTH)
     viewer.end_frame()
 
     try:
