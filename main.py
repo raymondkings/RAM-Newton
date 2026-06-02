@@ -16,7 +16,7 @@ from util.csv_log_reader import load_latest_optimized_morphology
 # target selecting
 # from task.target1 import create_task
 # from task.target1plus import create_task
-from task.task_pose_sampler import START_POSE, create_task
+from task.task_pose_sampler import START_POSE, create_start_goal_poses, create_task
 # from task.target2 import create_task
 
 
@@ -203,9 +203,20 @@ def main() -> None:
 
     print("[Info] Config:", json.dumps(vars(args), indent=2))
 
+    plan_goal_start = bool(getattr(args, "plan_goal_start", False))
+    if plan_goal_start:
+        print(
+            "[Info] plan_goal_start enabled: optimization uses all sampled poses; "
+            "final planner uses only start pose and first-path max-alpha goal pose."
+        )
+
     task = Task(
         environment=l_environment(),
-        goal_poses=create_task(seed=args.seed, start_pose=START_POSE, device=device),
+        goal_poses=create_task(
+            seed=args.seed,
+            start_pose=START_POSE,
+            device=device,
+        ),
         reachable_region=None,
         start_q=None,
     )
@@ -255,6 +266,10 @@ def main() -> None:
                 "random_seed": args.seed,
                 "number_random_seed": args.number_random_seed,
                 "percentage_poses": args.percentage_poses,
+                "candidate_batch_size": getattr(args, "candidate_batch_size", 64),
+                "distribution_batch_size": getattr(
+                    args, "distribution_batch_size", 128
+                ),
                 "ignore_ground": args.ignore_ground,
                 "ignore_obstacles": args.ignore_obstacles,
             },
@@ -285,9 +300,21 @@ def main() -> None:
 
     run_postprocess(Path(csv_path), task, args)
 
+    plan_task = task
+    if plan_goal_start:
+        plan_task = Task(
+            environment=task.environment,
+            goal_poses=create_start_goal_poses(
+                start_pose=START_POSE,
+                device=device,
+            ),
+            reachable_region=task.reachable_region,
+            start_q=task.start_q,
+        )
+
     run_plan(
         optimized_morph,
-        task,
+        plan_task,
         ignore_ground=args.ignore_ground,
         ignore_obstacles=args.ignore_obstacles,
         debug=args.debug,

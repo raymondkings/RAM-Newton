@@ -144,6 +144,25 @@ class CuroboPlanner:
             path[-1],
         )
 
+    @staticmethod
+    def _skip_consecutive_duplicate_poses(
+        goal_poses: torch.Tensor,
+        *,
+        atol: float = 1e-7,
+    ) -> tuple[torch.Tensor, list[int]]:
+        """Collapse adjacent duplicate poses while preserving original indices."""
+        if goal_poses.shape[0] <= 1:
+            return goal_poses, list(range(goal_poses.shape[0]))
+
+        keep = [0]
+        for i in range(1, goal_poses.shape[0]):
+            is_duplicate = torch.allclose(
+                goal_poses[i], goal_poses[keep[-1]], atol=atol, rtol=0.0
+            )
+            if not is_duplicate:
+                keep.append(i)
+        return goal_poses[keep], keep
+
     def plan_sequence(
         self,
         goal_poses: torch.Tensor,
@@ -156,29 +175,40 @@ class CuroboPlanner:
         Returns the concatenated path and the final joint config, or None on failure.
         """
         n_total = goal_poses.shape[0]
+        goal_poses_to_plan, original_goal_indices = (
+            self._skip_consecutive_duplicate_poses(goal_poses)
+        )
+        n_plan = goal_poses_to_plan.shape[0]
+        n_skipped = n_total - n_plan
+        suffix = (
+            f" ({n_total} input goals; skipped {n_skipped} consecutive duplicates)"
+            if n_skipped
+            else ""
+        )
         print(
-            f"Planning sequence of {n_total} goals with cuRobo (GPU TrajOpt + graph search)..."
+            f"Planning sequence of {n_plan} goals with cuRobo "
+            f"(GPU TrajOpt + graph search){suffix}..."
         )
         full_path: list[torch.Tensor] = []
         current_q = start_q
 
-        for i in range(n_total):
+        for plan_i, original_i in enumerate(original_goal_indices):
             result, goal, start_q_used = self._plan_pose_raw(
-                goal_poses[i], current_q, max_attempts
+                goal_poses_to_plan[plan_i], current_q, max_attempts
             )
             if result is None or not result.success.any():
                 best_ik_q = self._diagnose_failure(
                     result,
                     goal,
                     start_q_used,
-                    report_header=f"Goal {i}/{n_total} failed",
+                    report_header=f"Goal {original_i}/{n_total} failed",
                 )
                 return PlanResult(
                     success=False,
                     path=full_path,
                     n_iterations=0,
                     n_nodes=len(full_path),
-                    failed_at_goal=i,
+                    failed_at_goal=original_i,
                     best_ik_q=best_ik_q,
                 ), None
 
