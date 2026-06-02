@@ -9,14 +9,11 @@ import torch
 
 
 NUM_SAMPLES = 50
-NUM_GAUSSIAN_NOISE_SAMPLES = 2
-GAUSSIAN_MEAN = 0.0
-# 90% of Gaussian z-axis noise samples are within +-5 degrees.
-_GAUSSIAN_90_PERCENT_Z = 1.6448536269514722
-GAUSSIAN_STD_DEGREES = 5.0 / _GAUSSIAN_90_PERCENT_Z
-GAUSSIAN_VARIANCE = math.radians(GAUSSIAN_STD_DEGREES) ** 2
+NUM_EXTRA_PATHS = 4
 ALPHA_RANGE_DEGREES = (0.0, 180.0)
-REPEAT_START_GOAL = 5
+BETA_RANGE_DEGREES = (-30.0, 30.0)
+LINE_P_RANGE = (0.0, 1.0)
+REPEAT_START_GOAL = 80
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CACHE_DIR = PROJECT_ROOT / "initial_candidates"
@@ -61,7 +58,7 @@ def _pose_from_alpha(alpha: torch.Tensor, *, dtype: torch.dtype) -> torch.Tensor
          [cos(a),  0, -sin(a)]]
 
     Translation follows the corrected formula:
-        x = 0.40 - 0.25*cos(alpha)
+        x = 0.45 - 0.25*cos(alpha)
         z = 0.1 + 0.25*sin(alpha)
     """
     alpha = alpha.to(dtype=dtype)
@@ -86,45 +83,131 @@ def _pose_from_alpha(alpha: torch.Tensor, *, dtype: torch.dtype) -> torch.Tensor
     return poses
 
 
-def _z_rotation_transform(angles: torch.Tensor, *, dtype: torch.dtype) -> torch.Tensor:
-    angles = angles.to(dtype=dtype)
-    c = torch.cos(angles)
-    s = torch.sin(angles)
-    n = angles.numel()
+def _line_pose_from_p(p: torch.Tensor, *, dtype: torch.dtype) -> torch.Tensor:
+    p = p.to(dtype=dtype)
+    n = p.numel()
 
-    transforms = torch.eye(4, dtype=dtype, device=angles.device).repeat(n, 1, 1)
-    transforms[:, 0, 0] = c
-    transforms[:, 0, 1] = -s
-    transforms[:, 1, 0] = s
-    transforms[:, 1, 1] = c
-    return transforms
+    poses = torch.eye(4, dtype=dtype, device=p.device).repeat(n, 1, 1)
+    poses[:, :3, :3] = START_POSE[:3, :3].to(dtype=dtype, device=p.device)
+    poses[:, 0, 3] = 0.20 + 0.5 * p
+    poses[:, 1, 3] = 0.0
+    poses[:, 2, 3] = 0.1
+    return poses
+
+
+def _z_rotation(beta: torch.Tensor, *, dtype: torch.dtype) -> torch.Tensor:
+    beta = beta.to(dtype=dtype)
+    c = torch.cos(beta)
+    s = torch.sin(beta)
+
+    rotation = torch.eye(3, dtype=dtype, device=beta.device)
+    rotation[0, 0] = c
+    rotation[0, 1] = -s
+    rotation[1, 0] = s
+    rotation[1, 1] = c
+    return rotation
+
+
+def _y_rotation_negative_alpha(
+    alpha: torch.Tensor, *, dtype: torch.dtype
+) -> torch.Tensor:
+    alpha = alpha.to(dtype=dtype)
+    c = torch.cos(alpha)
+    s = torch.sin(alpha)
+    n = alpha.numel()
+
+    rotation = torch.zeros(n, 3, 3, dtype=dtype, device=alpha.device)
+    rotation[:, 0, 0] = c
+    rotation[:, 0, 2] = -s
+    rotation[:, 1, 1] = 1.0
+    rotation[:, 2, 0] = s
+    rotation[:, 2, 2] = c
+    return rotation
+
+
+def _extra_path_pose_from_alpha_beta(
+    alpha: torch.Tensor,
+    beta: torch.Tensor,
+    *,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    alpha = alpha.to(dtype=dtype)
+    beta = beta.to(dtype=dtype, device=alpha.device)
+    s_alpha = torch.sin(alpha)
+    c_alpha = torch.cos(alpha)
+    n = alpha.numel()
+
+    start_rotation = START_POSE[:3, :3].to(dtype=dtype, device=alpha.device)
+    rotation_z = _z_rotation(beta, dtype=dtype)
+    rotation_y = _y_rotation_negative_alpha(alpha, dtype=dtype)
+    rotations = (start_rotation @ rotation_z).unsqueeze(0) @ rotation_y
+
+    poses = torch.eye(4, dtype=dtype, device=alpha.device).repeat(n, 1, 1)
+    poses[:, :3, :3] = rotations
+    poses[:, 0, 3] = 0.45 - 0.25 * c_alpha
+    poses[:, 1, 3] = 0.25 * s_alpha * torch.cos(math.pi / 2.0 + beta)
+    poses[:, 2, 3] = 0.1 + 0.25 * s_alpha * torch.sin(math.pi / 2.0 - beta)
+    return poses
+
+
+def _sample_sorted_uniform(
+    *,
+    generator: torch.Generator,
+    count: int,
+    value_range: tuple[float, float],
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    low, high = value_range
+    values = low + (high - low) * torch.rand(
+        count, generator=generator, dtype=dtype, device="cpu"
+    )
+    values, _ = torch.sort(values)
+    return values
 
 
 def _signature(
     *,
     seed: int,
     num_samples: int,
-    num_gaussian_noise_samples: int,
-    gaussian_mean: float,
-    gaussian_variance: float,
+    num_extra_paths: int,
     alpha_range_degrees: tuple[float, float],
+    beta_range_degrees: tuple[float, float],
+    line_p_range: tuple[float, float],
     repeat: int,
 ) -> dict[str, Any]:
     return {
-        "version": 1,
+        "version": 4,
         "seed": int(seed),
         "num_samples": int(num_samples),
-        "num_gaussian_noise_samples": int(num_gaussian_noise_samples),
-        "gaussian_mean": float(gaussian_mean),
-        "gaussian_variance": float(gaussian_variance),
+        "num_extra_paths": int(num_extra_paths),
         "alpha_range_degrees": [
             float(alpha_range_degrees[0]),
             float(alpha_range_degrees[1]),
         ],
+        "beta_range_degrees": [
+            float(beta_range_degrees[0]),
+            float(beta_range_degrees[1]),
+        ],
+        "line_p_range": [
+            float(line_p_range[0]),
+            float(line_p_range[1]),
+        ],
         "repeat": int(repeat),
-        "translation_z_mode": "0.175 + 0.25*sin(alpha)",
+        "goal_alpha_degrees": float(alpha_range_degrees[1]),
+        "path_order": ["main_alpha", "line_x", "extra_beta"],
+        "total_pose_count": int((num_extra_paths + 2) * num_samples + 2 * repeat),
+        "main_rotation": "R_start @ Ry(-alpha)",
+        "extra_rotation": "R_start @ Rz(beta) @ Ry(-alpha)",
+        "main_translation": "[0.45 - 0.25*cos(alpha), 0, 0.1 + 0.25*sin(alpha)]",
+        "line_translation": "[0.20 + 0.5*p, 0, 0.1]",
+        "extra_translation": (
+            "[0.45 - 0.25*cos(alpha), "
+            "0.25*sin(alpha)*cos(pi/2 + beta), "
+            "0.1 + 0.25*sin(alpha)*sin(pi/2 - beta)]"
+        ),
         "alpha_order": "ascending",
-        "noise_multiplication": "base_pose @ local_z_rotation_noise",
+        "beta_order": "ascending",
+        "line_p_order": "ascending",
         "start_pose": _jsonable_float_list(START_POSE),
     }
 
@@ -137,13 +220,10 @@ def _is_non_decreasing(values: list[float]) -> bool:
     return all(values[i] <= values[i + 1] for i in range(len(values) - 1))
 
 
-def _read_cached_goal_poses(
+def _read_cached_payload(
     cache_dir: Path,
     signature: dict[str, Any],
-    *,
-    dtype: torch.dtype,
-    device: torch.device,
-) -> tuple[torch.Tensor, Path] | None:
+) -> tuple[dict[str, Any], Path] | None:
     for path in _cache_files(cache_dir, int(signature["seed"])):
         try:
             with path.open("r") as f:
@@ -156,7 +236,15 @@ def _read_cached_goal_poses(
                 payload.get("alpha_degrees", [])
             ):
                 continue
-            return torch.tensor(payload["goal_poses"], dtype=dtype, device=device), path
+            if signature.get("line_p_order") == "ascending" and not _is_non_decreasing(
+                payload.get("line_p_values", [])
+            ):
+                continue
+            if signature.get("beta_order") == "ascending" and not _is_non_decreasing(
+                payload.get("extra_beta_degrees", [])
+            ):
+                continue
+            return payload, path
     return None
 
 
@@ -179,8 +267,11 @@ def _write_cache(
     signature: dict[str, Any],
     *,
     alpha_degrees: torch.Tensor,
-    gaussian_noise_angles: torch.Tensor,
-    base_sampled_poses: torch.Tensor,
+    line_p_values: torch.Tensor,
+    extra_beta_degrees: torch.Tensor,
+    extra_alpha_degrees_by_beta: torch.Tensor,
+    start_pose: torch.Tensor,
+    sampled_poses: torch.Tensor,
     goal_pose: torch.Tensor,
     goal_poses: torch.Tensor,
 ) -> Path:
@@ -189,8 +280,13 @@ def _write_cache(
     payload = {
         "signature": signature,
         "alpha_degrees": _jsonable_float_list(alpha_degrees),
-        "gaussian_noise_angles_radians": _jsonable_float_list(gaussian_noise_angles),
-        "base_sampled_poses": _jsonable_float_list(base_sampled_poses),
+        "line_p_values": _jsonable_float_list(line_p_values),
+        "extra_beta_degrees": _jsonable_float_list(extra_beta_degrees),
+        "extra_alpha_degrees_by_beta": _jsonable_float_list(
+            extra_alpha_degrees_by_beta
+        ),
+        "sampled_poses": _jsonable_float_list(sampled_poses),
+        "single_start_pose": _jsonable_float_list(start_pose),
         "single_goal_pose": _jsonable_float_list(goal_pose),
         "goal_poses": _jsonable_float_list(goal_poses),
     }
@@ -203,10 +299,10 @@ def task_sampler(
     seed: int | None = None,
     start_pose: torch.Tensor | None = None,
     num_samples: int = NUM_SAMPLES,
-    num_gaussian_noise_samples: int = NUM_GAUSSIAN_NOISE_SAMPLES,
-    gaussian_mean: float = GAUSSIAN_MEAN,
-    gaussian_variance: float = GAUSSIAN_VARIANCE,
+    num_extra_paths: int = NUM_EXTRA_PATHS,
     alpha_range_degrees: tuple[float, float] = ALPHA_RANGE_DEGREES,
+    beta_range_degrees: tuple[float, float] = BETA_RANGE_DEGREES,
+    line_p_range: tuple[float, float] = LINE_P_RANGE,
     repeat: int = REPEAT_START_GOAL,
     cache_dir: str | Path = CACHE_DIR,
     dtype: torch.dtype = torch.float32,
@@ -215,22 +311,25 @@ def task_sampler(
     """Sample task poses and cache them under ``initial_candidates``.
 
     Returns:
-        Tensor [repeat + num_samples*num_gaussian_noise_samples + repeat, 4, 4].
-        The first block is repeated START_POSE, the middle block is noisy sampled
-        poses, and the final block is the alpha=180 goal pose repeated ``repeat``.
+        By default, tensor
+        [(num_extra_paths + 2)*num_samples + 2*repeat, 4, 4]. The first block is
+        repeated START_POSE, the middle block is sampled path poses, and the
+        final block is the first-path max-alpha goal pose repeated ``repeat``.
     """
     if seed is None:
         seed = int(torch.initial_seed() % (2**32))
     if num_samples <= 0:
         raise ValueError("num_samples must be positive.")
-    if num_gaussian_noise_samples <= 0:
-        raise ValueError("num_gaussian_noise_samples must be positive.")
-    if gaussian_variance < 0.0:
-        raise ValueError("gaussian_variance must be non-negative.")
+    if num_extra_paths < 0:
+        raise ValueError("num_extra_paths must be non-negative.")
     if repeat <= 0:
         raise ValueError("repeat must be positive.")
     if alpha_range_degrees[0] > alpha_range_degrees[1]:
         raise ValueError("alpha_range_degrees must be ordered as (min, max).")
+    if beta_range_degrees[0] > beta_range_degrees[1]:
+        raise ValueError("beta_range_degrees must be ordered as (min, max).")
+    if line_p_range[0] > line_p_range[1]:
+        raise ValueError("line_p_range must be ordered as (min, max).")
 
     device = torch.device(device) if device is not None else _default_device()
     cache_dir = Path(cache_dir)
@@ -243,51 +342,78 @@ def task_sampler(
     signature = _signature(
         seed=seed,
         num_samples=num_samples,
-        num_gaussian_noise_samples=num_gaussian_noise_samples,
-        gaussian_mean=gaussian_mean,
-        gaussian_variance=gaussian_variance,
+        num_extra_paths=num_extra_paths,
         alpha_range_degrees=alpha_range_degrees,
+        beta_range_degrees=beta_range_degrees,
+        line_p_range=line_p_range,
         repeat=repeat,
     )
     signature["start_pose"] = _jsonable_float_list(start_cpu)
 
-    cached = _read_cached_goal_poses(
-        cache_dir,
-        signature,
-        dtype=dtype,
-        device=device,
-    )
+    cached = _read_cached_payload(cache_dir, signature)
     if cached is not None:
-        goal_poses, cache_path = cached
+        payload, cache_path = cached
         print(f"[Info] Loaded task pose cache: {cache_path}")
-        return goal_poses
+        return torch.tensor(payload["goal_poses"], dtype=dtype, device=device)
 
     generator = torch.Generator(device="cpu")
     generator.manual_seed(int(seed))
 
-    low, high = alpha_range_degrees
-    alpha_degrees = low + (high - low) * torch.rand(
-        num_samples, generator=generator, dtype=dtype, device="cpu"
-    )
-    alpha_degrees, _ = torch.sort(alpha_degrees)
-    alpha = torch.deg2rad(alpha_degrees).to(device=device)
-    base_sampled_poses = _pose_from_alpha(alpha, dtype=dtype)
-
-    noise_std = math.sqrt(float(gaussian_variance))
-    gaussian_noise_angles = torch.normal(
-        mean=float(gaussian_mean),
-        std=noise_std,
-        size=(num_samples, num_gaussian_noise_samples),
+    alpha_degrees = _sample_sorted_uniform(
         generator=generator,
+        count=num_samples,
+        value_range=alpha_range_degrees,
         dtype=dtype,
-        device="cpu",
     )
-    noise_tf = _z_rotation_transform(
-        gaussian_noise_angles.reshape(-1).to(device=device), dtype=dtype
-    ).reshape(num_samples, num_gaussian_noise_samples, 4, 4)
-    sampled_poses = (base_sampled_poses[:, None, :, :] @ noise_tf).reshape(-1, 4, 4)
+    alpha = torch.deg2rad(alpha_degrees).to(device=device)
+    main_path_poses = _pose_from_alpha(alpha, dtype=dtype)
 
-    goal_alpha = torch.tensor([math.pi], dtype=dtype, device=device)
+    line_p_values = _sample_sorted_uniform(
+        generator=generator,
+        count=num_samples,
+        value_range=line_p_range,
+        dtype=dtype,
+    )
+    line_path_poses = _line_pose_from_p(line_p_values.to(device=device), dtype=dtype)
+
+    extra_beta_degrees = _sample_sorted_uniform(
+        generator=generator,
+        count=num_extra_paths,
+        value_range=beta_range_degrees,
+        dtype=dtype,
+    )
+    extra_path_poses = []
+    extra_alpha_degrees_by_beta = []
+    for beta_degree in extra_beta_degrees:
+        extra_alpha_degrees = _sample_sorted_uniform(
+            generator=generator,
+            count=num_samples,
+            value_range=alpha_range_degrees,
+            dtype=dtype,
+        )
+        extra_alpha_degrees_by_beta.append(extra_alpha_degrees)
+        extra_alpha = torch.deg2rad(extra_alpha_degrees).to(device=device)
+        beta = torch.deg2rad(beta_degree).to(device=device)
+        extra_path_poses.append(
+            _extra_path_pose_from_alpha_beta(extra_alpha, beta, dtype=dtype)
+        )
+
+    if extra_path_poses:
+        extra_path_poses_tensor = torch.cat(extra_path_poses, dim=0)
+        extra_alpha_degrees_tensor = torch.stack(extra_alpha_degrees_by_beta, dim=0)
+    else:
+        extra_path_poses_tensor = torch.empty(0, 4, 4, dtype=dtype, device=device)
+        extra_alpha_degrees_tensor = torch.empty(
+            0, num_samples, dtype=dtype, device="cpu"
+        )
+
+    sampled_poses = torch.cat(
+        [main_path_poses, line_path_poses, extra_path_poses_tensor], dim=0
+    )
+
+    goal_alpha = torch.deg2rad(
+        torch.tensor([alpha_range_degrees[1]], dtype=dtype, device=device)
+    )
     goal_pose = _pose_from_alpha(goal_alpha, dtype=dtype)[0]
     start = start_cpu.to(device=device)
 
@@ -299,13 +425,22 @@ def task_sampler(
         ],
         dim=0,
     )
+    expected_count = (num_extra_paths + 2) * num_samples + 2 * repeat
+    if goal_poses.shape[0] != expected_count:
+        raise RuntimeError(
+            f"task pose count mismatch: expected {expected_count}, got "
+            f"{goal_poses.shape[0]}."
+        )
 
     cache_path = _write_cache(
         cache_dir,
         signature,
         alpha_degrees=alpha_degrees,
-        gaussian_noise_angles=gaussian_noise_angles,
-        base_sampled_poses=base_sampled_poses,
+        line_p_values=line_p_values,
+        extra_beta_degrees=extra_beta_degrees,
+        extra_alpha_degrees_by_beta=extra_alpha_degrees_tensor,
+        start_pose=start,
+        sampled_poses=sampled_poses,
         goal_pose=goal_pose,
         goal_poses=goal_poses,
     )
@@ -320,4 +455,29 @@ def create_task(
     device: torch.device | str | None = None,
     dtype: torch.dtype = torch.float32,
 ) -> torch.Tensor:
-    return task_sampler(seed=seed, start_pose=start_pose, device=device, dtype=dtype)
+    return task_sampler(
+        seed=seed,
+        start_pose=start_pose,
+        device=device,
+        dtype=dtype,
+    )
+
+
+def create_start_goal_poses(
+    *,
+    start_pose: torch.Tensor | None = None,
+    alpha_range_degrees: tuple[float, float] = ALPHA_RANGE_DEGREES,
+    device: torch.device | str | None = None,
+    dtype: torch.dtype = torch.float32,
+) -> torch.Tensor:
+    device = torch.device(device) if device is not None else _default_device()
+    start = (
+        _as_pose_tensor(start_pose, dtype=dtype)
+        if start_pose is not None
+        else START_POSE.to(dtype=dtype)
+    ).to(device=device)
+    goal_alpha = torch.deg2rad(
+        torch.tensor([alpha_range_degrees[1]], dtype=dtype, device=device)
+    )
+    goal_pose = _pose_from_alpha(goal_alpha, dtype=dtype)[0]
+    return torch.stack([start, goal_pose], dim=0)

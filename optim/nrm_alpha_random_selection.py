@@ -274,6 +274,19 @@ def _optimize_all_candidates_single_round(
         raise ValueError("num_iterations must be positive.")
 
     num_candidates = alpha_candidates.shape[0]
+    if logging:
+        pair_batch_size = min(candidate_batch_size, num_candidates) * task_vec.shape[0]
+        print(
+            "[Info] NRM optimization tensors: "
+            f"model_device={next(model.parameters()).device}, "
+            f"alpha_device={alpha_candidates.device}, "
+            f"length_device={initial_length_candidates.device}, "
+            f"task_vec_device={task_vec.device}, "
+            f"num_candidates={num_candidates}, "
+            f"num_poses={task_vec.shape[0]}, "
+            f"candidate_batch_size={candidate_batch_size}, "
+            f"max_candidate_pose_pairs_per_batch={pair_batch_size}"
+        )
     length_candidates = initial_length_candidates.detach().clone().requires_grad_(True)
 
     # weight_decay=0 prevents stopped/inactive rows from drifting due to AdamW's

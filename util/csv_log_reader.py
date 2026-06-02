@@ -1,11 +1,25 @@
 import csv
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
 import torch
 
 from interface import Morphology
+
+
+def _raise_csv_field_size_limit() -> None:
+    limit = sys.maxsize
+    while True:
+        try:
+            csv.field_size_limit(limit)
+            return
+        except OverflowError:
+            limit //= 10
+
+
+_raise_csv_field_size_limit()
 
 
 def _parse_json_cell(value: str) -> Any | None:
