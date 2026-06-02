@@ -175,8 +175,8 @@ class CuroboPlanner:
         Returns the concatenated path and the final joint config, or None on failure.
         """
         n_total = goal_poses.shape[0]
-        goal_poses_to_plan, original_goal_indices = self._skip_consecutive_duplicate_poses(
-            goal_poses
+        goal_poses_to_plan, original_goal_indices = (
+            self._skip_consecutive_duplicate_poses(goal_poses)
         )
         n_plan = goal_poses_to_plan.shape[0]
         n_skipped = n_total - n_plan

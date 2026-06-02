@@ -267,7 +267,9 @@ def main() -> None:
                 "number_random_seed": args.number_random_seed,
                 "percentage_poses": args.percentage_poses,
                 "candidate_batch_size": getattr(args, "candidate_batch_size", 64),
-                "distribution_batch_size": getattr(args, "distribution_batch_size", 128),
+                "distribution_batch_size": getattr(
+                    args, "distribution_batch_size", 128
+                ),
                 "ignore_ground": args.ignore_ground,
                 "ignore_obstacles": args.ignore_obstacles,
             },
