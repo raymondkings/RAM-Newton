@@ -45,7 +45,34 @@ from validation.optimization_validation import build_optimization_validation_con
 
 PROJECT_ROOT = Path(__file__).parent.parent
 
-DEFAULT_GGIK_REPO_PATH = Path("/tmp/generative-graphik")
+# Legacy fallback only. The real path is resolved from the installed
+# generative_graphik package; see _default_ggik_repo_path.
+_LEGACY_GGIK_REPO_PATH = Path("/tmp/generative-graphik")
+
+
+def _default_ggik_repo_path() -> Path:
+    """Locate the generative-graphik checkout that ships paper_models.
+
+    generative_graphik is a normal (editable) project dependency now, so prefer
+    the repo root of the installed package: its parent directory holds
+    paper_models.zip. find_spec is used instead of importing the package so this
+    stays cheap and does not pull torch_geometric/graphik in at import time.
+    Falls back to the legacy /tmp clone when the package is not an editable
+    checkout (e.g. installed as a plain wheel).
+    """
+    try:
+        spec = importlib.util.find_spec("generative_graphik")
+    except (ImportError, ValueError):
+        spec = None
+    if spec is not None and spec.origin:
+        repo_root = Path(spec.origin).resolve().parent.parent
+        if (repo_root / "paper_models").is_dir() or (
+            repo_root / "paper_models.zip"
+        ).is_file():
+            return repo_root
+    return _LEGACY_GGIK_REPO_PATH
+
+
 DEFAULT_GGIK_MODEL_NAME = "67_4mil_480-80_checkpoint_model"
 DEFAULT_CANDIDATE_DOFS = (7, 6, 5)
 DEFAULT_NUM_ALPHA_CANDIDATES: int | str = NRM_DEFAULT_NUM_ALPHA_CANDIDATES
@@ -114,7 +141,9 @@ class TimGenerativeGraphIKSolver:
     ) -> None:
         self.device = device
         self.dtype = dtype
-        self.repo_path = Path(repo_path or DEFAULT_GGIK_REPO_PATH).expanduser()
+        self.repo_path = (
+            Path(repo_path).expanduser() if repo_path else _default_ggik_repo_path()
+        )
         self.num_samples = int(num_samples)
         self.torch_postprocess = bool(torch_postprocess)
 
@@ -130,11 +159,10 @@ class TimGenerativeGraphIKSolver:
     def _ensure_import_path(self) -> None:
         if not self.repo_path.is_dir():
             raise GGIKUnavailableError(
-                "generative-graphIK repo was not found. Clone it and pass "
-                "'ggik_repo_path', for example: "
-                "git clone --branch revisions "
-                "https://github.com/utiasSTARS/generative-graphik "
-                "/tmp/generative-graphik"
+                f"generative-graphIK repo was not found at {self.repo_path}. "
+                "generative-graphik is a project dependency, so install it as an "
+                "editable checkout (uv sync), or pass 'ggik_repo_path' pointing "
+                "at a clone that contains paper_models.zip."
             )
         repo_str = str(self.repo_path)
         if repo_str not in sys.path:
@@ -657,7 +685,7 @@ def _build_ggik_solver(
     return TimGenerativeGraphIKSolver(
         device=device,
         dtype=dtype,
-        repo_path=optimization_parameters.get("ggik_repo_path", DEFAULT_GGIK_REPO_PATH),
+        repo_path=optimization_parameters.get("ggik_repo_path"),
         model_dir=optimization_parameters.get("ggik_model_dir"),
         model_name=str(
             optimization_parameters.get("ggik_model_name", DEFAULT_GGIK_MODEL_NAME)

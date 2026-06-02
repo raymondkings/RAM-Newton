@@ -13,6 +13,10 @@ dependencies = [
     "matplotlib>=3.9.0",
     "nvidia-curobo[cu13]",
     "pyglet>=2.1.14",
+    "graphik",
+    "torch-geometric>=2.5.0",
+    "liegroups",
+    "generative-graphik",
 ]
 
 [build-system]
@@ -22,8 +26,30 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = ["interface", "validation", "optim", "task", "util"]
 
+[tool.uv]
+# graphik pins trimesh<=3.7.12, but viser requires trimesh>=3.21.7. viser is a
+# core dependency, so override graphik's stale upper bound to keep one resolution.
+# generative-graphik pins numpy<=1.23.5, but torch/scipy/viser need numpy>=2;
+# override that stale upper bound to keep one resolution.
+# generative-graphik also pins graphik/liegroups via ssh URLs; override them to
+# https so they agree with the https sources below and avoid conflicting URLs.
+override-dependencies = [
+    "trimesh>=3.21.7,<5.0.0",
+    "numpy>=2.0",
+    "graphik @ git+https://github.com/utiasSTARS/graphIK.git@generative_ik",
+    "liegroups @ git+https://github.com/utiasSTARS/liegroups.git@generative_ik",
+]
+
 [tool.uv.sources]
 nvidia-curobo = { git = "https://github.com/NVlabs/curobo" }
+graphik = { git = "https://github.com/utiasSTARS/graphIK.git", rev = "generative_ik" }
+liegroups = { git = "https://github.com/utiasSTARS/liegroups.git", rev = "generative_ik" }
+# Installed from a fork rather than upstream: the upstream `revisions` branch
+# does not track the package __init__.py files, so a git build runs
+# find_packages() over a tree with no packages and the wheel ships empty. The
+# fork adds the missing generative_graphik/{,args/,networks/,utils/}__init__.py
+# so find_packages() discovers every subpackage and the git build is complete.
+generative-graphik = { git = "https://github.com/jarkenau/generative-graphik.git", rev = "main" }
 
 [dependency-groups]
 dev = [
