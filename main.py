@@ -5,13 +5,33 @@ from pathlib import Path
 
 import torch
 
-from task.morphology_sampler import sample_dof6_initial_morphologies
-from optim.nrm_alpha_random_selection_5_7 import optimize_morphology
-from interface import Morphology, Task
 from task.environment import l_environment
+from task.morphology_sampler import sample_dof6_initial_morphologies
+from interface import Morphology, Task
 from validation.curobo_planner import CuroboPlanner, interpolate_path
 from validation.render import animate_plan, render_scene
 from util.csv_log_reader import load_latest_optimized_morphology
+
+### choose the optimization method:###########
+#1, nrm
+#from optim.nrm_alpha_continuous import optimize_morphology
+#from optim.nrm_567 import optimize_morphology
+#from optim.nrm_alpha_ste import optimize_morphology
+
+#2. ggik
+#from optim.ggik_567 import optimize_morphology
+
+#3. hjcdik:
+#from optim.hjcdik_567 import optimize_morphology
+
+#4. numerical + implicit differentiation + L-BFGS:
+#from optim.numerical_567 import optimize_morphology
+#from optim.numerical_567_jax import optimize_morphology
+
+#5. Alpha(just test)
+from optim.nrm_alpha_gumbel import optimize_morphology
+#from optim.nrm_alpha_continuous import optimize_morphology
+###############################################
 
 # target selecting
 # from task.target1 import create_task
