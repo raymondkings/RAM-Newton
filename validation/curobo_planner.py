@@ -221,48 +221,43 @@ class CuroboPlanner:
         ), current_q
 
     def default_start_q(self, n_samples: int = 4096, seed: int = 0) -> torch.Tensor:
-        """Sample a feasible start configuration directly in joint space.
+        """Sample a feasible start config in joint space.
 
-        Draws ``n_samples`` joint vectors uniformly within the morphology-derived
-        joint limits and returns the first one cuRobo certifies free of
-        self-collision, world collision, and joint-limit violations (checked against
-        the same scene used for planning).
-
-        This is preferred over solving IK to a fixed near-base pose: for an optimized
-        morphology the reachable region peaks away from the base, so near-base poses
-        sit in the low-reachability tail and IK frequently fails. Sampling
-        configuration space has a far higher hit rate, at the cost of not controlling
-        where the end-effector starts — which is fine for a start seed.
-
-        Falls back to a zero configuration if the graph planner is unavailable or no
-        sampled configuration is feasible.
+        Draws ``n_samples`` configs within the joint limits, returns the first cuRobo
+        certifies feasible (collision + limits), else zeros. (cuRobo checks in
+        chunks of 2000, so 4096 = 3 passes.)
         """
         dtype = self._dtype
         gp = self._planner.graph_planner
 
-        # [2, dof]: row 0 = lower limits, row 1 = upper limits, in joint_names order.
+        # Per-joint limits drive the sampling range. position is [2, dof]: row 0 = lower
+        # limits, row 1 = upper limits, in joint_names order.
         lims = self._planner.kinematics.get_joint_limits().position
         lo, hi = lims[0], lims[1]
         dof = lo.shape[0]
 
         if gp is None:
             print(
-                "[Warning] default_start_q: graph_planner is None (warmup not run with "
-                "enable_graph=True) — cannot verify feasibility; returning zero start "
+                "[Warning] default_start_q: graph_planner is None. Cannot verify feasibility => returning zero start "
                 "configuration."
             )
             return torch.zeros(dof, dtype=dtype)
 
+        # Seed a private Random Number Generator
         generator = torch.Generator(device=lo.device)
         generator.manual_seed(seed)
+
+        # Draw n_samples candidate configs. Each row is one config, each column one joint. Every value a uniform random number in [0, 1).
         q_unit = torch.rand(
             n_samples, dof, generator=generator, device=lo.device, dtype=lo.dtype
         )
-        candidates = lo + (hi - lo) * q_unit  # [n_samples, dof], within limits
+        # Scale each [0, 1) value into that joint's [lower, upper] range, so every candidate lands inside the joint limits
+        candidates = lo + (hi - lo) * q_unit  # [n_samples, dof]
 
-        # reshape(-1) guards the N==1 case, where check_samples_feasibility squeezes
-        # its output to a 0-dim scalar.
+        # Ask cuRobo which candidates are actually feasible => free of self / environmental collision
         feasible = gp.check_samples_feasibility(candidates).reshape(-1).bool()
+
+        # Indices of every feasible candidate, take the first one.
         feasible_idx = feasible.nonzero(as_tuple=False)
         if feasible_idx.numel() > 0:
             i = int(feasible_idx[0].item())
@@ -270,8 +265,10 @@ class CuroboPlanner:
                 f"[Info] Feasible start config found by config-space sampling "
                 f"(sample {i + 1}/{n_samples})."
             )
+            # Move off the GPU and match the morphology dtype for downstream use.
             return candidates[i].detach().cpu().to(dtype)
 
+        # Otherwise returns zeros if nothing works.
         print(
             f"[Warning] No feasible start config found in {n_samples} samples — "
             "falling back to zero start configuration."
