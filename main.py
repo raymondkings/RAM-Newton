@@ -23,67 +23,6 @@ from task.task_pose_sampler import START_POSE, create_start_goal_poses, create_t
 DEFAULT_CONFIG = Path(__file__).parent / "config.json"
 
 
-def find_self_collision_free_start_q(
-    morph: Morphology,
-    task: Task,
-    device: torch.device,
-    ignore_ground: bool = False,
-    ignore_obstacles: bool = False,
-) -> torch.Tensor:
-    import os
-    from util.kinematics import build_robot_dict, build_scene, IK
-
-    robot_dict, urdf_path = build_robot_dict(morph)
-    base_pose_inv = torch.linalg.inv(task.environment.base_pose.to(device))
-    scene = build_scene(
-        task,
-        base_pose_inv,
-        ignore_ground=ignore_ground,
-        ignore_obstacles=ignore_obstacles,
-    )
-
-    ik_solver = IK(
-        robot_dict=robot_dict,
-        scene=scene,
-        num_seeds=32,
-        max_batch_size=1,
-        self_collision_check=True,
-    )
-
-    # Multiple candidates because a single IK target may be unreachable for some morphologies.
-    # Offsets are in robot-base-local frame (z-up), then transformed to world frame.
-    base_pose = task.environment.base_pose.to(device)
-    candidate_offsets_local = [
-        (0.0, 0.55),  # above base — primary target
-        (0.0, 0.40),  # lower
-        (0.0, 0.70),  # higher
-        (0.10, 0.55),  # lateral offset
-    ]
-    candidates = []
-    for x, z in candidate_offsets_local:
-        pose_local = torch.eye(4, device=device)
-        pose_local[0, 3] = x
-        pose_local[2, 3] = z
-        candidates.append(base_pose @ pose_local)
-
-    try:
-        for i, pose in enumerate(candidates):
-            joints, success = ik_solver.solve(pose.unsqueeze(0), base_pose_inv, device)
-            if success[0]:
-                print(
-                    f"[Info] Self/world collision-free start config found (candidate {i + 1}/{len(candidates)})."
-                )
-                return joints[0].to(morph.params.dtype)
-    finally:
-        try:
-            os.unlink(urdf_path)
-        except OSError:
-            pass
-
-    print("[Warning] All IK candidates failed — trying random joint sampling.")
-    return _find_collision_free_q_by_sampling(morph, task, device, ignore_ground)
-
-
 def _find_collision_free_q_by_sampling(
     morph: Morphology,
     task: Task,
