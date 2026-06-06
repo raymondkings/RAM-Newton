@@ -1,17 +1,22 @@
 {
-    "seed": 42,
+    "seed": 0,
     "visualize": true,
     "debug": true,
     "num_iterations": 500,
     "eval_interval": 20,
     "number_random_seed": 32,
     "percentage_poses": 1,
+    "candidate_batch_size": 128,
+    "distribution_batch_size": 256,
     "learning_rate_length": 0.01,
     "learning_rate_angle": 0.05,
     "ignore_ground": true,
-    "ignore_obstacles": true,
+    "ignore_obstacles": false,
+    "plan_goal_start": true,
+    "use_cached_optimized_morphology": false,
+    "cached_optimization_csv": null,
     "plot": {
-        "enabled": true,
+        "enabled": false,
         "output_dir": "output/figures"
     },
     "timelapse": {

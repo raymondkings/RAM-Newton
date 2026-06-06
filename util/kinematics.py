@@ -1,7 +1,6 @@
 import math
 import tempfile
 
-import numpy as np
 import torch
 from scipy.spatial.transform import Rotation
 from curobo.kinematics import Kinematics, KinematicsCfg
@@ -139,6 +138,12 @@ def build_sphere_dict(morph) -> dict[str, list[dict]]:
     n = morph.n_links
     r = morph.link_radius
     sphere_dict: dict[str, list[dict]] = {}
+    a0 = morph.a[0].item()
+    if abs(a0) > 2.0 * r:
+        sphere_dict["base_link"] = _capsule_spheres(
+            [a0 / 2.0, 0.0, 0.0], abs(a0) / 2.0, [1.0, 0.0, 0.0], r
+        )
+
     for j in range(n):
         spheres: list[dict] = []
         d_val = morph.d[j].item()
@@ -202,39 +207,30 @@ def build_robot_dict(morph) -> tuple[dict, str]:
 
 def build_scene(
     task,
-    base_pose_inv: torch.Tensor,
     ignore_ground: bool = False,
     ignore_obstacles: bool = False,
 ) -> Scene:
-    """Convert task obstacles to a cuRobo Scene in robot-local frame."""
-    R_inv = base_pose_inv[:3, :3].float().cpu().numpy()
-    t_inv = base_pose_inv[:3, 3].float().cpu().numpy()
-
-    def _to_local(p_world: np.ndarray) -> np.ndarray:
-        return R_inv @ p_world + t_inv
-
+    """Convert task obstacles to a cuRobo Scene in the shared world/base frame."""
     cuboids: list[Cuboid] = []
 
     if not ignore_ground:
-        ground_center = _to_local(np.array([0.0, 0.0, -0.5]))
         cuboids.append(
             Cuboid(
                 name="ground",
                 dims=[100.0, 100.0, 1.0],
-                pose=ground_center.tolist() + [1.0, 0.0, 0.0, 0.0],
+                pose=[0.0, 0.0, -0.5, 1.0, 0.0, 0.0, 0.0],
             )
         )
 
     if not ignore_obstacles:
         for idx, obs in enumerate(task.environment.obstacles):
-            c_l = _to_local(obs.center.float().cpu().numpy())
-            q_w = Rotation.from_quat(obs.rotation[[1, 2, 3, 0]].float().cpu().numpy())
-            q_l = (Rotation.from_matrix(R_inv) * q_w).as_quat()
-            pose = c_l.tolist() + [
-                float(q_l[3]),
-                float(q_l[0]),
-                float(q_l[1]),
-                float(q_l[2]),
+            c = obs.center.float().cpu().tolist()
+            q_xyzw = obs.rotation[[1, 2, 3, 0]].float().cpu().tolist()
+            pose = c + [
+                float(q_xyzw[3]),
+                float(q_xyzw[0]),
+                float(q_xyzw[1]),
+                float(q_xyzw[2]),
             ]
             cuboids.append(
                 Cuboid(
@@ -261,21 +257,19 @@ class FK:
     def compute(
         self,
         joints: torch.Tensor,
-        base_pose_inv: torch.Tensor,
         device: torch.device,
     ) -> torch.Tensor:
         """Compute FK for a batch of joint configurations.
 
         Args:
-            joints:        [N, dof] joint angles.
-            base_pose_inv: [4, 4] inverse of the robot base pose (world → local).
-            device:        Torch device.
+            joints: [N, dof] joint angles.
+            device: Torch device.
 
         Returns:
-            [N, 4, 4] EE poses in world frame.
+            [N, 4, 4] EE poses in the shared world/base frame.
         """
         N = joints.shape[0]
-        dtype = base_pose_inv.dtype
+        dtype = joints.dtype
 
         state = self._model.compute_kinematics(
             JointState.from_position(
@@ -283,19 +277,17 @@ class FK:
             )
         )
         ee_pose = state.tool_poses.get_link_pose(self._model.tool_frames[0])
-        achieved_pos_local = ee_pose.position.to(dtype).to(device)
+        achieved_pos = ee_pose.position.to(dtype).to(device)
         achieved_q_xyzw = (
             ee_pose.quaternion[:, [1, 2, 3, 0]].float().detach().cpu().numpy()
         )
-        achieved_rot_local = torch.tensor(
+        achieved_rot = torch.tensor(
             Rotation.from_quat(achieved_q_xyzw).as_matrix(), dtype=dtype, device=device
         )
 
-        base_inv_inv = torch.linalg.inv(base_pose_inv.float()).to(dtype).to(device)
-        R_base, t_base = base_inv_inv[:3, :3], base_inv_inv[:3, 3]
         reached = torch.eye(4, dtype=dtype, device=device).unsqueeze(0).repeat(N, 1, 1)
-        reached[:, :3, :3] = torch.einsum("ij,njk->nik", R_base, achieved_rot_local)
-        reached[:, :3, 3] = (R_base @ achieved_pos_local.T).T + t_base
+        reached[:, :3, :3] = achieved_rot
+        reached[:, :3, 3] = achieved_pos
 
         return reached
 
@@ -323,29 +315,24 @@ class IK:
 
     def solve(
         self,
-        goal_poses_world: torch.Tensor,
-        base_pose_inv: torch.Tensor,
+        goal_poses: torch.Tensor,
         device: torch.device,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Solve IK for a batch of goal poses.
 
         Args:
-            goal_poses_world: [N, 4, 4] goal EE poses in world frame.
-            base_pose_inv:    [4, 4] inverse of the robot base pose (world → local).
-            device:           Torch device the solver runs on.
+            goal_poses: [N, 4, 4] goal EE poses in the shared world/base frame.
+            device:     Torch device the solver runs on.
 
         Returns:
             joints:  [N, dof] best joint configuration per goal.
             success: [N] bool — IK converged within tolerance.
         """
-        N = goal_poses_world.shape[0]
-        dtype = base_pose_inv.dtype
-        goals_local = base_pose_inv @ goal_poses_world.to(dtype)  # [N, 4, 4]
+        N = goal_poses.shape[0]
+        goals = goal_poses.to(device=device)
 
-        pos = (
-            goals_local[:, :3, 3].float().contiguous().to(device).reshape(N, 1, 1, 1, 3)
-        )
-        rots_np = goals_local[:, :3, :3].float().cpu().numpy()
+        pos = goals[:, :3, 3].float().contiguous().reshape(N, 1, 1, 1, 3)
+        rots_np = goals[:, :3, :3].float().cpu().numpy()
         quats = [Rotation.from_matrix(rots_np[i]).as_quat() for i in range(N)]
         quat_wxyz = torch.tensor(
             [[q[3], q[0], q[1], q[2]] for q in quats],

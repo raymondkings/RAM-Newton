@@ -2,14 +2,14 @@ import math
 import socket
 import time
 import numpy as np
+import torch
 import warp as wp
 import newton
-from scipy.spatial.transform import Rotation
 
-import torch
 from interface import Morphology, Task
 from util.kinematics import compute_link_world_poses, forward_kinematics
 from util.mdh import add_robot_to_builder
+from util.self_collision import get_joint_limits
 from validation.ground import add_ground_grid_to_viser, make_origin_axes
 
 # PD gains for joint position control during Newton simulation
@@ -17,32 +17,20 @@ _KE = 500.0  # position stiffness  [N·m/rad]
 _KD = 50.0  # velocity damping    [N·m·s/rad]
 
 
-def add_curobo_scene_to_viser(server, scene, base_pose_f32) -> None:
+def add_curobo_scene_to_viser(server, scene) -> None:
     """Draw cuRobo collision geometry as wireframe overlays in the Viser scene.
 
-    cuRobo stores obstacles in robot-local frame; base_pose_f32 (4×4 world←robot)
-    is used to transform them back to world frame before rendering.
+    cuRobo and the viewer use the same world/base frame.
     """
-    R_base = base_pose_f32[:3, :3].float().cpu().numpy()
-    t_base = base_pose_f32[:3, 3].float().cpu().numpy()
-
-    def _world_pos(p_local):
-        return R_base @ np.asarray(p_local, dtype=np.float64) + t_base
-
-    def _world_wxyz(wxyz_local):
-        # wxyz_local: [qw, qx, qy, qz]
-        xyzw = np.array([wxyz_local[1], wxyz_local[2], wxyz_local[3], wxyz_local[0]])
-        R_world = R_base @ Rotation.from_quat(xyzw).as_matrix()
-        xyzw_w = Rotation.from_matrix(R_world).as_quat()
-        return (float(xyzw_w[3]), float(xyzw_w[0]), float(xyzw_w[1]), float(xyzw_w[2]))
+    if scene is None:
+        return
 
     _COLOR = (255, 200, 0)  # bright yellow
 
     for c in scene.cuboid or []:
-        p = _world_pos(c.pose[:3])
-        q = _world_wxyz(c.pose[3:7])
         dims = tuple(float(d) for d in c.dims)
-        pos = tuple(float(v) for v in p)
+        pos = tuple(float(v) for v in c.pose[:3])
+        q = tuple(float(v) for v in c.pose[3:7])
         server.scene.add_box(
             f"/curobo/{c.name}",
             color=_COLOR,
@@ -52,12 +40,11 @@ def add_curobo_scene_to_viser(server, scene, base_pose_f32) -> None:
         )
 
     for s in scene.sphere or []:
-        p = _world_pos(s.pose[:3])
         server.scene.add_icosphere(
             f"/curobo/{s.name}",
             radius=float(s.radius),
             color=_COLOR,
-            position=tuple(float(v) for v in p),
+            position=tuple(float(v) for v in s.pose[:3]),
         )
 
 
@@ -91,9 +78,7 @@ def make_goal_pose_axes(goal_poses, axis_length: float = 0.05):
     )
 
 
-def make_eef_pose_axes(
-    morph, q_joints: torch.Tensor, base_pose: torch.Tensor, axis_length: float = 0.05
-):
+def make_eef_pose_axes(morph, q_joints: torch.Tensor, axis_length: float = 0.05):
     """Return (begins, ends, colors) warp arrays for an RGB coordinate triad at the EEF.
 
     X/Y/Z are drawn as red/green/blue line segments, matching the goal-pose triad style.
@@ -105,7 +90,7 @@ def make_eef_pose_axes(
     )
     theta[:n_joints, 0] = q_joints[:n_joints].detach()
     poses = forward_kinematics(morph.params, theta)
-    eef_world = (base_pose @ poses[-1]).cpu()
+    eef_world = poses[-1].cpu()
 
     pos = eef_world[:3, 3].tolist()
     R = eef_world[:3, :3].tolist()
@@ -136,6 +121,9 @@ _GOAL_COLOR_SUCCESS = (50, 180, 50)  # 🟢 green — reached
 _GOAL_COLOR_FAILED = (240, 140, 0)  # 🟠 orange — first unreachable goal
 _GOAL_COLOR_UNREACHED = (210, 40, 40)  # 🔴 red — never attempted
 _GOAL_COLOR_DEFAULT = (190, 190, 190)  # ⚪ light grey — unknown status
+_GOAL_FRAME_AXIS_LENGTH = 0.08
+_EEF_FRAME_AXIS_LENGTH = 0.08
+_POSE_FRAME_LINE_WIDTH = 0.035
 
 
 def _goal_color(i: int, failed_at_goal: int | None, n_goals: int) -> tuple:
@@ -170,16 +158,18 @@ def _add_ghost_robot_to_viser(server, curobo_planner, best_ik_q, n_joints: int) 
     return handles
 
 
-def _add_ghost_toggle(server, ghost_handles: list) -> None:
-    """Add a viser checkbox that shows/hides ghost robot spheres."""
+def _add_ghost_toggle(server, ghost_handles: list):
+    """Add a viser checkbox that shows/hides best_ik ghost robot spheres."""
     if not ghost_handles:
-        return
-    toggle = server.gui.add_checkbox("Show ghost robot (best IK)", initial_value=False)
+        return None
+    toggle = server.gui.add_checkbox("Show best_ik", initial_value=False)
 
     @toggle.on_update
     def _on_toggle(_event) -> None:
         for h in ghost_handles:
             h.visible = toggle.value
+
+    return toggle
 
 
 def build_scene_builder(morph: Morphology, task: Task, q=None) -> newton.ModelBuilder:
@@ -206,34 +196,11 @@ def build_scene_builder(morph: Morphology, task: Task, q=None) -> newton.ModelBu
             label="reachable_region",
         )
 
-    for i in range(task.goal_poses.shape[0]):
-        pos = task.goal_poses[i, :3, 3].cpu()
-        builder.add_shape_sphere(
-            body=-1,
-            xform=wp.transform(p=wp.vec3(*pos.tolist()), q=wp.quat_identity()),
-            radius=0.03,
-            as_site=True,
-            color=wp.vec3(1.0, 0.2, 0.2),
-        )
-
     poses = compute_link_world_poses(morph, q=q)
-    poses = (task.environment.base_pose.unsqueeze(0) @ poses).cpu()
+    poses = poses.cpu()
     add_robot_to_builder(builder, morph, poses, label="robot")
 
     return builder
-
-
-def add_obstacles_to_viser(server, task) -> None:
-    for i, obs in enumerate(task.environment.obstacles):
-        if obs.kind == "box":
-            center = tuple(float(v) for v in obs.center.cpu().tolist())
-            dims = tuple(float(obs.half_extents[j].item() * 2) for j in range(3))
-            server.scene.add_box(
-                f"/obstacles/box_{i}",
-                color=(170, 170, 170),
-                dimensions=dims,
-                position=center,
-            )
 
 
 def add_goals_to_viser(server, task, failed_at_goal) -> None:
@@ -268,6 +235,93 @@ def _add_goal_legend(server) -> None:
     )
 
 
+def _get_joint_limits(morph: Morphology, curobo_planner) -> np.ndarray:
+    """Return [n_joints, 2] array of (lower, upper) limits.
+
+    Prefer cuRobo's limits when available (those are what the planner enforces);
+    otherwise derive them from the morphology.
+    """
+    if curobo_planner is not None:
+        lims = curobo_planner._planner.kinematics.get_joint_limits().position
+        return lims.detach().cpu().numpy().T.astype(np.float32)  # [n_joints, 2]
+    jl = (
+        get_joint_limits(morph.params).detach().cpu().numpy()
+    )  # [n_links, 2] = [range, offset]
+    n_joints = morph.n_links - 1
+    lower = jl[:n_joints, 1]
+    upper = jl[:n_joints, 1] + jl[:n_joints, 0]
+    return np.stack([lower, upper], axis=-1).astype(np.float32)
+
+
+def _add_joint_limit_panel(
+    server,
+    morph: Morphology,
+    curobo_planner,
+    initial_q: torch.Tensor | None = None,
+    on_change=None,
+    folder_label: str = "Joint limits",
+) -> tuple[list, np.ndarray, "object"]:
+    """Add a viser GUI panel of sliders showing each joint within its limits.
+
+    If `on_change` is provided, sliders are interactive; the callback is invoked
+    with the full joint vector (np.ndarray) whenever any slider changes.
+
+    Returns (slider_handles, limits) so callers can update values per frame.
+    """
+    n_joints = morph.n_links - 1
+    limits = _get_joint_limits(morph, curobo_planner)
+
+    if initial_q is not None:
+        q0 = initial_q.detach().cpu().numpy().astype(np.float32)[:n_joints]
+    else:
+        q0 = np.zeros(n_joints, dtype=np.float32)
+
+    interactive = on_change is not None
+    handles: list = []
+    folder = server.gui.add_folder(folder_label)
+    with folder:
+        for i in range(n_joints):
+            lo, hi = float(limits[i, 0]), float(limits[i, 1])
+            # Slider needs lo < hi; pad degenerate ranges so viser accepts them.
+            if hi - lo < 1e-4:
+                lo, hi = lo - 1e-3, hi + 1e-3
+            v = float(np.clip(q0[i], lo, hi))
+            h = server.gui.add_slider(
+                f"j{i}",
+                min=lo,
+                max=hi,
+                step=(hi - lo) / 200.0,
+                initial_value=v,
+                disabled=not interactive,
+                hint=f"limits: [{lo:.3f}, {hi:.3f}] rad",
+            )
+            handles.append(h)
+
+    if interactive:
+
+        def _emit(_event) -> None:
+            q = np.array([h.value for h in handles], dtype=np.float32)
+            on_change(q)
+
+        for h in handles:
+            h.on_update(_emit)
+
+    return handles, limits, folder
+
+
+def _update_joint_limit_panel(
+    handles: list, limits: np.ndarray, q: torch.Tensor
+) -> None:
+    """Update the per-joint sliders to reflect current joint config q."""
+    if not handles:
+        return
+    n = len(handles)
+    q_np = q.detach().cpu().numpy().astype(np.float32)[:n]
+    for i, h in enumerate(handles):
+        lo, hi = float(limits[i, 0]), float(limits[i, 1])
+        h.value = float(np.clip(q_np[i], lo, hi))
+
+
 def _setup_viewer(
     model: newton.Model, port: int, share: bool, curobo_planner=None
 ) -> newton.viewer.ViewerViser:
@@ -280,9 +334,7 @@ def _setup_viewer(
     _add_goal_legend(viewer._server)
 
     if curobo_planner is not None:
-        add_curobo_scene_to_viser(
-            viewer._server, curobo_planner.scene, curobo_planner._base_pose_f32
-        )
+        add_curobo_scene_to_viser(viewer._server, curobo_planner.scene)
 
     try:
         host_ip = socket.gethostbyname(socket.gethostname())
@@ -306,6 +358,7 @@ def render_scene(
     q=None,
     failed_at_goal: int | None = "unknown",
     best_ik_q=None,
+    start_q=None,
 ) -> None:
     """Render morphology + task environment in the Newton viewer (static)."""
     builder = build_scene_builder(morph, task, q=q)
@@ -319,25 +372,111 @@ def render_scene(
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
     viewer = _setup_viewer(model, port, share, curobo_planner)
-    add_obstacles_to_viser(viewer._server, task)
     add_goals_to_viser(viewer._server, task, failed_at_goal)
     ghost_handles = _add_ghost_robot_to_viser(
         viewer._server, curobo_planner, best_ik_q, n_joints
     )
     _add_ghost_toggle(viewer._server, ghost_handles)
     axes_begins, axes_ends, axes_colors = make_origin_axes(axis_length=0.1)
-    goal_axes_b, goal_axes_e, goal_axes_c = make_goal_pose_axes(task.goal_poses)
-    zero_q = torch.zeros(
-        morph.n_links - 1, dtype=morph.params.dtype, device=morph.params.device
+    goal_axes_b, goal_axes_e, goal_axes_c = make_goal_pose_axes(
+        task.goal_poses, axis_length=_GOAL_FRAME_AXIS_LENGTH
+    )
+    eef_q = (
+        start_q.to(dtype=morph.params.dtype, device=morph.params.device)
+        if start_q is not None and hasattr(start_q, "to")
+        else torch.zeros(
+            morph.n_links - 1, dtype=morph.params.dtype, device=morph.params.device
+        )
     )
 
-    eef_b, eef_e, eef_c = make_eef_pose_axes(morph, zero_q, task.environment.base_pose)
+    eef_b, eef_e, eef_c = make_eef_pose_axes(
+        morph, eef_q, axis_length=_EEF_FRAME_AXIS_LENGTH
+    )
+
+    ghost_available = bool(ghost_handles) and curobo_planner is not None
+
+    # Decide what the sliders should target at startup. If a best-IK ghost is
+    # available, drive it (most useful when the trajectory halted); otherwise
+    # fall back to the builder geometry.
+    target = "ghost" if ghost_available else "builder"
+
+    # Initial config for each target (kept independent so switching back to one
+    # restores its prior pose).
+    if start_q is not None:
+        builder_q = (
+            start_q.detach().cpu().numpy().astype(np.float32)[:n_joints]
+            if hasattr(start_q, "detach")
+            else np.asarray(start_q, dtype=np.float32)[:n_joints]
+        )
+    else:
+        builder_q = np.zeros(n_joints, dtype=np.float32)
+    ghost_q = (
+        best_ik_q.detach().cpu().numpy().astype(np.float32)[:n_joints]
+        if ghost_available
+        else builder_q.copy()
+    )
+    state.joint_q.assign(builder_q)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    def _apply_to_builder(q: np.ndarray) -> None:
+        state.joint_q.assign(q[:n_joints])
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        viewer.begin_frame(0.0)
+        viewer.log_state(state)
+        viewer.log_lines("/origin_frame", axes_begins, axes_ends, axes_colors)
+        viewer.end_frame()
+
+    def _apply_to_ghost(q: np.ndarray) -> None:
+        spheres = curobo_planner.robot_spheres_world(torch.from_numpy(q[:n_joints]))
+        for h, (x, y, z, *_) in zip(ghost_handles, spheres):
+            h.position = (float(x), float(y), float(z))
+
+    def _on_joint_change(q: np.ndarray) -> None:
+        if target == "ghost" and ghost_available:
+            ghost_q[:] = q[:n_joints]
+            _apply_to_ghost(q)
+        else:
+            builder_q[:] = q[:n_joints]
+            _apply_to_builder(q)
+
+    handles, limits, _ = _add_joint_limit_panel(
+        viewer._server,
+        morph,
+        curobo_planner,
+        initial_q=best_ik_q if target == "ghost" else None,
+        on_change=_on_joint_change,
+    )
+
+    if ghost_available:
+        # Ghost starts as the slider target, so make it visible up-front.
+        for h in ghost_handles:
+            h.visible = True
+        target_picker = viewer._server.gui.add_button_group(
+            "Sliders drive", ("best_ik", "Builder geometry")
+        )
+
+        @target_picker.on_click
+        def _on_target_change(_event) -> None:
+            nonlocal target
+            new_target = "ghost" if target_picker.value == "best_ik" else "builder"
+            if new_target == target:
+                return
+            target = new_target
+            # Auto-show ghost when it becomes the slider target so edits are visible.
+            if target == "ghost":
+                for h in ghost_handles:
+                    h.visible = True
+            # Re-sync slider values to the newly selected target's current config.
+            q_target = ghost_q if target == "ghost" else builder_q
+            for i, h in enumerate(handles):
+                lo, hi = float(limits[i, 0]), float(limits[i, 1])
+                h.value = float(np.clip(q_target[i], lo, hi))
 
     viewer.begin_frame(0.0)
     viewer.log_state(state)
     viewer.log_lines("/origin_frame", axes_begins, axes_ends, axes_colors)
-    viewer.log_lines("/goals/frames", goal_axes_b, goal_axes_e, goal_axes_c)
-    viewer.log_lines("/eef_frame", eef_b, eef_e, eef_c)
+    viewer.log_lines("/goals/frames", goal_axes_b, goal_axes_e, goal_axes_c, width=0.04)
+    viewer.log_lines("/eef_frame", eef_b, eef_e, eef_c, width=0.04)
     viewer.end_frame()
 
     try:
@@ -389,14 +528,19 @@ def animate_plan(
     frame_dt = 1.0 / fps
 
     viewer = _setup_viewer(model, port, share, curobo_planner)
-    add_obstacles_to_viser(viewer._server, task)
     add_goals_to_viser(viewer._server, task, failed_at_goal)
     ghost_handles = _add_ghost_robot_to_viser(
         viewer._server, curobo_planner, best_ik_q, n_joints
     )
     _add_ghost_toggle(viewer._server, ghost_handles)
+    joint_limit_handles, joint_limit_bounds, _ = _add_joint_limit_panel(
+        viewer._server, morph, curobo_planner, initial_q=path[0]
+    )
+
     axes_begins, axes_ends, axes_colors = make_origin_axes(axis_length=0.1)
-    goal_axes_b, goal_axes_e, goal_axes_c = make_goal_pose_axes(task.goal_poses)
+    goal_axes_b, goal_axes_e, goal_axes_c = make_goal_pose_axes(
+        task.goal_poses, axis_length=_GOAL_FRAME_AXIS_LENGTH
+    )
 
     speed_slider = viewer._server.gui.add_slider(
         "Playback speed", min=0.0, max=4.0, step=0.05, initial_value=1.0
@@ -436,13 +580,18 @@ def animate_plan(
             spheres = curobo_planner.robot_spheres_world(q[:n_joints])
             for h, (x, y, z, *_) in zip(robot_sphere_handles, spheres):
                 h.position = (float(x), float(y), float(z))
-        eef_b, eef_e, eef_c = make_eef_pose_axes(morph, q, task.environment.base_pose)
+        eef_b, eef_e, eef_c = make_eef_pose_axes(
+            morph, q, axis_length=_EEF_FRAME_AXIS_LENGTH
+        )
         viewer.begin_frame(t)
         viewer.log_state(state)
         viewer.log_lines("/origin_frame", axes_begins, axes_ends, axes_colors)
-        viewer.log_lines("/goals/frames", goal_axes_b, goal_axes_e, goal_axes_c)
-        viewer.log_lines("/eef_frame", eef_b, eef_e, eef_c)
+        viewer.log_lines(
+            "/goals/frames", goal_axes_b, goal_axes_e, goal_axes_c, width=0.04
+        )
+        viewer.log_lines("/eef_frame", eef_b, eef_e, eef_c, width=0.04)
         viewer.end_frame()
+        _update_joint_limit_panel(joint_limit_handles, joint_limit_bounds, q)
 
     try:
         t = 0.0

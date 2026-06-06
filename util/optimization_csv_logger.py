@@ -24,6 +24,7 @@ class OptimizationCSVLogger:
         "processed_morphology_json",
         "sampled_pose_indices_json",
         "sampled_goal_poses_json",
+        "ik_success_pose_rate",
         "best_joints_json",
         "fk_reached_poses_best_json",
         "best_pos_err_mean",
@@ -117,6 +118,9 @@ class OptimizationCSVLogger:
             ),
             "sampled_goal_poses_json": self._to_json(
                 validation_data.get("sampled_goal_poses")
+            ),
+            "ik_success_pose_rate": self._to_scalar(
+                validation_data.get("ik_success_pose_rate")
             ),
             "best_joints_json": self._to_json(validation_data.get("best_joints")),
             "fk_reached_poses_best_json": self._to_json(

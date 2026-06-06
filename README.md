@@ -12,22 +12,44 @@ Practical course project — TUM CPS, Summer 2026.
 
 ## Requirements
 
-- Python ≥ 3.10
-- NVIDIA GPU with CUDA (required by cuRobo for motion planning; optimization also benefits significantly)
-- [cuRobo](https://nvlabs.github.io/curobo/latest/getting-started/installation.html) installed separately (not in `uv.lock`)
+- Python ≥ 3.11
+- NVIDIA GPU with the CUDA 13 toolkit installed and a compatible driver.
+  cuRobo is pulled in via the `cu13` extra (`nvidia-curobo[cu13]`) and
+  `torch ≥ 2.11` ships its CUDA 13 build, so the GPU and driver must support
+  CUDA 13.x. Verify with `nvidia-smi` (CUDA Version ≥ 13.0) and `nvcc --version`.
+- [uv](https://docs.astral.sh/uv/getting-started/installation/)
 
-## Setup
+## Installation
 
-Install [uv](https://docs.astral.sh/uv/getting-started/installation/) if you don't have it, then:
+Run these steps from the project root.
+
+**1. Install uv** (if you don't have it):
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+See the [uv install docs](https://docs.astral.sh/uv/getting-started/installation/)
+for other methods.
+
+**2. Install dependencies.** This creates a virtual environment and installs
+everything from `uv.lock`, including the `generative-graphik` baseline:
 
 ```bash
 uv sync
 ```
 
-This creates a virtual environment and installs all dependencies from `uv.lock`. To run scripts:
+> The `generative-graphik` GGIK baseline is pulled from a
+> [fork](https://github.com/jarkenau/generative-graphik) rather than upstream.
+> The upstream `revisions` branch doesn't track the package `__init__.py` files,
+> so a git build runs `find_packages()` over a tree with no packages and ships
+> an empty wheel; the fork adds them so the build is complete. No manual clone
+> is needed — uv handles it.
+
+**3. Verify the install:**
 
 ```bash
-uv run python <file>
+uv run python -c "import graphik, liegroups, torch_geometric, generative_graphik.model; print('GGIK deps ok')"
 ```
 
 ## Usage
@@ -44,45 +66,3 @@ To supply a different config file:
 uv run python main.py --config path/to/my_config.json
 ```
 
-The pipeline:
-1. Samples a random initial 6-DOF robot morphology
-2. Builds the task — an L-shaped room environment with goal poses
-3. Optimizes the morphology via the NRM gradient loop (100 iterations)
-4. Plans a collision-free trajectory through all goal poses using cuRobo (GPU TrajOpt + graph search)
-5. Animates the trajectory in the Newton/Viser viewer (if `visualize: true`)
-
-## Configuration
-
-All runtime behaviour is controlled by a JSON file (default: `config.json` in the project root).
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `seed` | `int` | `42` | Global random seed for morphology sampling and all RNG state. |
-| `visualize` | `bool` | `true` | Open the Newton/Viser viewer after planning. Set to `false` for headless runs. On planning failure, also gates the debug static render. |
-| `debug` | `bool` | `false` | Enable per-iteration loss logging during optimization. On planning failure, renders a static scene showing the collision geometry (requires `visualize: true`). |
-| `ignore_ground` | `bool` | `false` | Exclude the ground plane from cuRobo collision checking. Useful for isolating whether ground collisions are causing planning failures. |
-| `ignore_obstacles` | `bool` | `false` | Exclude task obstacles (the L-shaped walls) from cuRobo collision checking. Useful for testing reachability without environment constraints. |
-
-Example config for a headless run with full collision checking:
-
-```json
-{
-    "seed": 42,
-    "visualize": false,
-    "debug": false,
-    "ignore_ground": false,
-    "ignore_obstacles": false
-}
-```
-
-Example config for debugging a planning failure (static scene with collision spheres shown):
-
-```json
-{
-    "seed": 42,
-    "visualize": true,
-    "debug": true,
-    "ignore_ground": false,
-    "ignore_obstacles": false
-}
-```

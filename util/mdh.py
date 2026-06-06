@@ -5,17 +5,66 @@ from scipy.spatial.transform import Rotation
 import warp as wp
 import xml.etree.ElementTree as ET
 from interface.morphology import Morphology
+from util.self_collision import get_joint_limits
 
-EPS = 1e-4
+
+_LINK_COLORS = [
+    wp.vec3(0.13, 0.32, 0.50),
+    wp.vec3(0.55, 0.20, 0.12),
+    wp.vec3(0.18, 0.42, 0.18),
+    wp.vec3(0.38, 0.23, 0.52),
+    wp.vec3(0.55, 0.43, 0.08),
+    wp.vec3(0.08, 0.43, 0.42),
+    wp.vec3(0.50, 0.16, 0.29),
+    wp.vec3(0.28, 0.28, 0.28),
+]
+_JOINT_MARKER_COLOR = wp.vec3(0.0, 0.0, 0.0)
+_JOINT_MARKER_RADIUS_SCALE = 1.25
+_JOINT_AXIS_COLOR = wp.vec3(0.24, 0.24, 0.24)
+_JOINT_AXIS_DOT_COUNT = 7
+_JOINT_AXIS_DOT_RADIUS_SCALE = 0.22
+_JOINT_AXIS_LENGTH_SCALE = 5.0
+
+
+def _link_color(i: int) -> wp.vec3:
+    return _LINK_COLORS[i % len(_LINK_COLORS)]
+
+
+def _add_joint_axis_markers(
+    builder: newton.ModelBuilder,
+    body: int,
+    joint_idx: int,
+    link_radius: float,
+) -> None:
+    half_length = link_radius * _JOINT_AXIS_LENGTH_SCALE
+    dot_radius = link_radius * _JOINT_AXIS_DOT_RADIUS_SCALE
+    if _JOINT_AXIS_DOT_COUNT <= 1:
+        offsets = [0.0]
+    else:
+        step = 2.0 * half_length / (_JOINT_AXIS_DOT_COUNT - 1)
+        offsets = [-half_length + k * step for k in range(_JOINT_AXIS_DOT_COUNT)]
+
+    for k, z in enumerate(offsets):
+        builder.add_shape_sphere(
+            body=body,
+            radius=dot_radius,
+            xform=wp.transform(p=wp.vec3(0.0, 0.0, z), q=wp.quat_identity()),
+            as_site=True,
+            color=_JOINT_AXIS_COLOR,
+            label=f"joint_{joint_idx}_axis_{k}",
+        )
 
 
 def to_urdf(morph: Morphology) -> str:
-    """Convert an mdh description of a morphology to a URDF string
+    """Convert an mdh description of a morphology to a URDF string.
 
-    NOTE: joint limits are set to +/- 2pi and are not sufficient to guarantee no self-collisions.
+    Joint limits are derived from morphology geometry to avoid self-collisions
+    between the link capsules adjacent to each joint.
     """
     n = morph.n_links
     n_joints = n - 1  # revolute DOFs
+
+    joint_limits = get_joint_limits(morph.params)  # [n_links, 2] = [range, offset]
 
     robot = ET.Element("robot", name="mdh_robot")
     ET.SubElement(robot, "link", name="base_link")
@@ -41,11 +90,15 @@ def to_urdf(morph: Morphology) -> str:
         )
         ET.SubElement(jnt, "axis", xyz="0 0 1")
         if joint_type == "revolute":
+            joint_range = joint_limits[i, 0].item()
+            offset = joint_limits[i, 1].item()
+            lower = offset
+            upper = offset + joint_range
             ET.SubElement(
                 jnt,
                 "limit",
-                lower=f"{-2 * math.pi:.6f}",
-                upper=f"{2 * math.pi:.6f}",
+                lower=f"{lower:.6f}",
+                upper=f"{upper:.6f}",
                 effort="1000",
                 velocity=f"{math.pi:.6f}",
             )
@@ -90,9 +143,19 @@ def add_robot_to_builder(
 
         link = builder.add_link(mass=0.0, inertia=None, xform=link_xform)
         links.append(link)
+        builder.add_shape_sphere(
+            body=link,
+            radius=morph.link_radius * _JOINT_MARKER_RADIUS_SCALE,
+            xform=wp.transform_identity(),
+            as_site=True,
+            color=_JOINT_MARKER_COLOR,
+            label=f"joint_{i}_marker",
+        )
+        _add_joint_axis_markers(builder, link, i, morph.link_radius)
 
         d_val = morph.d[i].item()
         a_val = morph.a[i].item()
+        link_color = _link_color(i)
 
         # d-capsule: represents Trans_z(d_i), applied AFTER R_z(theta_i).
         # So it rotates with theta_i — attached to body i, along body i's local z.
@@ -105,22 +168,24 @@ def add_robot_to_builder(
                     p=wp.vec3(0.0, 0.0, -d_val / 2),
                     q=wp.quat_identity(),
                 ),
+                color=link_color,
                 label=f"link_{i}_d",
             )
 
         # a-capsule: represents Trans_x(a_i), applied BEFORE R_z(theta_i).
         # So it does NOT rotate with theta_i — attached to body i-1 (the parent),
-        # along body i-1's local x. For i=0 the parent is the world: a static
-        # placement would be needed there; none of our morphs use a_0 > 0 yet.
-        if abs(a_val) > 2 * morph.link_radius and i > 0:
+        # along body i-1's local x. For i=0 the parent is the world/base frame.
+        if abs(a_val) > 2 * morph.link_radius:
+            parent_body = -1 if i == 0 else links[i - 1]
             builder.add_shape_capsule(
-                body=links[i - 1],
+                body=parent_body,
                 radius=morph.link_radius,
                 half_height=abs(a_val) / 2,
                 xform=wp.transform(
                     p=wp.vec3(a_val / 2, 0.0, 0.0),
                     q=Rotation.from_euler("y", 90, degrees=True).as_quat(),
                 ),
+                color=link_color,
                 label=f"link_{i}_a",
             )
 
