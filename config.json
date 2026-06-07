@@ -11,7 +11,7 @@
     "learning_rate_length": 0.01,
     "learning_rate_angle": 0.05,
     "ignore_ground": true,
-    "ignore_obstacles": false,
+    "ignore_obstacles": true,
     "plan_goal_start": true,
     "use_cached_optimized_morphology": false,
     "cached_optimization_csv": null,
