@@ -29,10 +29,7 @@ from util.direct_ik_common import (
 from util.kinematics import forward_kinematics
 from interface import Morphology, Task
 from util.optimization_csv_logger import OptimizationCSVLogger
-from validation.optimization_validation import (
-    build_optimization_validation_context,
-    run_optimization_validation,
-)
+from validation.optimization_validation import run_optimization_validation
 
 
 EPS = 1e-4
@@ -163,8 +160,6 @@ def _optimize_morphology_impl(
     random_seed = optimization_parameters.get("random_seed", 42)
     number_random_seed = optimization_parameters.get("number_random_seed", 32)
     percentage_poses = optimization_parameters.get("percentage_poses", 1)
-    ignore_ground = optimization_parameters.get("ignore_ground", False)
-    ignore_obstacles = optimization_parameters.get("ignore_obstacles", False)
     collision_weight = float(optimization_parameters.get("collision_weight", 10.0))
     collision_margin = float(optimization_parameters.get("collision_margin", 0.0))
     tau_start = float(optimization_parameters.get("gumbel_tau_start", 1.0))
@@ -197,12 +192,7 @@ def _optimize_morphology_impl(
             f"percentage_poses={percentage_poses}"
         )
 
-    scene = build_optimization_validation_context(
-        task=task,
-        device=device,
-        ignore_ground=ignore_ground,
-        ignore_obstacles=ignore_obstacles,
-    )
+    scene = None
 
     task_vec = _se3_to_vector(task.goal_poses.to(device))
 

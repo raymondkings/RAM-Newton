@@ -18,10 +18,7 @@ from task.morphology_sampler import sample_morph
 from util.kinematics import forward_kinematics
 from util.direct_ik_common import _collision_critical_distance
 from util.optimization_csv_logger import OptimizationCSVLogger
-from validation.optimization_validation import (
-    build_optimization_validation_context,
-    run_optimization_validation,
-)
+from validation.optimization_validation import run_optimization_validation
 
 EPS = 1e-4
 _PROJECT_ROOT = Path(__file__).parent.parent
@@ -262,8 +259,6 @@ def optimize_morphology(
     random_seed = int(optimization_parameters.get("random_seed", 42))
     number_random_seed = int(optimization_parameters.get("number_random_seed", 32))
     percentage_poses = float(optimization_parameters.get("percentage_poses", 0.2))
-    ignore_ground = bool(optimization_parameters.get("ignore_ground", False))
-    ignore_obstacles = bool(optimization_parameters.get("ignore_obstacles", False))
     ik_tol = float(optimization_parameters.get("ik_tol", 1e-4))
     ik_max_iter = int(optimization_parameters.get("ik_max_iter", 30))
     lbfgs_max_iter = int(optimization_parameters.get("lbfgs_max_iter", 10))
@@ -306,12 +301,7 @@ def optimize_morphology(
             f"percentage_poses={percentage_poses}"
         )
 
-    scene = build_optimization_validation_context(
-        task=task,
-        device=device,
-        ignore_ground=ignore_ground,
-        ignore_obstacles=ignore_obstacles,
-    )
+    scene = None
 
     goal_poses = task.goal_poses.to(device)
     total_poses = goal_poses.shape[0]
