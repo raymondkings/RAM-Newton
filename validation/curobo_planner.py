@@ -220,49 +220,60 @@ class CuroboPlanner:
             success=True, path=full_path, n_iterations=1, n_nodes=len(full_path)
         ), current_q
 
-    def default_start_q(self) -> torch.Tensor:
-        """IK to a candidate pose above the base; falls back to zeros if all candidates fail.
+    def default_start_q(self, n_samples: int = 4096, seed: int = 0) -> torch.Tensor:
+        """Sample a feasible start config in joint space.
 
-        Candidate offsets are in the shared world/base frame (z-up). The planner's own IK solver
-        is reused so the start config is checked against the same scene and self-collision
-        config used for planning.
+        Draws ``n_samples`` configs within the joint limits, returns the first cuRobo
+        certifies feasible (collision + limits), else zeros. (cuRobo checks in
+        chunks of 2000, so 4096 = 3 passes.)
         """
         dtype = self._dtype
-        n_actuated = len(self._planner.joint_names)
+        gp = self._planner.graph_planner
 
-        candidate_offsets = [
-            (0.0, 0.55),
-            (0.0, 0.40),
-            (0.0, 0.70),
-            (0.10, 0.55),
-        ]
-        for i, (x, z) in enumerate(candidate_offsets):
-            pose = torch.eye(4, dtype=torch.float32)
-            pose[0, 3] = x
-            pose[2, 3] = z
-            goal = _mat_to_goal_pose(pose, self._planner.tool_frames, self._device)
-            ik_result = self._planner.ik_solver.solve_pose(goal)
-            if (
-                ik_result is None
-                or ik_result.solution is None
-                or ik_result.success is None
-            ):
-                continue
-            success = ik_result.success.reshape(-1).bool()
-            if not bool(success.any().item()):
-                continue
-            solutions = ik_result.solution.reshape(-1, n_actuated)
-            best_idx = int(success.nonzero(as_tuple=False)[0].item())
+        # Per-joint limits drive the sampling range. position is [2, dof]: row 0 = lower
+        # limits, row 1 = upper limits, in joint_names order.
+        lims = self._planner.kinematics.get_joint_limits().position
+        lo, hi = lims[0], lims[1]
+        dof = lo.shape[0]
+
+        if gp is None:
             print(
-                f"[Info] Self/world collision-free start config found "
-                f"(candidate {i + 1}/{len(candidate_offsets)})."
+                "[Warning] default_start_q: graph_planner is None. Cannot verify feasibility => returning zero start "
+                "configuration."
             )
-            return solutions[best_idx].cpu().to(dtype)
+            return torch.zeros(dof, dtype=dtype)
 
-        print(
-            "[Warning] All IK candidates failed — falling back to zero start configuration."
+        # Seed a private Random Number Generator
+        generator = torch.Generator(device=lo.device)
+        generator.manual_seed(seed)
+
+        # Draw n_samples candidate configs. Each row is one config, each column one joint. Every value a uniform random number in [0, 1).
+        q_unit = torch.rand(
+            n_samples, dof, generator=generator, device=lo.device, dtype=lo.dtype
         )
-        return torch.zeros(n_actuated, dtype=dtype)
+        # Scale each [0, 1) value into that joint's [lower, upper] range, so every candidate lands inside the joint limits
+        candidates = lo + (hi - lo) * q_unit  # [n_samples, dof]
+
+        # Ask cuRobo which candidates are actually feasible => free of self / environmental collision
+        feasible = gp.check_samples_feasibility(candidates).reshape(-1).bool()
+
+        # Indices of every feasible candidate, take the first one.
+        feasible_idx = feasible.nonzero(as_tuple=False)
+        if feasible_idx.numel() > 0:
+            i = int(feasible_idx[0].item())
+            print(
+                f"[Info] Feasible start config found by config-space sampling "
+                f"(sample {i + 1}/{n_samples})."
+            )
+            # Move off the GPU and match the morphology dtype for downstream use.
+            return candidates[i].detach().cpu().to(dtype)
+
+        # Otherwise returns zeros if nothing works.
+        print(
+            f"[Warning] No feasible start config found in {n_samples} samples — "
+            "falling back to zero start configuration."
+        )
+        return torch.zeros(dof, dtype=dtype)
 
     def robot_spheres_world(self, q: torch.Tensor) -> np.ndarray:
         """Return collision sphere positions for joint config q in world frame.
