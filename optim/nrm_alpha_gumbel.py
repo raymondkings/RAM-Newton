@@ -114,9 +114,9 @@ def _init_alpha_logits(morph_params: Tensor, device, dtype) -> Tensor:
     n_links = morph_params.shape[0]
     alpha_val = morph_params[:, 0]
     logits = torch.zeros(n_links, 3, device=device, dtype=dtype)
-    logits[alpha_val.abs() < EPS, 0] = 3.0                      # → 0
-    logits[(alpha_val - math.pi / 2).abs() < EPS, 1] = 3.0      # → +π/2
-    logits[(alpha_val + math.pi / 2).abs() < EPS, 2] = 3.0      # → -π/2
+    logits[alpha_val.abs() < EPS, 0] = 3.0  # → 0
+    logits[(alpha_val - math.pi / 2).abs() < EPS, 1] = 3.0  # → +π/2
+    logits[(alpha_val + math.pi / 2).abs() < EPS, 2] = 3.0  # → -π/2
     return logits
 
 
@@ -154,31 +154,33 @@ def _optimize_morphology_impl(
     `gumbel_tau_min` over the course of training.  The final morphology
     uses the hard argmax over the learned logits.
     """
-    n_iter       = optimization_parameters.get("num_iterations", 100)
-    lr_fallback  = optimization_parameters.get("learning_rate", 0.01)
-    lr_angle     = optimization_parameters.get("learning_rate_angle", lr_fallback)
-    lr_length    = optimization_parameters.get("learning_rate_length", lr_fallback)
-    logging      = optimization_parameters.get("logging", True)
+    n_iter = optimization_parameters.get("num_iterations", 100)
+    lr_fallback = optimization_parameters.get("learning_rate", 0.01)
+    lr_angle = optimization_parameters.get("learning_rate_angle", lr_fallback)
+    lr_length = optimization_parameters.get("learning_rate_length", lr_fallback)
+    logging = optimization_parameters.get("logging", True)
     eval_interval = int(optimization_parameters.get("eval_interval", 1))
-    random_seed  = optimization_parameters.get("random_seed", 42)
+    random_seed = optimization_parameters.get("random_seed", 42)
     number_random_seed = optimization_parameters.get("number_random_seed", 32)
-    percentage_poses   = optimization_parameters.get("percentage_poses", 1)
-    ignore_ground      = optimization_parameters.get("ignore_ground", False)
-    ignore_obstacles   = optimization_parameters.get("ignore_obstacles", False)
-    collision_weight   = float(optimization_parameters.get("collision_weight", 10.0))
-    collision_margin   = float(optimization_parameters.get("collision_margin", 0.0))
-    tau_start    = float(optimization_parameters.get("gumbel_tau_start", 1.0))
-    tau_min      = float(optimization_parameters.get("gumbel_tau_min", 0.05))
-    tau_decay    = float(optimization_parameters.get("gumbel_tau_decay", 0.95))
-    collision_seeds        = int(optimization_parameters.get("collision_seeds", 8))
-    joint_refinement_steps = int(optimization_parameters.get("joint_refinement_steps", 3))
-    lr_joint               = float(optimization_parameters.get("learning_rate_joint", 0.05))
+    percentage_poses = optimization_parameters.get("percentage_poses", 1)
+    ignore_ground = optimization_parameters.get("ignore_ground", False)
+    ignore_obstacles = optimization_parameters.get("ignore_obstacles", False)
+    collision_weight = float(optimization_parameters.get("collision_weight", 10.0))
+    collision_margin = float(optimization_parameters.get("collision_margin", 0.0))
+    tau_start = float(optimization_parameters.get("gumbel_tau_start", 1.0))
+    tau_min = float(optimization_parameters.get("gumbel_tau_min", 0.05))
+    tau_decay = float(optimization_parameters.get("gumbel_tau_decay", 0.95))
+    collision_seeds = int(optimization_parameters.get("collision_seeds", 8))
+    joint_refinement_steps = int(
+        optimization_parameters.get("joint_refinement_steps", 3)
+    )
+    lr_joint = float(optimization_parameters.get("learning_rate_joint", 0.05))
     # Phase 1: optimize lengths with alpha fixed before Gumbel phase begins.
     # This ensures a/d get clean gradient signal before Gumbel noise is introduced.
     warmup_iters = int(optimization_parameters.get("warmup_iters", 30))
 
     device = morph.params.device
-    dtype  = morph.params.dtype
+    dtype = morph.params.dtype
 
     if logging:
         print(
@@ -217,7 +219,7 @@ def _optimize_morphology_impl(
     optimizer = torch.optim.AdamW(
         [
             {"params": [alpha_logits], "lr": lr_angle},
-            {"params": [lengths],      "lr": lr_length},
+            {"params": [lengths], "lr": lr_length},
         ]
     )
     model = _load_model(device)
@@ -233,15 +235,19 @@ def _optimize_morphology_impl(
 
     _joint_gen = torch.Generator(device=device)
     _joint_gen.manual_seed(random_seed)
-    joint_raw = _make_joint_seeds(
-        num_candidates=1,
-        num_poses=n_poses,
-        num_joint_seeds=collision_seeds,
-        dof=dof,
-        device=device,
-        dtype=dtype,
-        generator=_joint_gen,
-    ).squeeze(0).requires_grad_(True)  # [n_poses, collision_seeds, dof, 1]
+    joint_raw = (
+        _make_joint_seeds(
+            num_candidates=1,
+            num_poses=n_poses,
+            num_joint_seeds=collision_seeds,
+            dof=dof,
+            device=device,
+            dtype=dtype,
+            generator=_joint_gen,
+        )
+        .squeeze(0)
+        .requires_grad_(True)
+    )  # [n_poses, collision_seeds, dof, 1]
     joint_optimizer = torch.optim.AdamW([joint_raw], lr=lr_joint)
 
     tau = tau_start
@@ -271,15 +277,17 @@ def _optimize_morphology_impl(
                 alpha = (alpha_soft * choices).sum(dim=-1, keepdim=True)
 
             processed_lengths, _ = _preprocess(lengths, morph.link_radius)
-            raw_morphology       = torch.cat([alpha.detach(), lengths.detach()], dim=1)
+            raw_morphology = torch.cat([alpha.detach(), lengths.detach()], dim=1)
             processed_morphology = torch.cat([alpha, processed_lengths], dim=1)
 
             loss, prob = _compute_loss_and_prob(model, processed_morphology, task_vec)
 
             # Self-collision penalty: inner IK drives joint_raw toward goal poses,
             # then morphology gradient flows through collision at those configs.
-            inner_morph = processed_morphology.detach().unsqueeze(0).expand(
-                n_poses * collision_seeds, -1, -1
+            inner_morph = (
+                processed_morphology.detach()
+                .unsqueeze(0)
+                .expand(n_poses * collision_seeds, -1, -1)
             )
             for _ in range(joint_refinement_steps):
                 joint_optimizer.zero_grad()
@@ -297,10 +305,14 @@ def _optimize_morphology_impl(
                 n_poses * collision_seeds, -1, -1
             )
             full_j = _append_fixed_ee_joint(
-                _wrap_joints(joint_raw.detach().reshape(n_poses * collision_seeds, dof, 1))
+                _wrap_joints(
+                    joint_raw.detach().reshape(n_poses * collision_seeds, dof, 1)
+                )
             )
             reached = forward_kinematics(flat_morph, full_j)
-            critical_dist = _collision_critical_distance(flat_morph, reached, morph.link_radius)
+            critical_dist = _collision_critical_distance(
+                flat_morph, reached, morph.link_radius
+            )
             col_penalty = F.relu(collision_margin - critical_dist).mean()
             loss = loss + collision_weight * col_penalty
 
@@ -361,10 +373,14 @@ def _optimize_morphology_impl(
         # Final state: snap alpha logits → argmax (hard discrete)
         with torch.no_grad():
             final_alpha = _hard_alpha(alpha_logits.detach(), choices)  # [n_links, 1]
-            final_processed_lengths, _ = _preprocess(lengths.detach(), morph.link_radius)
+            final_processed_lengths, _ = _preprocess(
+                lengths.detach(), morph.link_radius
+            )
 
-            final_raw_morphology       = torch.cat([final_alpha, lengths.detach()], dim=1)
-            final_processed_morphology = torch.cat([final_alpha, final_processed_lengths], dim=1)
+            final_raw_morphology = torch.cat([final_alpha, lengths.detach()], dim=1)
+            final_processed_morphology = torch.cat(
+                [final_alpha, final_processed_lengths], dim=1
+            )
 
             final_loss, final_prob = _compute_loss_and_prob(
                 model, final_processed_morphology, task_vec
@@ -427,32 +443,32 @@ def _optimize_morphology_impl(
 _DOF_DEFAULTS: dict[int, dict] = {
     5: {
         "gumbel_tau_start": 1.0,
-        "gumbel_tau_min":   0.05,
+        "gumbel_tau_min": 0.05,
         "gumbel_tau_decay": 0.97,
-        "learning_rate_angle":  0.008,
+        "learning_rate_angle": 0.008,
         "learning_rate_length": 0.008,
         "collision_weight": 10.0,
-        "collision_seeds":  8,
+        "collision_seeds": 8,
         "joint_refinement_steps": 3,
     },
     6: {
         "gumbel_tau_start": 1.0,
-        "gumbel_tau_min":   0.05,
+        "gumbel_tau_min": 0.05,
         "gumbel_tau_decay": 0.95,
-        "learning_rate_angle":  0.005,
+        "learning_rate_angle": 0.005,
         "learning_rate_length": 0.005,
         "collision_weight": 10.0,
-        "collision_seeds":  8,
+        "collision_seeds": 8,
         "joint_refinement_steps": 3,
     },
     7: {
         "gumbel_tau_start": 1.0,
-        "gumbel_tau_min":   0.05,
+        "gumbel_tau_min": 0.05,
         "gumbel_tau_decay": 0.93,
-        "learning_rate_angle":  0.003,
+        "learning_rate_angle": 0.003,
         "learning_rate_length": 0.003,
         "collision_weight": 15.0,
-        "collision_seeds":  12,
+        "collision_seeds": 12,
         "joint_refinement_steps": 4,
     },
 }
@@ -471,7 +487,9 @@ def optimize_morphology_5dof(
     optimization_parameters: dict,
 ) -> tuple[Morphology, Path]:
     """Gumbel-Softmax optimisation for 5-DOF morphologies."""
-    return _optimize_morphology_impl(morph, task, _merge_params(5, optimization_parameters))
+    return _optimize_morphology_impl(
+        morph, task, _merge_params(5, optimization_parameters)
+    )
 
 
 def optimize_morphology_6dof(
@@ -480,7 +498,9 @@ def optimize_morphology_6dof(
     optimization_parameters: dict,
 ) -> tuple[Morphology, Path]:
     """Gumbel-Softmax optimisation for 6-DOF morphologies."""
-    return _optimize_morphology_impl(morph, task, _merge_params(6, optimization_parameters))
+    return _optimize_morphology_impl(
+        morph, task, _merge_params(6, optimization_parameters)
+    )
 
 
 def optimize_morphology_7dof(
@@ -489,7 +509,9 @@ def optimize_morphology_7dof(
     optimization_parameters: dict,
 ) -> tuple[Morphology, Path]:
     """Gumbel-Softmax optimisation for 7-DOF morphologies."""
-    return _optimize_morphology_impl(morph, task, _merge_params(7, optimization_parameters))
+    return _optimize_morphology_impl(
+        morph, task, _merge_params(7, optimization_parameters)
+    )
 
 
 _DOF_DISPATCH: dict[int, Callable] = {

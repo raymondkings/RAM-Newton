@@ -7,6 +7,7 @@ Only change from hjcdik_baseline_6DOF.py: reads optimization_parameters["dof"]
 and, if it differs from the input morphology's DOF, samples a fresh random
 morphology of the requested DOF before running the same optimisation loop.
 """
+
 from __future__ import annotations
 
 import math
@@ -53,6 +54,7 @@ EPS = 1e-4
 # ---------------------------------------------------------------------------
 # Morphology preprocessing
 # ---------------------------------------------------------------------------
+
 
 class SquasherSTE(torch.autograd.Function):
     @staticmethod
@@ -110,9 +112,11 @@ def _goal_poses_in_robot_frame(
     # Robot base frame = world frame (identity base pose).
     return task.goal_poses.to(device=device, dtype=dtype)
 
+
 # ---------------------------------------------------------------------------
 # SE3 distance
 # ---------------------------------------------------------------------------
+
 
 def _rotation_error(reached: Tensor, target: Tensor) -> Tensor:
     r_rel = reached[..., :3, :3] @ target[..., :3, :3].transpose(-1, -2)
@@ -137,23 +141,29 @@ def _pose_se3_distance(reached: Tensor, target: Tensor) -> Tensor:
     rot_err = _rotation_error(reached, target)
     return se3_distance(pos_err, rot_err)
 
+
 # ---------------------------------------------------------------------------
 # Self-collision critical distance
 # ---------------------------------------------------------------------------
 
+
 def _signed_distance_capsule_capsule(
-    s1: Tensor, e1: Tensor, r1: float,
-    s2: Tensor, e2: Tensor, r2: float,
+    s1: Tensor,
+    e1: Tensor,
+    r1: float,
+    s2: Tensor,
+    e2: Tensor,
+    r2: float,
 ) -> Tensor:
     l1 = e1 - s1
     l2 = e2 - s2
     ds = s1 - s2
     alpha = (l1 * l1).sum(dim=-1, keepdim=True)
-    beta  = (l2 * l2).sum(dim=-1, keepdim=True)
+    beta = (l2 * l2).sum(dim=-1, keepdim=True)
     gamma = (l1 * l2).sum(dim=-1, keepdim=True)
     delta = (l1 * ds).sum(dim=-1, keepdim=True)
     epsilon = (l2 * ds).sum(dim=-1, keepdim=True)
-    det = alpha * beta - gamma ** 2
+    det = alpha * beta - gamma**2
     t1 = torch.clamp((gamma * epsilon - beta * delta) / (det + 1e-10), 0.0, 1.0)
     t2 = torch.clamp((gamma * t1 + epsilon) / (beta + 1e-10), 0.0, 1.0)
     t1 = torch.where(
@@ -167,14 +177,19 @@ def _signed_distance_capsule_capsule(
 
 
 def _signed_distance_capsule_ball(
-    s1: Tensor, e1: Tensor, r1: float,
-    s2: Tensor, r2: float,
+    s1: Tensor,
+    e1: Tensor,
+    r1: float,
+    s2: Tensor,
+    r2: float,
 ) -> Tensor:
     l1 = e1 - s1
     v = s2 - s1
     t = torch.clamp(
-        (v * l1).sum(dim=-1, keepdim=True) / ((l1 * l1).sum(dim=-1, keepdim=True) + 1e-10),
-        0.0, 1.0,
+        (v * l1).sum(dim=-1, keepdim=True)
+        / ((l1 * l1).sum(dim=-1, keepdim=True) + 1e-10),
+        0.0,
+        1.0,
     )
     closest = s1 + t * l1
     return ((closest - s2) ** 2).sum(dim=-1) - (r1 + r2) ** 2
@@ -196,21 +211,31 @@ def _collision_critical_distance(mdh: Tensor, poses: Tensor, radius: float) -> T
     s_end = torch.cat([s_all, s_all], dim=-2)
     e_end = torch.cat([e_all, e_all], dim=-2)
     c_end = torch.cat(
-        [s_all[..., :1, :].expand(*expansion_shape),
-         e_all[..., -1:, :].expand(*expansion_shape)],
+        [
+            s_all[..., :1, :].expand(*expansion_shape),
+            e_all[..., -1:, :].expand(*expansion_shape),
+        ],
         dim=-2,
     )
     dist_end = _signed_distance_capsule_ball(s_end, e_end, radius, c_end, radius)
     active_end = torch.norm(e_end - s_end, dim=-1) > EPS
     cum = torch.cumsum(active_end, dim=-1)
     active_end &= (cum == 2) | (cum == (cum[..., -1:] - 1))
-    crit = torch.where(active, distances, torch.ones_like(distances)).min(dim=-1).values.reshape(batch_shape)
-    crit_end = torch.where(active_end, dist_end, torch.ones_like(dist_end)).min(dim=-1).values
+    crit = (
+        torch.where(active, distances, torch.ones_like(distances))
+        .min(dim=-1)
+        .values.reshape(batch_shape)
+    )
+    crit_end = (
+        torch.where(active_end, dist_end, torch.ones_like(dist_end)).min(dim=-1).values
+    )
     return torch.minimum(crit, crit_end)
+
 
 # ---------------------------------------------------------------------------
 # Validation wrapper
 # ---------------------------------------------------------------------------
+
 
 def _run_validation(
     *,
@@ -236,12 +261,14 @@ def _run_validation(
         pose_sampling_generator=gen,
     )
     result["ik_success_pose_rate"] = (
-        result["best_se3_dist_per_pose"] <= EPS
-    ).float().mean()
+        (result["best_se3_dist_per_pose"] <= EPS).float().mean()
+    )
     return result
+
 
 # ---------------------------------------------------------------------------
 # Parameters
+
 
 def _hjcdik_parameters(optimization_parameters: dict) -> dict[str, Any]:
     lr = float(optimization_parameters.get("learning_rate", 0.01))
@@ -265,7 +292,9 @@ def _hjcdik_parameters(optimization_parameters: dict) -> dict[str, Any]:
         ),
     }
 
+
 # FK helpers
+
 
 def _fk_batch(morphology_batch: Tensor, q: Tensor) -> Tensor:
     """Batched FK from joint angles (without the fixed last joint).
@@ -276,8 +305,8 @@ def _fk_batch(morphology_batch: Tensor, q: Tensor) -> Tensor:
     """
     B = q.shape[0]
     zeros = torch.zeros(B, 1, device=q.device, dtype=q.dtype)
-    q_full = torch.cat([q, zeros], dim=-1).unsqueeze(-1)   # [B, seq_len, 1]
-    return forward_kinematics(morphology_batch, q_full)    # [B, seq_len, 4, 4]
+    q_full = torch.cat([q, zeros], dim=-1).unsqueeze(-1)  # [B, seq_len, 1]
+    return forward_kinematics(morphology_batch, q_full)  # [B, seq_len, 4, 4]
 
 
 def _se3_residual(ee_poses: Tensor, target_poses: Tensor) -> Tensor:
@@ -286,17 +315,20 @@ def _se3_residual(ee_poses: Tensor, target_poses: Tensor) -> Tensor:
     rot_err is the rotation vector extracted from R_target @ R_ee^T,
     approximated as (R_err − R_err^T) / 2 (skew-symmetric part / 2).
     """
-    pos_err = target_poses[:, :3, 3] - ee_poses[:, :3, 3]          # [B, 3]
+    pos_err = target_poses[:, :3, 3] - ee_poses[:, :3, 3]  # [B, 3]
     R_err = target_poses[:, :3, :3] @ ee_poses[:, :3, :3].transpose(-1, -2)
-    rot_err = torch.stack(
-        [
-            R_err[:, 2, 1] - R_err[:, 1, 2],
-            R_err[:, 0, 2] - R_err[:, 2, 0],
-            R_err[:, 1, 0] - R_err[:, 0, 1],
-        ],
-        dim=-1,
-    ) / 2.0                                                          # [B, 3]
-    return torch.cat([pos_err, rot_err], dim=-1)                     # [B, 6]
+    rot_err = (
+        torch.stack(
+            [
+                R_err[:, 2, 1] - R_err[:, 1, 2],
+                R_err[:, 0, 2] - R_err[:, 2, 0],
+                R_err[:, 1, 0] - R_err[:, 0, 1],
+            ],
+            dim=-1,
+        )
+        / 2.0
+    )  # [B, 3]
+    return torch.cat([pos_err, rot_err], dim=-1)  # [B, 6]
 
 
 def _analytical_jacobian(poses: Tensor, n_dofs: int) -> Tensor:
@@ -311,19 +343,18 @@ def _analytical_jacobian(poses: Tensor, n_dofs: int) -> Tensor:
     poses : [B, seq_len, 4, 4]
     Returns J : [B, 6, n_dofs]
     """
-    ee_pos = poses[:, -1, :3, 3]                          # [B, 3]
-    z = poses[:, :n_dofs, :3, 2]                          # [B, n_dofs, 3]
-    p = poses[:, :n_dofs, :3, 3]                          # [B, n_dofs, 3]
-    Jv = torch.linalg.cross(z, ee_pos[:, None] - p)      # [B, n_dofs, 3]
-    J = torch.cat([Jv, z], dim=-1).transpose(1, 2)        # [B, 6, n_dofs]
+    ee_pos = poses[:, -1, :3, 3]  # [B, 3]
+    z = poses[:, :n_dofs, :3, 2]  # [B, n_dofs, 3]
+    p = poses[:, :n_dofs, :3, 3]  # [B, n_dofs, 3]
+    Jv = torch.linalg.cross(z, ee_pos[:, None] - p)  # [B, n_dofs, 3]
+    J = torch.cat([Jv, z], dim=-1).transpose(1, 2)  # [B, 6, n_dofs]
     return J
 
 
 # Joint limit helpers
 
-def _compute_joint_bounds(
-    morphology: Tensor, n_dofs: int
-) -> tuple[Tensor, Tensor]:
+
+def _compute_joint_bounds(morphology: Tensor, n_dofs: int) -> tuple[Tensor, Tensor]:
     """Compute per-joint lower/upper bounds from morphology self-collision limits.
 
     get_joint_limits returns [n_links, 2] where last dim = [range, offset].
@@ -331,12 +362,13 @@ def _compute_joint_bounds(
     Only the first n_dofs rows are used (last row = fixed EE joint, range=0).
     """
     limits = get_joint_limits(morphology)  # [n_links, 2]
-    offset = limits[:n_dofs, 1]            # [n_dofs]
-    rng = limits[:n_dofs, 0]              # [n_dofs]
-    return offset, offset + rng           # q_lo, q_hi
+    offset = limits[:n_dofs, 1]  # [n_dofs]
+    rng = limits[:n_dofs, 0]  # [n_dofs]
+    return offset, offset + rng  # q_lo, q_hi
 
 
 # Stage 1: PO-CCD
+
 
 def _ccd_joint_update(
     poses: Tensor,
@@ -362,16 +394,16 @@ def _ccd_joint_update(
     w_rot     : weight for orientation update relative to position update
     Returns updated q [B, n_dofs].
     """
-    r_j = poses[:, j, :3, 2]                                         # [B, 3] rotation axis
-    p_j = poses[:, j, :3, 3]                                         # [B, 3] joint origin
-    ee_pos = poses[:, -1, :3, 3]                                      # [B, 3]
+    r_j = poses[:, j, :3, 2]  # [B, 3] rotation axis
+    p_j = poses[:, j, :3, 3]  # [B, 3] joint origin
+    ee_pos = poses[:, -1, :3, 3]  # [B, 3]
 
     # --- Position CCD (Eq. 1–3 in paper) ---
-    u = ee_pos - p_j                                                  # [B, 3]
-    v = target_pos - p_j                                              # [B, 3]
+    u = ee_pos - p_j  # [B, 3]
+    v = target_pos - p_j  # [B, 3]
 
     rr = (r_j * r_j).sum(-1, keepdim=True).clamp(min=1e-8)
-    u_proj = u - (u * r_j).sum(-1, keepdim=True) * r_j / rr          # project ⊥ r_j
+    u_proj = u - (u * r_j).sum(-1, keepdim=True) * r_j / rr  # project ⊥ r_j
     v_proj = v - (v * r_j).sum(-1, keepdim=True) * r_j / rr
 
     u_n = F.normalize(u_proj, dim=-1, eps=1e-8)
@@ -380,12 +412,12 @@ def _ccd_joint_update(
     cos_ang = (u_n * v_n).sum(-1).clamp(-1 + 1e-7, 1 - 1e-7)
     cross_uv = torch.cross(u_n, v_n, dim=-1)
     sign_pos = torch.sign((cross_uv * r_j).sum(-1))
-    dtheta_pos = sign_pos * torch.acos(cos_ang)                       # [B]
+    dtheta_pos = sign_pos * torch.acos(cos_ang)  # [B]
 
     # --- Orientation CCD (Eq. 4–6 in paper) ---
-    ee_R = poses[:, -1, :3, :3]                                       # [B, 3, 3]
-    R_err = target_R @ ee_R.transpose(-1, -2)                         # [B, 3, 3]
-    trace = R_err.diagonal(dim1=-2, dim2=-1).sum(-1)                  # [B]
+    ee_R = poses[:, -1, :3, :3]  # [B, 3, 3]
+    R_err = target_R @ ee_R.transpose(-1, -2)  # [B, 3, 3]
+    trace = R_err.diagonal(dim1=-2, dim2=-1).sum(-1)  # [B]
     phi = torch.acos(((trace - 1.0) / 2.0).clamp(-1 + 1e-7, 1 - 1e-7))
     sin_phi = phi.sin().clamp(min=1e-8)
     rot_axis = torch.stack(
@@ -395,9 +427,9 @@ def _ccd_joint_update(
             R_err[:, 1, 0] - R_err[:, 0, 1],
         ],
         dim=-1,
-    ) / (2.0 * sin_phi.unsqueeze(-1))                                 # [B, 3]
+    ) / (2.0 * sin_phi.unsqueeze(-1))  # [B, 3]
     sign_rot = torch.sign((rot_axis * r_j).sum(-1))
-    dtheta_rot = delta * sign_rot * phi                                # [B]
+    dtheta_rot = delta * sign_rot * phi  # [B]
 
     dtheta = dtheta_pos + w_rot * dtheta_rot
     q = q.clone()
@@ -428,8 +460,8 @@ def _po_ccd(
     target_R = target_poses_batch[:, :3, :3]
 
     for k in range(n_iters):
-        delta = max(0.05, 1.0 * (0.9 ** k))                          # annealing (paper §III-A)
-        poses = _fk_batch(morphology_batch, q)                        # [B, seq_len, 4, 4]
+        delta = max(0.05, 1.0 * (0.9**k))  # annealing (paper §III-A)
+        poses = _fk_batch(morphology_batch, q)  # [B, seq_len, 4, 4]
         for j in range(n_dofs):
             q = _ccd_joint_update(poses, q, target_pos, target_R, j, delta, w_rot)
             q[:, j] = q[:, j].clamp(q_lo[j].item(), q_hi[j].item())
@@ -440,6 +472,7 @@ def _po_ccd(
 
 
 # Stage 2: PJ-IK (LM polishing)
+
 
 @torch.no_grad()
 def _lm_step(
@@ -461,24 +494,26 @@ def _lm_step(
     Returns updated q [B, n_dofs].
     """
     B, n_dofs = q.shape
-    poses = _fk_batch(morphology_batch, q)                             # [B, seq_len, 4, 4]
-    r = _se3_residual(poses[:, -1], target_poses_batch)                # [B, 6]
-    res0 = (r * r).sum(-1)                                             # [B]
+    poses = _fk_batch(morphology_batch, q)  # [B, seq_len, 4, 4]
+    r = _se3_residual(poses[:, -1], target_poses_batch)  # [B, 6]
+    res0 = (r * r).sum(-1)  # [B]
 
-    J = _analytical_jacobian(poses, n_dofs)                            # [B, 6, n_dofs]
-    JtJ = J.transpose(-1, -2) @ J                                      # [B, n_dofs, n_dofs]
-    Jtr = (J.transpose(-1, -2) @ r.unsqueeze(-1)).squeeze(-1)         # [B, n_dofs]
+    J = _analytical_jacobian(poses, n_dofs)  # [B, 6, n_dofs]
+    JtJ = J.transpose(-1, -2) @ J  # [B, n_dofs, n_dofs]
+    Jtr = (J.transpose(-1, -2) @ r.unsqueeze(-1)).squeeze(-1)  # [B, n_dofs]
 
     # Diagonal damping matrix D = diag(JtJ)
-    D = torch.diag_embed(JtJ.diagonal(dim1=-2, dim2=-1))              # [B, n_dofs, n_dofs]
-    A = JtJ + lambda_lm * D                                            # [B, n_dofs, n_dofs]
+    D = torch.diag_embed(JtJ.diagonal(dim1=-2, dim2=-1))  # [B, n_dofs, n_dofs]
+    A = JtJ + lambda_lm * D  # [B, n_dofs, n_dofs]
 
     # --- Tier 1: LM direction ---
     try:
-        delta_q_lm = torch.linalg.solve(A, Jtr)                       # [B, n_dofs]
+        delta_q_lm = torch.linalg.solve(A, Jtr)  # [B, n_dofs]
         # Trust-region clip (paper §III-B)
         norms = delta_q_lm.norm(dim=-1, keepdim=True).clamp(min=1e-12)
-        delta_q_lm = torch.where(norms > trust_R, delta_q_lm * trust_R / norms, delta_q_lm)
+        delta_q_lm = torch.where(
+            norms > trust_R, delta_q_lm * trust_R / norms, delta_q_lm
+        )
     except Exception:
         delta_q_lm = None
 
@@ -492,7 +527,7 @@ def _lm_step(
             q_try = (q + alpha * dq).clamp(q_lo, q_hi)
             poses_try = _fk_batch(morphology_batch, q_try)
             r_try = _se3_residual(poses_try[:, -1], target_poses_batch)
-            res_try = (r_try * r_try).sum(-1)                          # [B]
+            res_try = (r_try * r_try).sum(-1)  # [B]
             better = res_try < best_res
             if better.any():
                 improved_any = True
@@ -506,7 +541,9 @@ def _lm_step(
             return q_new
 
     # --- Tier 2: gradient descent (simplified Dogleg) ---
-    delta_q_gd = Jtr / (JtJ.diagonal(dim1=-2, dim2=-1).norm(dim=-1, keepdim=True).clamp(min=1e-8))
+    delta_q_gd = Jtr / (
+        JtJ.diagonal(dim1=-2, dim2=-1).norm(dim=-1, keepdim=True).clamp(min=1e-8)
+    )
     norms = delta_q_gd.norm(dim=-1, keepdim=True).clamp(min=1e-12)
     delta_q_gd = torch.where(norms > trust_R, delta_q_gd * trust_R / norms, delta_q_gd)
     q_new, improved = _try_step(delta_q_gd)
@@ -537,12 +574,15 @@ def _pj_ik(
     Returns refined q [B, n_dofs].
     """
     for _ in range(n_iters):
-        q = _lm_step(morphology_batch, target_poses_batch, q, lambda_lm, trust_R, q_lo, q_hi)
+        q = _lm_step(
+            morphology_batch, target_poses_batch, q, lambda_lm, trust_R, q_lo, q_hi
+        )
         q = q.clamp(q_lo, q_hi)
     return q
 
 
 # Full HJCD-IK solve
+
 
 @torch.no_grad()
 def _hjcdik_solve(
@@ -577,7 +617,7 @@ def _hjcdik_solve(
     # Apply a small inward margin so solutions never land exactly on the
     # collision boundary (which would fail check_start_feasibility).
     _LIMIT_MARGIN = 0.05  # rad
-    q_lo, q_hi = _compute_joint_bounds(morphology, n_dofs)           # [n_dofs] each
+    q_lo, q_hi = _compute_joint_bounds(morphology, n_dofs)  # [n_dofs] each
     q_lo = q_lo + _LIMIT_MARGIN
     q_hi = q_hi - _LIMIT_MARGIN
 
@@ -586,53 +626,64 @@ def _hjcdik_solve(
     B = n_poses * n_seeds
     q = (
         torch.rand(n_poses, n_seeds, n_dofs, device=device, dtype=dtype, generator=gen)
-        * (q_hi - q_lo) + q_lo  # seeds within joint limits
+        * (q_hi - q_lo)
+        + q_lo  # seeds within joint limits
         # torch.rand(n_poses, n_seeds, n_dofs, device=device, dtype=dtype, generator=gen)
         # * 2 * math.pi - math.pi
     ).reshape(B, n_dofs)
 
-    morph_b = morphology.unsqueeze(0).expand(B, -1, -1)              # [B, seq_len, 3]
-    target_b = (
-        target_poses.unsqueeze(1).expand(-1, n_seeds, -1, -1).reshape(B, 4, 4)
+    morph_b = morphology.unsqueeze(0).expand(B, -1, -1)  # [B, seq_len, 3]
+    target_b = target_poses.unsqueeze(1).expand(-1, n_seeds, -1, -1).reshape(B, 4, 4)
+
+    q = _po_ccd(
+        morph_b, target_b, q, n_iters=n_ccd_iters, w_rot=w_rot, q_lo=q_lo, q_hi=q_hi
     )
 
-    q = _po_ccd(morph_b, target_b, q, n_iters=n_ccd_iters, w_rot=w_rot,
-                q_lo=q_lo, q_hi=q_hi)
-
     # Compute residuals and select top-K seeds per pose
-    poses_ccd = _fk_batch(morph_b, q)                                 # [B, seq_len, 4, 4]
-    res = (_se3_residual(poses_ccd[:, -1], target_b) ** 2).sum(-1)   # [B]
-    res_pp = res.reshape(n_poses, n_seeds)                             # [n_poses, n_seeds]
+    poses_ccd = _fk_batch(morph_b, q)  # [B, seq_len, 4, 4]
+    res = (_se3_residual(poses_ccd[:, -1], target_b) ** 2).sum(-1)  # [B]
+    res_pp = res.reshape(n_poses, n_seeds)  # [n_poses, n_seeds]
     K = min(n_lm_top_k, n_seeds)
-    _, top_idx = res_pp.topk(K, dim=-1, largest=False)               # [n_poses, K]
+    _, top_idx = res_pp.topk(K, dim=-1, largest=False)  # [n_poses, K]
 
     q_pp = q.reshape(n_poses, n_seeds, n_dofs)
-    q_top = q_pp.gather(
-        1, top_idx.unsqueeze(-1).expand(-1, -1, n_dofs)
-    ).reshape(n_poses * K, n_dofs)                                    # [n_poses*K, n_dofs]
+    q_top = q_pp.gather(1, top_idx.unsqueeze(-1).expand(-1, -1, n_dofs)).reshape(
+        n_poses * K, n_dofs
+    )  # [n_poses*K, n_dofs]
 
     # --- Stage 2: PJ-IK (LM) on top-K seeds ---
     B2 = n_poses * K
     morph_b2 = morphology.unsqueeze(0).expand(B2, -1, -1)
     target_b2 = target_poses.unsqueeze(1).expand(-1, K, -1, -1).reshape(B2, 4, 4)
 
-    q_lm = _pj_ik(morph_b2, target_b2, q_top, n_iters=n_lm_iters, lambda_lm=lambda_lm,
-                  trust_R=trust_R, q_lo=q_lo, q_hi=q_hi)
+    q_lm = _pj_ik(
+        morph_b2,
+        target_b2,
+        q_top,
+        n_iters=n_lm_iters,
+        lambda_lm=lambda_lm,
+        trust_R=trust_R,
+        q_lo=q_lo,
+        q_hi=q_hi,
+    )
 
     # Select best per pose
     poses_lm = _fk_batch(morph_b2, q_lm)
-    res_lm = (_se3_residual(poses_lm[:, -1], target_b2) ** 2).sum(-1).reshape(n_poses, K)
-    best_idx = res_lm.argmin(dim=-1)                                   # [n_poses]
+    res_lm = (
+        (_se3_residual(poses_lm[:, -1], target_b2) ** 2).sum(-1).reshape(n_poses, K)
+    )
+    best_idx = res_lm.argmin(dim=-1)  # [n_poses]
     q_best = q_lm.reshape(n_poses, K, n_dofs)[
         torch.arange(n_poses, device=device), best_idx
-    ]                                                                  # [n_poses, n_dofs]
+    ]  # [n_poses, n_dofs]
 
     # Pack to FK format [n_poses, seq_len, 1]
     zeros = torch.zeros(n_poses, 1, device=device, dtype=dtype)
-    return torch.cat([q_best, zeros], dim=-1).unsqueeze(-1)            # [n_poses, seq_len, 1]
+    return torch.cat([q_best, zeros], dim=-1).unsqueeze(-1)  # [n_poses, seq_len, 1]
 
 
 # Morphology loss (differentiable, uses detached IK solutions)
+
 
 def _morphology_loss(
     alpha: Tensor,
@@ -654,28 +705,32 @@ def _morphology_loss(
 
     n_poses = target_poses_local.shape[0]
     seq_len = proc_morph.shape[-2]
-    morph_exp = proc_morph[0].unsqueeze(0).expand(n_poses, -1, -1)   # [n_poses, seq_len, 3]
+    morph_exp = (
+        proc_morph[0].unsqueeze(0).expand(n_poses, -1, -1)
+    )  # [n_poses, seq_len, 3]
 
-    reached = forward_kinematics(morph_exp, q_solutions)              # [n_poses, seq_len, 4, 4]
-    ee_poses = reached[:, -1]                                          # [n_poses, 4, 4]
+    reached = forward_kinematics(morph_exp, q_solutions)  # [n_poses, seq_len, 4, 4]
+    ee_poses = reached[:, -1]  # [n_poses, 4, 4]
 
-    se3 = _pose_se3_distance(ee_poses, target_poses_local)            # [n_poses]
+    se3 = _pose_se3_distance(ee_poses, target_poses_local)  # [n_poses]
 
     critical_dist = _collision_critical_distance(
         morph_exp, reached, radius=link_radius
-    )                                                                  # [n_poses]
+    )  # [n_poses]
     collision_penalty = F.relu(collision_margin - critical_dist)
 
     loss = (se3 + collision_weight * collision_penalty).mean()
     best_se3_mean = se3.mean()
 
     pose_success_rate = (
-        (se3 <= success_eps) & (critical_dist >= collision_margin)
-    ).float().mean()
+        ((se3 <= success_eps) & (critical_dist >= collision_margin)).float().mean()
+    )
 
     return loss, pose_success_rate, best_se3_mean, raw_morph[0], proc_morph[0]
 
+
 # Main entry point
+
 
 def optimize_morphology(
     morph: Morphology,
@@ -699,11 +754,11 @@ def optimize_morphology(
     ignore_obstacles = bool(optimization_parameters.get("ignore_obstacles", False))
 
     device = morph.params.device
-    dtype  = morph.params.dtype
+    dtype = morph.params.dtype
 
     # ── DOF selection ────────────────────────────────────────────────────────
     candidate_dofs_raw = optimization_parameters.get("candidate_dofs", None)
-    morph_dof          = morph.n_links - 1
+    morph_dof = morph.n_links - 1
 
     if candidate_dofs_raw is not None:
         dof = _resolve_candidate_dofs(candidate_dofs_raw)[0]
@@ -712,17 +767,20 @@ def optimize_morphology(
 
     if dof != morph_dof:
         if logging:
-            print(f"[HJCD-IK] DOF mismatch: morph has {morph_dof}-DOF, "
-                  f"sampling fresh {dof}-DOF morphology.")
+            print(
+                f"[HJCD-IK] DOF mismatch: morph has {morph_dof}-DOF, "
+                f"sampling fresh {dof}-DOF morphology."
+            )
         torch.manual_seed(random_seed)
-        sampled_params = sample_morph(1, dof, analytically_solvable=False,
-                                      device=device)[0]
+        sampled_params = sample_morph(
+            1, dof, analytically_solvable=False, device=device
+        )[0]
         working_morph = Morphology(params=sampled_params, link_radius=morph.link_radius)
     else:
         working_morph = morph
 
     seq_len = working_morph.n_links
-    n_dofs  = seq_len - 1
+    n_dofs = seq_len - 1
 
     if logging:
         print(f"[Info] Starting HJCD-IK {dof}-DOF baseline on device {device}.")
@@ -744,8 +802,10 @@ def optimize_morphology(
         print(f"[Info] Writing CSV log to: {csv_logger.csv_path}")
 
     initial = working_morph.params.detach().clone()
-    alpha   = initial[:, 0:1].unsqueeze(0)                               # [1, seq_len, 1]
-    lengths = initial[:, 1:].unsqueeze(0).clone().requires_grad_(True)   # [1, seq_len, 2]
+    alpha = initial[:, 0:1].unsqueeze(0)  # [1, seq_len, 1]
+    lengths = (
+        initial[:, 1:].unsqueeze(0).clone().requires_grad_(True)
+    )  # [1, seq_len, 2]
 
     morph_optimizer = torch.optim.AdamW(
         [lengths], lr=params["learning_rate_length"], weight_decay=0.0
@@ -772,7 +832,7 @@ def optimize_morphology(
                 _, proc_morph_ik = _build_morphology_tensors(
                     alpha, lengths.detach(), working_morph.link_radius
                 )
-                proc_morph_single = proc_morph_ik[0]                  # [seq_len, 3]
+                proc_morph_single = proc_morph_ik[0]  # [seq_len, 3]
 
             # --- HJCD-IK: solve IK for current morphology ---
             q_solutions = _hjcdik_solve(
