@@ -7,6 +7,13 @@
 #     and relaxed with Gumbel-Softmax (temperature anneals from tau_start → tau_min).
 #   - the final returned morphology snaps alpha to the argmax (hard discrete).
 # -----------------------------------------------------------------------------
+"""
+LEGACY:
+    If you want to run this code, simply put in inside the optim folder.
+    This method simply doesn't work, alpha will almost not change, and even if
+    deliberately set very strange hyperparameter to get a different alpha, the
+    result (se3 error/ ik successrate/ loss) is also not better.
+"""
 
 import json
 import math
@@ -18,21 +25,15 @@ import torch.nn.functional as F
 from tqdm import tqdm
 from torch import Tensor
 
-from util.nrm_model import MLP
-from util.direct_ik_common import (
-    _collision_critical_distance,
-    _make_joint_seeds,
-    _wrap_joints,
-    _append_fixed_ee_joint,
-    _pose_se3_distance,
-)
-from util.kinematics import forward_kinematics
+from optim.model import MLP
 from interface import Morphology, Task
 from util.optimization_csv_logger import OptimizationCSVLogger
 from validation.optimization_validation import run_optimization_validation
 
 
 EPS = 1e-4
+DELTA_EARLY_STOPPING = 1e-5
+EARLY_STOPPING_PATIENCE = 50
 
 _PROJECT_ROOT = Path(__file__).parent.parent
 _WEIGHTS_DIR = _PROJECT_ROOT / "weights"
@@ -130,6 +131,7 @@ def _compute_loss_and_prob(
     bmorph = processed_morphology.unsqueeze(0).expand(task_vec.shape[0], -1, -1)
     logit = model(bmorph, task_vec)
     loss = torch.nn.BCEWithLogitsLoss(reduction="mean")(logit, torch.ones_like(logit))
+    loss = loss + 100.0 * torch.relu(-processed_morphology[-1, 2])
     prob = torch.sigmoid(logit).mean()
     return loss, prob
 
@@ -160,19 +162,18 @@ def _optimize_morphology_impl(
     random_seed = optimization_parameters.get("random_seed", 42)
     number_random_seed = optimization_parameters.get("number_random_seed", 32)
     percentage_poses = optimization_parameters.get("percentage_poses", 1)
-    collision_weight = float(optimization_parameters.get("collision_weight", 10.0))
-    collision_margin = float(optimization_parameters.get("collision_margin", 0.0))
     tau_start = float(optimization_parameters.get("gumbel_tau_start", 1.0))
     tau_min = float(optimization_parameters.get("gumbel_tau_min", 0.05))
     tau_decay = float(optimization_parameters.get("gumbel_tau_decay", 0.95))
-    collision_seeds = int(optimization_parameters.get("collision_seeds", 8))
-    joint_refinement_steps = int(
-        optimization_parameters.get("joint_refinement_steps", 3)
-    )
-    lr_joint = float(optimization_parameters.get("learning_rate_joint", 0.05))
     # Phase 1: optimize lengths with alpha fixed before Gumbel phase begins.
     # This ensures a/d get clean gradient signal before Gumbel noise is introduced.
     warmup_iters = int(optimization_parameters.get("warmup_iters", 30))
+    early_stopping_patience = int(
+        optimization_parameters.get("early_stopping_patience", EARLY_STOPPING_PATIENCE)
+    )
+    delta_early_stopping = float(
+        optimization_parameters.get("delta_early_stopping", DELTA_EARLY_STOPPING)
+    )
 
     device = morph.params.device
     dtype = morph.params.dtype
@@ -189,7 +190,9 @@ def _optimize_morphology_impl(
             f"eval_interval={eval_interval}, "
             f"random_seed={random_seed}, "
             f"number_random_seed={number_random_seed}, "
-            f"percentage_poses={percentage_poses}"
+            f"percentage_poses={percentage_poses}, "
+            f"early_stopping_patience={early_stopping_patience}, "
+            f"delta_early_stopping={delta_early_stopping}"
         )
 
     scene = None
@@ -218,32 +221,17 @@ def _optimize_morphology_impl(
     pose_sampling_generator = torch.Generator(device=device)
     pose_sampling_generator.manual_seed(random_seed)
 
-    n_links = morph.params.shape[0]
-    dof = n_links - 1
-    n_poses = task_vec.shape[0]
-    goal_poses_local = task.goal_poses.to(device=device, dtype=dtype)
-
-    _joint_gen = torch.Generator(device=device)
-    _joint_gen.manual_seed(random_seed)
-    joint_raw = (
-        _make_joint_seeds(
-            num_candidates=1,
-            num_poses=n_poses,
-            num_joint_seeds=collision_seeds,
-            dof=dof,
-            device=device,
-            dtype=dtype,
-            generator=_joint_gen,
-        )
-        .squeeze(0)
-        .requires_grad_(True)
-    )  # [n_poses, collision_seeds, dof, 1]
-    joint_optimizer = torch.optim.AdamW([joint_raw], lr=lr_joint)
-
     tau = tau_start
 
     if logging:
         print(f"[Info] Writing CSV log to: {csv_logger.csv_path}")
+
+    best_loss = float("inf")
+    best_alpha_logits = alpha_logits.detach().clone()
+    best_lengths = lengths.detach().clone()
+    best_iteration = 0
+    stale_count = 0
+    final_iteration = n_iter
 
     try:
         progress_bar = tqdm(
@@ -271,40 +259,17 @@ def _optimize_morphology_impl(
             processed_morphology = torch.cat([alpha, processed_lengths], dim=1)
 
             loss, prob = _compute_loss_and_prob(model, processed_morphology, task_vec)
+            loss_value = float(loss.detach().cpu().item())
 
-            # Self-collision penalty: inner IK drives joint_raw toward goal poses,
-            # then morphology gradient flows through collision at those configs.
-            inner_morph = (
-                processed_morphology.detach()
-                .unsqueeze(0)
-                .expand(n_poses * collision_seeds, -1, -1)
-            )
-            for _ in range(joint_refinement_steps):
-                joint_optimizer.zero_grad()
-                full_j = _append_fixed_ee_joint(
-                    _wrap_joints(joint_raw.reshape(n_poses * collision_seeds, dof, 1))
-                )
-                reached = forward_kinematics(inner_morph, full_j)
-                ee = reached[:, -1].reshape(n_poses, collision_seeds, 4, 4)
-                target = goal_poses_local[:, None].expand_as(ee)
-                se3_inner = _pose_se3_distance(ee, target)
-                se3_inner.mean().backward()
-                joint_optimizer.step()
-
-            flat_morph = processed_morphology.unsqueeze(0).expand(
-                n_poses * collision_seeds, -1, -1
-            )
-            full_j = _append_fixed_ee_joint(
-                _wrap_joints(
-                    joint_raw.detach().reshape(n_poses * collision_seeds, dof, 1)
-                )
-            )
-            reached = forward_kinematics(flat_morph, full_j)
-            critical_dist = _collision_critical_distance(
-                flat_morph, reached, morph.link_radius
-            )
-            col_penalty = F.relu(collision_margin - critical_dist).mean()
-            loss = loss + collision_weight * col_penalty
+            improved = loss_value < best_loss - delta_early_stopping
+            if improved:
+                best_loss = loss_value
+                best_alpha_logits = alpha_logits.detach().clone()
+                best_lengths = lengths.detach().clone()
+                best_iteration = update_idx
+                stale_count = 0
+            elif not in_warmup:
+                stale_count += 1
 
             validation_data = None
             if logging and eval_interval > 0 and update_idx % eval_interval == 0:
@@ -341,6 +306,23 @@ def _optimize_morphology_impl(
                 validation_data=validation_data,
             )
 
+            should_stop = (
+                early_stopping_patience > 0
+                and not in_warmup
+                and stale_count >= early_stopping_patience
+                and (update_idx + 1) < n_iter
+            )
+            if should_stop:
+                final_iteration = update_idx + 1
+                if logging:
+                    tqdm.write(
+                        "[Early stopping] "
+                        f"loss did not improve for {stale_count} updates; "
+                        f"stopping at iteration {final_iteration}. "
+                        f"best_iteration={best_iteration}, best_loss={best_loss:.6f}"
+                    )
+                break
+
             loss.backward()
             if in_warmup:
                 # Don't let AdamW accumulate stale momentum on alpha_logits during warmup.
@@ -358,16 +340,15 @@ def _optimize_morphology_impl(
                     loss=f"{loss.item():.4f}",
                     prob=f"{prob.item():.3f}",
                     tau=f"{tau:.3f}",
+                    stale=stale_count,
                 )
 
-        # Final state: snap alpha logits → argmax (hard discrete)
+        # Final state: snap best alpha logits → argmax (hard discrete)
         with torch.no_grad():
-            final_alpha = _hard_alpha(alpha_logits.detach(), choices)  # [n_links, 1]
-            final_processed_lengths, _ = _preprocess(
-                lengths.detach(), morph.link_radius
-            )
+            final_alpha = _hard_alpha(best_alpha_logits, choices)  # [n_links, 1]
+            final_processed_lengths, _ = _preprocess(best_lengths, morph.link_radius)
 
-            final_raw_morphology = torch.cat([final_alpha, lengths.detach()], dim=1)
+            final_raw_morphology = torch.cat([final_alpha, best_lengths], dim=1)
             final_processed_morphology = torch.cat(
                 [final_alpha, final_processed_lengths], dim=1
             )
@@ -389,7 +370,7 @@ def _optimize_morphology_impl(
         )
 
         csv_logger.log_iteration(
-            iteration=n_iter,
+            iteration=final_iteration,
             loss=final_loss.detach(),
             reachability_probability=final_prob.detach(),
             raw_morphology=final_raw_morphology.detach(),
@@ -404,7 +385,7 @@ def _optimize_morphology_impl(
             final_validation_data["ik_success_pose_rate"].detach().cpu().item()
         )
         print(
-            f"[Iter {n_iter:>4}/{n_iter}] "
+            f"[Iter {final_iteration:>4}/{n_iter}] "
             f"loss={final_loss.item():.6f}, "
             f"nrm_prob={final_prob.item():.6f}, "
             f"final_se3_err={final_se3_err:.6f}, "
@@ -434,32 +415,23 @@ _DOF_DEFAULTS: dict[int, dict] = {
     5: {
         "gumbel_tau_start": 1.0,
         "gumbel_tau_min": 0.05,
-        "gumbel_tau_decay": 0.97,
-        "learning_rate_angle": 0.008,
-        "learning_rate_length": 0.008,
-        "collision_weight": 10.0,
-        "collision_seeds": 8,
-        "joint_refinement_steps": 3,
+        "gumbel_tau_decay": 0.999,
+        "learning_rate_angle": 0.01,
+        "learning_rate_length": 0.1,
     },
     6: {
         "gumbel_tau_start": 1.0,
         "gumbel_tau_min": 0.05,
-        "gumbel_tau_decay": 0.95,
-        "learning_rate_angle": 0.005,
-        "learning_rate_length": 0.005,
-        "collision_weight": 10.0,
-        "collision_seeds": 8,
-        "joint_refinement_steps": 3,
+        "gumbel_tau_decay": 0.999,
+        "learning_rate_angle": 0.01,
+        "learning_rate_length": 0.1,
     },
     7: {
         "gumbel_tau_start": 1.0,
         "gumbel_tau_min": 0.05,
-        "gumbel_tau_decay": 0.93,
-        "learning_rate_angle": 0.003,
-        "learning_rate_length": 0.003,
-        "collision_weight": 15.0,
-        "collision_seeds": 12,
-        "joint_refinement_steps": 4,
+        "gumbel_tau_decay": 0.999,
+        "learning_rate_angle": 0.01,
+        "learning_rate_length": 0.1,
     },
 }
 

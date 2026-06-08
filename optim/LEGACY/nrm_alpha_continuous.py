@@ -11,6 +11,16 @@
 #   - during optimization, NRM sees continuous alpha directly.
 #   - the final returned morphology maps alpha to {-pi/2, 0, pi/2}.
 # -----------------------------------------------------------------------------
+"""
+LEGACY:
+    If you want to run this code, simply put in inside the optim folder.
+    This method simply doesn't work, gradient is misleading to the garbage example.
+    Easy way to prove this is to try different parameter, if we want the alpha to be
+    near +-90 and 0, it will lead all alpha to be 0. Which means the gradient is
+    misleading.
+    Also, plotting the alpha w.r.t. reachability with a fixed a and d, alpha should move
+    faster than the a and d, other wise the graident w.r.t alpha will go to 0 for all alpha
+"""
 
 import json
 import math

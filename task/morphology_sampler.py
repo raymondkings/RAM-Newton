@@ -5,7 +5,7 @@
 # Modified work Copyright (c) 2026 Shiyuan Zhang
 # -----------------------------------------------------------------------------
 #
-# Standalone DOF-6 morphology sampler extracted from the NRM project.
+# Standalone morphology sampler extracted from the NRM project.
 #
 # This file only depends on torch. It does NOT need:
 #   - nrm package
@@ -15,10 +15,10 @@
 #   - jaxtyping / beartype
 #
 # Main API:
-#   sample_dof6_initial_morphologies(num_initial_samples, ...)
+#   sample_initial_morphologies(num_initial_samples, dof=6, ...)
 #
 # Output:
-#   Tensor [N, 7, 3]
+#   Tensor [N, dof + 1, 3]
 #   Each morphology M is [dof + 1, 3], where each row is [alpha_i, a_i, d_i].
 # -----------------------------------------------------------------------------
 
@@ -37,6 +37,7 @@ from util.self_collision import get_capsules
 # Same constants as the original self_collision.py
 LINK_RADIUS = 0.025
 EPS = 1e-4
+SUPPORTED_INITIAL_MORPHOLOGY_DOFS = frozenset({5, 6, 7})
 
 
 # -----------------------------------------------------------------------------
@@ -559,7 +560,7 @@ def sample_morph(
 
     Args:
         num_robots: number of morphologies to sample.
-        dof: number of revolute DOFs. In our use case, dof=6.
+        dof: number of revolute DOFs.
         analytically_solvable: whether to bias toward analytical-IK-friendly structures.
         device: torch device.
 
@@ -591,22 +592,25 @@ def sample_morph(
 # -----------------------------------------------------------------------------
 # API
 # -----------------------------------------------------------------------------
-
-
 @torch.inference_mode()
-def sample_dof6_initial_morphologies(
+def sample_initial_morphologies(
     num_initial_samples: int,
+    dof: int = 6,
     seed: int | None = 0,
     device: str | torch.device | None = None,
     analytically_solvable: bool = False,
+    cpu_output: bool = False,
     as_list: bool = False,
 ) -> Tensor | list[Tensor]:
     """
-    Sample valid DOF=6 morphologies as initial parameters for optimization.
+    Sample valid DOF=5/6/7 morphologies as initial parameters for optimization.
 
     Args:
         num_initial_samples:
             Number of initial morphologies to sample.
+        dof:
+            Number of revolute DOFs. The returned M length is dof + 1, e.g.
+            DOF=6 returns shape [N, 7, 3].
         seed:
             Random seed. Use None if you do not want to reset randomness.
         device:
@@ -617,14 +621,28 @@ def sample_dof6_initial_morphologies(
         cpu_output:
             If True, move output back to CPU before returning.
         as_list:
-            If False, return Tensor [N, 7, 3].
-            If True, return List[Tensor], each Tensor has shape [7, 3].
+            If False, return Tensor [N, dof + 1, 3].
+            If True, return List[Tensor], each Tensor has shape [dof + 1, 3].
 
     Returns:
-        Tensor [num_initial_samples, 7, 3], or list of [7, 3] tensors.
+        Tensor [num_initial_samples, dof + 1, 3], or list of [dof + 1, 3] tensors.
     """
     if num_initial_samples <= 0:
         raise ValueError("num_initial_samples must be positive.")
+
+    dof = int(dof)
+    if dof not in SUPPORTED_INITIAL_MORPHOLOGY_DOFS:
+        supported = ", ".join(
+            str(value) for value in sorted(SUPPORTED_INITIAL_MORPHOLOGY_DOFS)
+        )
+        raise ValueError(
+            f"sample_initial_morphologies supports DOF {{{supported}}}, got {dof}."
+        )
+
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(device)
 
     if seed is not None:
         torch.manual_seed(seed)
@@ -633,10 +651,13 @@ def sample_dof6_initial_morphologies(
 
     morphologies = sample_morph(
         num_robots=num_initial_samples,
-        dof=6,
+        dof=dof,
         analytically_solvable=analytically_solvable,
         device=device,
     ).float()
+
+    if cpu_output:
+        morphologies = morphologies.cpu()
 
     if as_list:
         return [morphologies[i].clone() for i in range(morphologies.shape[0])]
@@ -645,7 +666,7 @@ def sample_dof6_initial_morphologies(
 
 
 if __name__ == "__main__":
-    morphs = sample_dof6_initial_morphologies(1, seed=0, device="cpu")
+    morphs = sample_initial_morphologies(1, dof=6, seed=0, device="cpu")
     print("morphs.shape =", morphs.shape)
-    print("first morphology M [7, 3] =")
+    print("first morphology M [dof + 1, 3] =")
     print(morphs[0])
