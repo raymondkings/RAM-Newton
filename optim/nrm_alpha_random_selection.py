@@ -538,9 +538,8 @@ def _tie_score(
 
     active_link = link_mag > eps_zero
     mean_link = (
-        (link_mag * active_link.float()).sum()
-        / active_link.float().sum().clamp_min(1.0)
-    )
+        link_mag * active_link.float()
+    ).sum() / active_link.float().sum().clamp_min(1.0)
     balance_penalty = ((link_mag - mean_link) ** 2 * active_link.float()).sum()
 
     score = (
@@ -807,9 +806,7 @@ def optimize_morphology(
     selected_label = ",".join(str(dof) for dof in candidate_dofs)
 
     if logging:
-        print(
-            f"[Info] Starting DOF candidate optimization on device {device}."
-        )
+        print(f"[Info] Starting DOF candidate optimization on device {device}.")
         print(
             "[Info] "
             f"dof={dof_selector!r}, "

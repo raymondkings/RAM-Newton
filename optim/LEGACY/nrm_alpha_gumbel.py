@@ -7,13 +7,13 @@
 #     and relaxed with Gumbel-Softmax (temperature anneals from tau_start → tau_min).
 #   - the final returned morphology snaps alpha to the argmax (hard discrete).
 # -----------------------------------------------------------------------------
-'''
+"""
 LEGACY:
     If you want to run this code, simply put in inside the optim folder.
-    This method simply doesn't work, alpha will almost not change, and even if 
+    This method simply doesn't work, alpha will almost not change, and even if
     deliberately set very strange hyperparameter to get a different alpha, the
-    result (se3 error/ ik successrate/ loss) is also not better. 
-'''
+    result (se3 error/ ik successrate/ loss) is also not better.
+"""
 
 import json
 import math
@@ -346,9 +346,7 @@ def _optimize_morphology_impl(
         # Final state: snap best alpha logits → argmax (hard discrete)
         with torch.no_grad():
             final_alpha = _hard_alpha(best_alpha_logits, choices)  # [n_links, 1]
-            final_processed_lengths, _ = _preprocess(
-                best_lengths, morph.link_radius
-            )
+            final_processed_lengths, _ = _preprocess(best_lengths, morph.link_radius)
 
             final_raw_morphology = torch.cat([final_alpha, best_lengths], dim=1)
             final_processed_morphology = torch.cat(
