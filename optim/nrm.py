@@ -23,6 +23,8 @@ from validation.optimization_validation import run_optimization_validation
 
 
 EPS = 1e-4
+DELTA_EARLY_STOPPING = 1e-5
+EARLY_STOPPING_PATIENCE = 10
 
 _PROJECT_ROOT = Path(__file__).parent.parent
 _WEIGHTS_DIR = _PROJECT_ROOT / "weights"
@@ -41,7 +43,7 @@ def _load_model(device: torch.device) -> MLP:
     model = MLP(**metadata["hyperparameter"])
     model.load_state_dict(
         torch.load(
-            _WEIGHTS_DIR / "checkpoint.pth", map_location=device, weights_only=True
+            _WEIGHTS_DIR / "checkpoint_5-7.pth", map_location=device, weights_only=True
         )
     )
     model = model.to(device)
@@ -127,6 +129,12 @@ def optimize_morphology(
     random_seed = optimization_parameters.get("random_seed", 42)
     number_random_seed = optimization_parameters.get("number_random_seed", 32)
     percentage_poses = optimization_parameters.get("percentage_poses", 1)
+    early_stopping_patience = int(
+        optimization_parameters.get("early_stopping_patience", EARLY_STOPPING_PATIENCE)
+    )
+    delta_early_stopping = float(
+        optimization_parameters.get("delta_early_stopping", DELTA_EARLY_STOPPING)
+    )
 
     device = morph.params.device
 
@@ -139,7 +147,9 @@ def optimize_morphology(
             f"eval_interval={eval_interval}, "
             f"random_seed={random_seed}, "
             f"number_random_seed={number_random_seed}, "
-            f"percentage_poses={percentage_poses}"
+            f"percentage_poses={percentage_poses}, "
+            f"early_stopping_patience={early_stopping_patience}, "
+            f"delta_early_stopping={delta_early_stopping}"
         )
 
     scene = None
@@ -162,6 +172,12 @@ def optimize_morphology(
     if logging:
         print(f"[Info] Writing CSV log to: {csv_logger.csv_path}")
 
+    best_loss = float("inf")
+    best_lengths = lengths.detach().clone()
+    best_iteration = 0
+    stale_count = 0
+    final_iteration = n_iter
+
     try:
         progress_bar = tqdm(range(n_iter), desc="optimizing", dynamic_ncols=True)
         for update_idx in progress_bar:
@@ -178,7 +194,18 @@ def optimize_morphology(
             loss = torch.nn.BCEWithLogitsLoss(reduction="mean")(
                 logit, torch.ones_like(logit)
             )
+            loss = loss + 100.0 * torch.relu(-processed_morphology[-1, 2])
             prob = torch.sigmoid(logit).mean()
+            loss_value = float(loss.detach().cpu().item())
+
+            improved = loss_value < best_loss - delta_early_stopping
+            if improved:
+                best_loss = loss_value
+                best_lengths = lengths.detach().clone()
+                best_iteration = update_idx
+                stale_count = 0
+            else:
+                stale_count += 1
 
             validation_data = None
 
@@ -217,22 +244,39 @@ def optimize_morphology(
                 validation_data=validation_data,
             )
 
+            should_stop = (
+                early_stopping_patience > 0
+                and stale_count >= early_stopping_patience
+                and (update_idx + 1) < n_iter
+            )
+            if should_stop:
+                final_iteration = update_idx + 1
+                if logging:
+                    tqdm.write(
+                        "[Early stopping] "
+                        f"loss did not improve for {stale_count} updates; "
+                        f"stopping at iteration {final_iteration}. "
+                        f"best_iteration={best_iteration}, best_loss={best_loss:.6f}"
+                    )
+                break
+
             loss.backward()
             optimizer.step()
 
             progress_bar.set_postfix(
                 loss=f"{loss.item():.4f}",
                 prob=f"{prob.item():.3f}",
+                stale=stale_count,
             )
 
-        # Final state after n_iter optimizer steps.
+        # Final state after all optimizer steps, or the best state before early stopping.
         with torch.no_grad():
-            final_processed_lengths, final_norm_lengths = _preprocess(
-                lengths.detach(),
+            final_processed_lengths, _ = _preprocess(
+                best_lengths,
                 morph.link_radius,
             )
 
-            final_raw_morphology = torch.cat([alpha, lengths.detach()], dim=1)
+            final_raw_morphology = torch.cat([alpha, best_lengths], dim=1)
             final_processed_morphology = torch.cat(
                 [alpha, final_processed_lengths], dim=1
             )
@@ -244,6 +288,9 @@ def optimize_morphology(
             final_loss = torch.nn.BCEWithLogitsLoss(reduction="mean")(
                 final_logit,
                 torch.ones_like(final_logit),
+            )
+            final_loss = final_loss + 100.0 * torch.relu(
+                -final_processed_morphology[-1, 2]
             )
             final_prob = torch.sigmoid(final_logit).mean()
 
@@ -260,7 +307,7 @@ def optimize_morphology(
         )
 
         csv_logger.log_iteration(
-            iteration=n_iter,
+            iteration=final_iteration,
             loss=final_loss,
             reachability_probability=final_prob,
             raw_morphology=final_raw_morphology,
@@ -276,7 +323,7 @@ def optimize_morphology(
         )
 
         msg = (
-            f"[Iter {n_iter:>4}/{n_iter}] "
+            f"[Iter {final_iteration:>4}/{n_iter}] "
             f"loss={final_loss.item():.6f}, "
             f"nrm_prob={final_prob.item():.6f},"
             f"final_se3_err={final_se3_err:.6f}, "

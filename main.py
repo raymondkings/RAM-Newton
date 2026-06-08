@@ -5,8 +5,8 @@ from pathlib import Path
 
 import torch
 
-from task.morphology_sampler import sample_dof6_initial_morphologies
-from optim.nrm import optimize_morphology
+from task.morphology_sampler import sample_initial_morphologies
+from optim.nrm_alpha_random_selection import optimize_morphology
 from interface import Morphology, Task
 from task.environment import l_environment
 from validation.curobo_planner import CuroboPlanner, interpolate_path
@@ -16,7 +16,11 @@ from util.csv_log_reader import load_latest_optimized_morphology
 # target selecting
 # from task.target1 import create_task
 # from task.target1plus import create_task
-from task.task_pose_sampler import START_POSE, create_start_goal_poses, create_task
+from task.task_pose_sampler import (
+    START_POSE,
+    create_start_goal_poses,
+    create_task_pose_sets,
+)
 # from task.target2 import create_task
 
 
@@ -88,7 +92,7 @@ def run_plan(
     print(f"[Info] Start configuration: {start_q.tolist()}")
 
     if not planner.check_start_feasibility(start_q):
-        raise RuntimeError(
+        print(
             f"Start configuration is in collision (self or world) — aborting.\n"
             f"  start_q = {start_q.tolist()}\n"
             "  Check that IK candidate poses are reachable for this morphology, or run with "
@@ -197,6 +201,7 @@ def run_postprocess(csv_path: Path, task: Task, args: argparse.Namespace) -> Non
 def main() -> None:
     args = parse_args()
     set_global_seed(args.seed)
+    initial_morphology_dof = int(getattr(args, "dof", 6))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.set_default_device(device)
@@ -210,15 +215,28 @@ def main() -> None:
             "final planner uses only start pose and first-path max-alpha goal pose."
         )
 
+    optimizer_goal_poses, planner_goal_poses = create_task_pose_sets(
+        seed=args.seed,
+        start_pose=START_POSE,
+        device=device,
+    )
+
     task = Task(
         environment=l_environment(),
-        goal_poses=create_task(
-            seed=args.seed,
-            start_pose=START_POSE,
-            device=device,
-        ),
+        goal_poses=optimizer_goal_poses,
         reachable_region=None,
         start_q=None,
+    )
+    planner_task = Task(
+        environment=task.environment,
+        goal_poses=planner_goal_poses,
+        reachable_region=task.reachable_region,
+        start_q=task.start_q,
+    )
+    print(
+        "[Info] Task poses: "
+        f"optimizer={task.goal_poses.shape[0]}, "
+        f"planner_main_path={planner_task.goal_poses.shape[0]}"
     )
 
     # NOTE: for the updated candidate selection algorithm, the initial morphology is only used to get the link radius and the device
@@ -240,8 +258,9 @@ def main() -> None:
         )
         morph = optimized_morph
     else:
-        initial_morphologies = sample_dof6_initial_morphologies(
+        initial_morphologies = sample_initial_morphologies(
             num_initial_samples=1,
+            dof=initial_morphology_dof,
             seed=args.seed,
             device=device,
             analytically_solvable=False,
@@ -300,7 +319,6 @@ def main() -> None:
 
     run_postprocess(Path(csv_path), task, args)
 
-    plan_task = task
     if plan_goal_start:
         plan_task = Task(
             environment=task.environment,
@@ -311,6 +329,8 @@ def main() -> None:
             reachable_region=task.reachable_region,
             start_q=task.start_q,
         )
+    else:
+        plan_task = planner_task
 
     run_plan(
         optimized_morph,

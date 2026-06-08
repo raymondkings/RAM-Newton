@@ -42,6 +42,25 @@ def _jsonable_float_list(tensor: torch.Tensor) -> list:
     return tensor.detach().cpu().tolist()
 
 
+def _collapse_consecutive_duplicate_poses(
+    poses: torch.Tensor,
+    *,
+    atol: float = 1e-7,
+) -> torch.Tensor:
+    """Collapse adjacent duplicate SE(3) poses while preserving order."""
+    if poses.shape[0] <= 1:
+        return poses
+
+    keep = [0]
+    for i in range(1, poses.shape[0]):
+        is_duplicate = torch.allclose(poses[i], poses[keep[-1]], atol=atol, rtol=0.0)
+        if not is_duplicate:
+            keep.append(i)
+
+    indices = torch.tensor(keep, dtype=torch.long, device=poses.device)
+    return poses[indices]
+
+
 def _as_pose_tensor(pose: torch.Tensor, *, dtype: torch.dtype) -> torch.Tensor:
     pose = pose.detach().cpu().to(dtype=dtype)
     if pose.shape != (4, 4):
@@ -150,7 +169,19 @@ def _extra_path_pose_from_alpha_beta(
     return poses
 
 
-def _sample_sorted_uniform(
+def _uniform_interior_values(
+    *,
+    count: int,
+    value_range: tuple[float, float],
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """Return count evenly spaced interior values, excluding both endpoints."""
+    low, high = value_range
+    step = (high - low) / float(count + 1)
+    return low + step * torch.arange(1, count + 1, dtype=dtype, device="cpu")
+
+
+def _sample_sorted_uniform_random(
     *,
     generator: torch.Generator,
     count: int,
@@ -176,7 +207,7 @@ def _signature(
     repeat: int,
 ) -> dict[str, Any]:
     return {
-        "version": 4,
+        "version": 5,
         "seed": int(seed),
         "num_samples": int(num_samples),
         "num_extra_paths": int(num_extra_paths),
@@ -205,9 +236,10 @@ def _signature(
             "0.25*sin(alpha)*cos(pi/2 + beta), "
             "0.1 + 0.25*sin(alpha)*sin(pi/2 - beta)]"
         ),
-        "alpha_order": "ascending",
+        "alpha_order": "uniform_interior_ascending",
         "beta_order": "ascending",
-        "line_p_order": "ascending",
+        "line_p_order": "uniform_interior_ascending",
+        "extra_alpha_degrees": "shared_with_main_alpha",
         "start_pose": _jsonable_float_list(START_POSE),
     }
 
@@ -262,6 +294,45 @@ def _next_cache_path(cache_dir: Path, seed: int) -> Path:
     return cache_dir / f"taskpose_seed{int(seed)}_{max_idx + 1}.json"
 
 
+def _build_planner_goal_poses(
+    *,
+    start_pose: torch.Tensor,
+    main_path_poses: torch.Tensor,
+    goal_pose: torch.Tensor,
+) -> torch.Tensor:
+    planner_goal_poses = torch.cat(
+        [
+            start_pose.unsqueeze(0),
+            main_path_poses,
+            goal_pose.unsqueeze(0),
+        ],
+        dim=0,
+    )
+    return _collapse_consecutive_duplicate_poses(planner_goal_poses)
+
+
+def _planner_goal_poses_from_payload(
+    payload: dict[str, Any],
+    signature: dict[str, Any],
+    *,
+    dtype: torch.dtype,
+    device: torch.device,
+) -> torch.Tensor:
+    if "planner_goal_poses" in payload:
+        return torch.tensor(payload["planner_goal_poses"], dtype=dtype, device=device)
+
+    num_samples = int(signature["num_samples"])
+    sampled_poses = torch.tensor(payload["sampled_poses"], dtype=dtype, device=device)
+    main_path_poses = sampled_poses[:num_samples]
+    start_pose = torch.tensor(payload["single_start_pose"], dtype=dtype, device=device)
+    goal_pose = torch.tensor(payload["single_goal_pose"], dtype=dtype, device=device)
+    return _build_planner_goal_poses(
+        start_pose=start_pose,
+        main_path_poses=main_path_poses,
+        goal_pose=goal_pose,
+    )
+
+
 def _write_cache(
     cache_dir: Path,
     signature: dict[str, Any],
@@ -269,11 +340,11 @@ def _write_cache(
     alpha_degrees: torch.Tensor,
     line_p_values: torch.Tensor,
     extra_beta_degrees: torch.Tensor,
-    extra_alpha_degrees_by_beta: torch.Tensor,
     start_pose: torch.Tensor,
     sampled_poses: torch.Tensor,
     goal_pose: torch.Tensor,
     goal_poses: torch.Tensor,
+    planner_goal_poses: torch.Tensor,
 ) -> Path:
     cache_dir.mkdir(parents=True, exist_ok=True)
     path = _next_cache_path(cache_dir, int(signature["seed"]))
@@ -282,13 +353,11 @@ def _write_cache(
         "alpha_degrees": _jsonable_float_list(alpha_degrees),
         "line_p_values": _jsonable_float_list(line_p_values),
         "extra_beta_degrees": _jsonable_float_list(extra_beta_degrees),
-        "extra_alpha_degrees_by_beta": _jsonable_float_list(
-            extra_alpha_degrees_by_beta
-        ),
         "sampled_poses": _jsonable_float_list(sampled_poses),
         "single_start_pose": _jsonable_float_list(start_pose),
         "single_goal_pose": _jsonable_float_list(goal_pose),
         "goal_poses": _jsonable_float_list(goal_poses),
+        "planner_goal_poses": _jsonable_float_list(planner_goal_poses),
     }
     with path.open("w") as f:
         json.dump(payload, f, indent=2)
@@ -307,14 +376,18 @@ def task_sampler(
     cache_dir: str | Path = CACHE_DIR,
     dtype: torch.dtype = torch.float32,
     device: torch.device | str | None = None,
-) -> torch.Tensor:
+    return_planner_goal_poses: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """Sample task poses and cache them under ``initial_candidates``.
 
     Returns:
-        By default, tensor
+        By default, optimizer tensor
         [(num_extra_paths + 2)*num_samples + 2*repeat, 4, 4]. The first block is
         repeated START_POSE, the middle block is sampled path poses, and the
         final block is the first-path max-alpha goal pose repeated ``repeat``.
+        If return_planner_goal_poses is True, also returns planner poses containing
+        only start, the main y=0 half-circle path, and the final main goal, with
+        adjacent duplicates collapsed.
     """
     if seed is None:
         seed = int(torch.initial_seed() % (2**32))
@@ -354,13 +427,21 @@ def task_sampler(
     if cached is not None:
         payload, cache_path = cached
         print(f"[Info] Loaded task pose cache: {cache_path}")
-        return torch.tensor(payload["goal_poses"], dtype=dtype, device=device)
+        goal_poses = torch.tensor(payload["goal_poses"], dtype=dtype, device=device)
+        if return_planner_goal_poses:
+            planner_goal_poses = _planner_goal_poses_from_payload(
+                payload,
+                signature,
+                dtype=dtype,
+                device=device,
+            )
+            return goal_poses, planner_goal_poses
+        return goal_poses
 
     generator = torch.Generator(device="cpu")
     generator.manual_seed(int(seed))
 
-    alpha_degrees = _sample_sorted_uniform(
-        generator=generator,
+    alpha_degrees = _uniform_interior_values(
         count=num_samples,
         value_range=alpha_range_degrees,
         dtype=dtype,
@@ -368,44 +449,30 @@ def task_sampler(
     alpha = torch.deg2rad(alpha_degrees).to(device=device)
     main_path_poses = _pose_from_alpha(alpha, dtype=dtype)
 
-    line_p_values = _sample_sorted_uniform(
-        generator=generator,
+    line_p_values = _uniform_interior_values(
         count=num_samples,
         value_range=line_p_range,
         dtype=dtype,
     )
     line_path_poses = _line_pose_from_p(line_p_values.to(device=device), dtype=dtype)
 
-    extra_beta_degrees = _sample_sorted_uniform(
+    extra_beta_degrees = _sample_sorted_uniform_random(
         generator=generator,
         count=num_extra_paths,
         value_range=beta_range_degrees,
         dtype=dtype,
     )
     extra_path_poses = []
-    extra_alpha_degrees_by_beta = []
     for beta_degree in extra_beta_degrees:
-        extra_alpha_degrees = _sample_sorted_uniform(
-            generator=generator,
-            count=num_samples,
-            value_range=alpha_range_degrees,
-            dtype=dtype,
-        )
-        extra_alpha_degrees_by_beta.append(extra_alpha_degrees)
-        extra_alpha = torch.deg2rad(extra_alpha_degrees).to(device=device)
         beta = torch.deg2rad(beta_degree).to(device=device)
         extra_path_poses.append(
-            _extra_path_pose_from_alpha_beta(extra_alpha, beta, dtype=dtype)
+            _extra_path_pose_from_alpha_beta(alpha, beta, dtype=dtype)
         )
 
     if extra_path_poses:
         extra_path_poses_tensor = torch.cat(extra_path_poses, dim=0)
-        extra_alpha_degrees_tensor = torch.stack(extra_alpha_degrees_by_beta, dim=0)
     else:
         extra_path_poses_tensor = torch.empty(0, 4, 4, dtype=dtype, device=device)
-        extra_alpha_degrees_tensor = torch.empty(
-            0, num_samples, dtype=dtype, device="cpu"
-        )
 
     sampled_poses = torch.cat(
         [main_path_poses, line_path_poses, extra_path_poses_tensor], dim=0
@@ -432,19 +499,27 @@ def task_sampler(
             f"{goal_poses.shape[0]}."
         )
 
+    planner_goal_poses = _build_planner_goal_poses(
+        start_pose=start,
+        main_path_poses=main_path_poses,
+        goal_pose=goal_pose,
+    )
+
     cache_path = _write_cache(
         cache_dir,
         signature,
         alpha_degrees=alpha_degrees,
         line_p_values=line_p_values,
         extra_beta_degrees=extra_beta_degrees,
-        extra_alpha_degrees_by_beta=extra_alpha_degrees_tensor,
         start_pose=start,
         sampled_poses=sampled_poses,
         goal_pose=goal_pose,
         goal_poses=goal_poses,
+        planner_goal_poses=planner_goal_poses,
     )
     print(f"[Info] Wrote task pose cache: {cache_path}")
+    if return_planner_goal_poses:
+        return goal_poses, planner_goal_poses
     return goal_poses
 
 
@@ -461,6 +536,23 @@ def create_task(
         device=device,
         dtype=dtype,
     )
+
+
+def create_task_pose_sets(
+    seed: int | None = None,
+    *,
+    start_pose: torch.Tensor | None = None,
+    device: torch.device | str | None = None,
+    dtype: torch.dtype = torch.float32,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    optimizer_goal_poses, planner_goal_poses = task_sampler(
+        seed=seed,
+        start_pose=start_pose,
+        device=device,
+        dtype=dtype,
+        return_planner_goal_poses=True,
+    )
+    return optimizer_goal_poses, planner_goal_poses
 
 
 def create_start_goal_poses(
