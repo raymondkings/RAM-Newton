@@ -106,10 +106,9 @@ class CuroboPlanner:
         self._planner = MotionPlanner(planner_config)
         self._planner.warmup(enable_graph=True, num_warmup_iterations=3)
 
-        # Built lazily by tool_jacobian(): the planner's own kinematics has
-        # compute_jacobian=False, so we reuse its config in a Jacobian-enabled
-        # instance to read the EE Jacobian directly off cuRobo.
-        self._jac_kin: Kinematics | None = None
+        self._jac_kin = Kinematics(
+            self._planner.kinematics.config, compute_jacobian=True
+        )
 
     def __del__(self):
         path = getattr(self, "_urdf_path", None)
@@ -211,9 +210,7 @@ class CuroboPlanner:
     def tool_jacobian(self, qs: torch.Tensor) -> torch.Tensor:
         """End-effector geometric Jacobian (base frame) for a batch of joint configs.
 
-        Reads the Jacobian straight off cuRobo's kinematics. The planner builds its
-        own kinematics with ``compute_jacobian=False``, so on first call we create a
-        Jacobian-enabled ``Kinematics`` from the same config and cache it.
+        Reads the Jacobian straight off cuRobo's kinematics.
 
         Args:
             qs: Joint configurations, shape ``[N, dof]`` (dof = len(joint_names)).
@@ -222,10 +219,6 @@ class CuroboPlanner:
             Jacobians of shape ``[N, 6, dof]``; rows 0:3 are linear, 3:6 angular —
             the layout ``yoshikawa_manipulability`` expects.
         """
-        if self._jac_kin is None:
-            self._jac_kin = Kinematics(
-                self._planner.kinematics.config, compute_jacobian=True
-            )
         js = JointState.from_position(
             qs.float().reshape(-1, len(self._planner.joint_names)).to(self._device),
             joint_names=self._planner.joint_names,
