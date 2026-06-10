@@ -112,7 +112,7 @@ def _capsule_spheres(
     ]
 
 
-def _mat_to_goal_pose(
+def mat_to_goal_pose(
     pose_4x4: torch.Tensor,
     tool_frames: list[str],
     device: torch.device,

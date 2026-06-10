@@ -32,8 +32,8 @@ def animate_plan(
     contact forces are fully resolved.  The viewer loops until the tab is closed.
 
     Args:
-        path: list of joint-config tensors (n_joints,).  Should be densified
-            with `interpolate_path` for smooth target tracking.
+        path: list of joint-config tensors (n_joints,). Expected to already be
+            dense (e.g. cuRobo's interpolated plan) for smooth target tracking.
         sim_substeps: physics substeps per rendered frame.
     """
     n_joints = morph.n_links - 1
