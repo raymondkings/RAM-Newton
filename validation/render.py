@@ -486,6 +486,288 @@ def render_scene(
         viewer.close()
 
 
+# ---------------------------------------------------------------------------
+# Self-collision critical-distance timeline + live label
+# ---------------------------------------------------------------------------
+
+# Clearance bands (metres) shared by the timeline shading and the live label.
+_CLEAR_SAFE = 0.10  # gap >  this        -> green
+_CLEAR_WARN = 0.02  # gap >  this        -> orange (else red; <= 0 -> bright red)
+_TIMELINE_MAX_POINTS = 600  # min-preserving downsample cap for the d_crit curve
+# Moving the playback cursor re-serialises the whole timeline figure, so it is
+# rate-limited instead of pushed on every rendered frame.
+_TIMELINE_CURSOR_MIN_DT = 0.15
+
+
+def _short_link_label(name: str) -> str:
+    """Abbreviate a cuRobo collision-link name for compact axis/label display."""
+    if name == "base_link":
+        return "base"
+    if name.startswith("link_"):
+        return "L" + name[len("link_") :]
+    return name
+
+
+def _link_collision_meta(curobo_planner):
+    """Derive per-link sphere grouping and the self-collision ignore mask.
+
+    The robot's collision geometry is a *variable* number of cuRobo spheres per
+    link (not a fixed two-per-link), grouped contiguously in the order
+    ``robot_spheres_world`` returns them — the same grouping
+    ``CuroboPlanner._collision_report`` relies on.
+
+    Returns:
+        (link_labels, block_starts, ignore_mask, n_spheres_expected):
+          * link_labels: short label per collision link (heatmap axes / label).
+          * block_starts: (n_links,) int reduceat offsets into the sphere array.
+          * ignore_mask: (n_links, n_links) bool — True on the diagonal and for
+            ignored (adjacent / two-hop) pairs that must never count as contact.
+          * n_spheres_expected: total sphere count implied by the sphere dict,
+            used to sanity-check the live FK output.
+    """
+    sphere_dict = curobo_planner._sphere_dict
+    link_names = list(sphere_dict.keys())
+    counts = np.array([len(sphere_dict[name]) for name in link_names], dtype=np.int64)
+    n_links = len(link_names)
+
+    # reduceat segment starts: [0, c0, c0+c1, ...]; every link has >= 1 sphere.
+    block_starts = np.concatenate([[0], np.cumsum(counts)[:-1]]).astype(np.int64)
+
+    name_to_idx = {name: i for i, name in enumerate(link_names)}
+    ignore_mask = np.eye(n_links, dtype=bool)
+    for a, others in curobo_planner._self_collision_ignore.items():
+        ia = name_to_idx.get(a)
+        if ia is None:
+            continue
+        for b in others:
+            ib = name_to_idx.get(b)
+            if ib is not None:
+                ignore_mask[ia, ib] = True
+                ignore_mask[ib, ia] = True
+
+    link_labels = [_short_link_label(name) for name in link_names]
+    return link_labels, block_starts, ignore_mask, int(counts.sum())
+
+
+def precompute_self_collision_data(
+    spheres_per_frame, block_starts, ignore_mask, n_links
+):
+    """Compute worst-case link clearances over a trajectory.
+
+    Vectorised per frame: the pairwise sphere-surface gap is
+    ``||p_i - p_j|| - r_i - r_j`` (per-sphere radii, so cuRobo's collision buffer
+    is respected), collapsed to link level by the minimum gap over every sphere
+    pair spanning the two links.
+
+    Args:
+        spheres_per_frame: list of (S, 4) float arrays of ``(x, y, z, radius)``,
+            one per trajectory frame, in the world frame.
+        block_starts: (n_links,) reduceat offsets grouping spheres into links.
+        ignore_mask: (n_links, n_links) bool — pairs forced to ``+inf`` (diagonal,
+            adjacent, two-hop).
+        n_links: number of collision links.
+
+    Returns:
+        link_clearance_matrix: (n_links, n_links) float — min over all frames of
+            the per-frame link clearance (``+inf`` for always-ignored pairs).
+        per_frame_worst: list of ``(d_crit, li, lj)`` per frame.
+            ``(+inf, -1, -1)`` when every pair is ignored that frame.
+    """
+    link_clearance_matrix = np.full((n_links, n_links), np.inf, dtype=np.float64)
+    per_frame_worst = []
+
+    for spheres in spheres_per_frame:
+        centers = spheres[:, :3].astype(np.float64)
+        radii = spheres[:, 3].astype(np.float64)
+
+        diff = centers[:, None, :] - centers[None, :, :]
+        dist = np.linalg.norm(diff, axis=-1)
+        clearance = dist - radii[:, None] - radii[None, :]
+
+        # cuRobo can hand back disabled spheres with radius <= 0; exclude them so
+        # they never dominate the per-link minimum.
+        invalid = radii <= 0.0
+        if invalid.any():
+            clearance[invalid, :] = np.inf
+            clearance[:, invalid] = np.inf
+
+        # Collapse sphere -> link by taking the min over each contiguous block,
+        # first along rows then along columns.
+        link_clear = np.minimum.reduceat(
+            np.minimum.reduceat(clearance, block_starts, axis=0),
+            block_starts,
+            axis=1,
+        )
+        link_clear[ignore_mask] = np.inf
+
+        flat = int(np.argmin(link_clear))
+        li, lj = np.unravel_index(flat, link_clear.shape)
+        d_crit = float(link_clear[li, lj])
+        if np.isfinite(d_crit):
+            per_frame_worst.append((d_crit, int(li), int(lj)))
+        else:
+            per_frame_worst.append((np.inf, -1, -1))
+
+        np.minimum(link_clearance_matrix, link_clear, out=link_clearance_matrix)
+
+    return link_clearance_matrix, per_frame_worst
+
+
+def _downsample_min(values: np.ndarray, max_points: int):
+    """Min-preserving downsample: keep each bucket's minimum sample (and index).
+
+    Clearance dips are the signal, so each bucket keeps its minimum rather than
+    a mean — the global minimum always survives. All-NaN buckets keep one NaN
+    so "no valid pair" stretches still render as gaps.
+
+    Returns:
+        (indices, values_at_indices) — original frame indices of kept samples.
+    """
+    n = values.shape[0]
+    if n <= max_points:
+        return np.arange(n), values
+    starts = (np.arange(max_points) * n) // max_points
+    ends = np.append(starts[1:], n)
+    idx = np.empty(max_points, dtype=np.int64)
+    for k, (s, e) in enumerate(zip(starts, ends)):
+        block = values[s:e]
+        idx[k] = s + (int(np.nanargmin(block)) if np.isfinite(block).any() else 0)
+    return idx, values[idx]
+
+
+def build_crit_distance_timeline(per_frame_worst, link_labels):
+    """Build the d_crit timeline: per-frame critical distance over the trajectory.
+
+    Line plot of the per-frame minimum link clearance, with the danger bands
+    shaded behind it (penetration / red / orange / green — same thresholds as
+    the live label), the global minimum annotated with its link pair, and a
+    vertical playback cursor.
+
+    The cursor is the figure's *last* layout shape; ``_set_timeline_cursor``
+    relies on that ordering. Imports plotly lazily so the viewer still runs
+    without it.
+    """
+    import plotly.graph_objects as go
+
+    d = np.array([w[0] for w in per_frame_worst], dtype=np.float64)
+    d[~np.isfinite(d)] = np.nan  # all-ignored frames -> gaps in the curve
+    x, y = _downsample_min(d, _TIMELINE_MAX_POINTS)
+
+    any_finite = bool(np.isfinite(d).any())
+    y_lo = min(-0.01, float(np.nanmin(d)) - 0.02) if any_finite else -0.01
+    y_hi = max(0.12, float(np.nanmax(d)) + 0.02) if any_finite else 0.12
+
+    fig = go.Figure(
+        go.Scatter(
+            x=x,
+            y=y,
+            mode="lines",
+            line={"color": "rgb(30,30,30)", "width": 2},
+            hovertemplate="frame %{x}<br>d_crit %{y:.3f} m<extra></extra>",
+        )
+    )
+
+    bands = [
+        (y_lo, 0.0, "rgba(200,0,0,0.30)"),  # penetration
+        (0.0, _CLEAR_WARN, "rgba(220,60,60,0.18)"),
+        (_CLEAR_WARN, _CLEAR_SAFE, "rgba(240,150,0,0.15)"),
+        (_CLEAR_SAFE, y_hi, "rgba(40,160,40,0.12)"),
+    ]
+    for lo, hi, fill in bands:
+        if hi > lo:
+            fig.add_shape(
+                type="rect",
+                xref="paper",
+                x0=0,
+                x1=1,
+                yref="y",
+                y0=lo,
+                y1=hi,
+                fillcolor=fill,
+                line={"width": 0},
+                layer="below",
+            )
+    fig.add_shape(
+        type="line",
+        xref="paper",
+        x0=0,
+        x1=1,
+        yref="y",
+        y0=0.0,
+        y1=0.0,
+        line={"color": "rgb(120,120,120)", "width": 1, "dash": "dot"},
+        layer="below",
+    )
+
+    # The trajectory-wide minimum goes in the subtitle (outside the plot area,
+    # so it can never overlap the curve); a small diamond marks where it occurs.
+    subtitle = None
+    if any_finite:
+        i_min = int(np.nanargmin(d))
+        d_min, li, lj = per_frame_worst[i_min]
+        value = f"{d_min:+.3f} m".replace("-", "−")
+        pair = f"{link_labels[li]}↔{link_labels[lj]}"
+        subtitle = f"worst over trajectory: {value} ({pair}) at frame {i_min}"
+        fig.add_trace(
+            go.Scatter(
+                x=[i_min],
+                y=[float(d_min)],
+                mode="markers",
+                marker={"size": 7, "color": "rgb(200,0,0)", "symbol": "diamond"},
+                hovertemplate=f"min %{{y:.3f}} m ({pair})<extra></extra>",
+            )
+        )
+
+    # Playback cursor — must stay the LAST shape (see _set_timeline_cursor).
+    fig.add_shape(
+        type="line",
+        xref="x",
+        x0=0,
+        x1=0,
+        yref="paper",
+        y0=0,
+        y1=1,
+        line={"color": "rgb(30,90,200)", "width": 2},
+    )
+
+    title = {"text": "Critical self-collision distance d_crit", "font": {"size": 14}}
+    if subtitle is not None:
+        title["subtitle"] = {
+            "text": subtitle,
+            "font": {"size": 11, "color": "rgb(90,90,90)"},
+        }
+    fig.update_layout(
+        title=title,
+        xaxis={"title": "frame", "range": [0, max(len(d) - 1, 1)]},
+        yaxis={"title": "d_crit (m)", "range": [y_lo, y_hi]},
+        margin={"l": 55, "r": 15, "t": 55, "b": 35},
+        showlegend=False,
+        plot_bgcolor="white",
+    )
+    return fig
+
+
+def _set_timeline_cursor(handle, figure, frame_idx: int) -> None:
+    """Move the playback cursor (the figure's last shape) and push to clients.
+
+    Reassigning ``handle.figure`` re-serialises the whole figure, so callers
+    rate-limit this via ``_TIMELINE_CURSOR_MIN_DT``.
+    """
+    cursor = figure.layout.shapes[-1]
+    cursor.x0 = cursor.x1 = frame_idx
+    handle.figure = figure
+
+
+def _format_crit_label(worst, link_labels) -> str:
+    """Format one ``(d_crit, li, lj)`` entry as the live markdown label."""
+    d, li, lj = worst
+    if not np.isfinite(d) or li < 0:
+        return "**d_crit = n/a**  (all pairs ignored)"
+    dot = "🟢" if d > _CLEAR_SAFE else "🟠" if d > _CLEAR_WARN else "🔴"
+    value = f"{d:+.3f} m".replace("-", "−")  # + flag makes a negative gap obvious
+    return f"**d_crit = {value}**  {dot}  [{link_labels[li]} ↔ {link_labels[lj]}]"
+
+
 def animate_plan(
     morph: Morphology,
     task: Task,
@@ -572,7 +854,57 @@ def animate_plan(
             )
             robot_sphere_handles.append(h)
 
-    def render_q(q, t: float) -> None:
+    # Pre-compute per-frame critical self-collision distances, then show them
+    # as a d_crit timeline with a playback cursor plus a live label updated each
+    # frame. Spheres come from the same cuRobo FK used above, so the values
+    # match the geometry drawn in the scene. Never let this break playback.
+    crit_label_handle = None
+    per_frame_worst = None
+    crit_link_labels = None
+    crit_timeline_handle = None
+    crit_timeline_fig = None
+    crit_cursor_state = [-1, 0.0]  # [last pushed frame_idx, last push time]
+    if curobo_planner is not None:
+        try:
+            crit_link_labels, block_starts, ignore_mask, n_spheres_exp = (
+                _link_collision_meta(curobo_planner)
+            )
+            spheres_per_frame = [
+                curobo_planner.robot_spheres_world(q[:n_joints]) for q in path
+            ]
+            got = spheres_per_frame[0].shape[0] if spheres_per_frame else 0
+            if got == n_spheres_exp and len(crit_link_labels) > 1:
+                print("Precomputing self-collision clearances ...")
+                _, per_frame_worst = precompute_self_collision_data(
+                    spheres_per_frame, block_starts, ignore_mask, len(crit_link_labels)
+                )
+                crit_timeline_fig = build_crit_distance_timeline(
+                    per_frame_worst, crit_link_labels
+                )
+                crit_timeline_handle = viewer._server.gui.add_plotly(
+                    crit_timeline_fig, aspect=0.6
+                )
+                crit_label_handle = viewer._server.gui.add_markdown(
+                    _format_crit_label(per_frame_worst[0], crit_link_labels)
+                )
+            else:
+                per_frame_worst = None
+                print(
+                    "[viewer] Skipping self-collision timeline "
+                    f"(spheres {got} vs expected {n_spheres_exp}, "
+                    f"{len(crit_link_labels)} links)."
+                )
+        except ImportError as exc:
+            crit_label_handle = crit_timeline_handle = per_frame_worst = None
+            print(
+                f"[viewer] Self-collision timeline needs plotly ({exc}); "
+                "install it with `uv pip install plotly`."
+            )
+        except Exception as exc:  # noqa: BLE001 - timeline is diagnostics only
+            crit_label_handle = crit_timeline_handle = per_frame_worst = None
+            print(f"[viewer] Self-collision timeline unavailable: {exc}")
+
+    def render_q(q, t: float, frame_idx: int | None = None) -> None:
         arr = q.detach().cpu().numpy().astype(np.float32)[:n_joints]
         state.joint_q.assign(arr)
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
@@ -592,6 +924,19 @@ def animate_plan(
         viewer.log_lines("/eef_frame", eef_b, eef_e, eef_c, width=0.04)
         viewer.end_frame()
         _update_joint_limit_panel(joint_limit_handles, joint_limit_bounds, q)
+        if crit_label_handle is not None and frame_idx is not None:
+            crit_label_handle.content = _format_crit_label(
+                per_frame_worst[frame_idx], crit_link_labels
+            )
+            now = time.monotonic()
+            if (
+                crit_timeline_handle is not None
+                and frame_idx != crit_cursor_state[0]
+                and now - crit_cursor_state[1] >= _TIMELINE_CURSOR_MIN_DT
+            ):
+                crit_cursor_state[0] = frame_idx
+                crit_cursor_state[1] = now
+                _set_timeline_cursor(crit_timeline_handle, crit_timeline_fig, frame_idx)
 
     try:
         t = 0.0
@@ -599,31 +944,32 @@ def animate_plan(
         # Hold the initial pose during startup so the browser can connect
         stop = time.monotonic() + startup_delay
         while time.monotonic() < stop and viewer.is_running():
-            render_q(path[0], t)
+            render_q(path[0], t, 0)
             t += frame_dt
             _sleep(frame_dt)
 
+        last_idx = len(path) - 1
         while viewer.is_running():
             for _ in range(hold_frames):
-                render_q(path[0], t)
+                render_q(path[0], t, 0)
                 t += frame_dt
                 _sleep(frame_dt)
                 if not viewer.is_running():
                     break
 
             prev_q = path[0]
-            for q in path:
+            for i, q in enumerate(path):
                 if not viewer.is_running():
                     break
                 dq = float((q - prev_q).norm())
                 frame_time = max(frame_dt, dq / max_joint_speed)
-                render_q(q, t)
+                render_q(q, t, i)
                 t += frame_time
                 _sleep(frame_time)
                 prev_q = q
 
             for _ in range(hold_frames):
-                render_q(path[-1], t)
+                render_q(path[-1], t, last_idx)
                 t += frame_dt
                 _sleep(frame_dt)
                 if not viewer.is_running():
