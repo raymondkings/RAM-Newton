@@ -16,7 +16,9 @@ from util.kinematics import (
     build_scene,
     mat_to_goal_pose,
 )
+from task.morphology_sampler import geometric_jacobian, yoshikawa_manipulability
 from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
+from curobo.kinematics import Kinematics
 from curobo.types import JointState
 
 
@@ -104,6 +106,11 @@ class CuroboPlanner:
         )
         self._planner = MotionPlanner(planner_config)
         self._planner.warmup(enable_graph=True, num_warmup_iterations=3)
+
+        # Built lazily by tool_jacobian(): the planner's own kinematics has
+        # compute_jacobian=False, so we reuse its config in a Jacobian-enabled
+        # instance to read the EE Jacobian directly off cuRobo.
+        self._jac_kin: Kinematics | None = None
 
     def __del__(self):
         path = getattr(self, "_urdf_path", None)
@@ -201,6 +208,32 @@ class CuroboPlanner:
         return result.reachable_ratio
 
     # === Public API — feasibility & utilities ===
+   
+    def tool_jacobian(self, qs: torch.Tensor) -> torch.Tensor:
+        """End-effector geometric Jacobian (base frame) for a batch of joint configs.
+
+        Reads the Jacobian straight off cuRobo's kinematics. The planner builds its
+        own kinematics with ``compute_jacobian=False``, so on first call we create a
+        Jacobian-enabled ``Kinematics`` from the same config and cache it.
+
+        Args:
+            qs: Joint configurations, shape ``[N, dof]`` (dof = len(joint_names)).
+
+        Returns:
+            Jacobians of shape ``[N, 6, dof]``; rows 0:3 are linear, 3:6 angular —
+            the layout ``yoshikawa_manipulability`` expects.
+        """
+        if self._jac_kin is None:
+            self._jac_kin = Kinematics(
+                self._planner.kinematics.config, compute_jacobian=True
+            )
+        js = JointState.from_position(
+            qs.float().reshape(-1, len(self._planner.joint_names)).to(self._device),
+            joint_names=self._planner.joint_names,
+        )
+        state = self._jac_kin.compute_kinematics(js)
+        # tool_jacobians: [batch, horizon=1, n_tool_frames, 6, dof]; tool frame 0 is the EE.
+        return state.tool_jacobians[:, 0, 0].to(self._dtype)
 
     def is_q_feasible(self, q: torch.Tensor) -> bool:
         """Check whether a single joint config satisfies all planner constraints.
@@ -284,6 +317,11 @@ class CuroboPlanner:
         return spheres.reshape(-1, 4).cpu().numpy().astype(np.float32)
 
     # === Internal — single pose plan ===
+    
+
+    # ----------------------------------------------------------------------
+    # Plan execution
+    # ----------------------------------------------------------------------
 
     def _plan_pose(self, goal_pose, start_q, max_attempts):
         """Run a single cuRobo ``plan_pose`` call.
