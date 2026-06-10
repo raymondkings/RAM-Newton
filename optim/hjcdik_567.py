@@ -612,7 +612,7 @@ def _hjcdik_solve(
 
     # Compute joint bounds from morphology self-collision limits.
     # Apply a small inward margin so solutions never land exactly on the
-    # collision boundary (which would fail check_start_feasibility).
+    # collision boundary (which would fail is_q_feasible).
     _LIMIT_MARGIN = 0.05  # rad
     q_lo, q_hi = _compute_joint_bounds(morphology, n_dofs)  # [n_dofs] each
     q_lo = q_lo + _LIMIT_MARGIN

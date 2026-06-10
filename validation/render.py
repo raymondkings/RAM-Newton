@@ -509,8 +509,8 @@ def animate_plan(
     forces with obstacles are fully resolved.
 
     Args:
-        path: list of joint-config tensors (n_joints,), already densified with
-            `interpolate_path` for smooth target tracking.
+        path: list of joint-config tensors (n_joints,), expected to already be
+            dense (e.g. cuRobo's interpolated plan) for smooth target tracking.
         fps: rendered frames per second — lower values mean slower playback.
         sim_substeps: physics substeps per rendered frame.
         startup_delay: seconds to hold the initial pose before playback starts,

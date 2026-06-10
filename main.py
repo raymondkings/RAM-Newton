@@ -9,7 +9,7 @@ from task.morphology_sampler import sample_initial_morphologies
 from optim.nrm_alpha_random_selection import optimize_morphology
 from interface import Morphology, Task
 from task.environment import l_environment
-from validation.curobo_planner import CuroboPlanner, interpolate_path
+from validation.curobo_planner import CuroboPlanner
 from validation.render import animate_plan, render_scene
 from util.csv_log_reader import load_latest_optimized_morphology
 
@@ -91,36 +91,29 @@ def run_plan(
 
     print(f"[Info] Start configuration: {start_q.tolist()}")
 
-    if not planner.check_start_feasibility(start_q):
+    if not planner.is_q_feasible(start_q):
         print(
             f"Start configuration is in collision (self or world) — aborting.\n"
             f"  start_q = {start_q.tolist()}\n"
             "  Check that IK candidate poses are reachable for this morphology, or run with "
             "--ignore-ground / --ignore-obstacles to diagnose."
         )
+        return
 
     n_goals = task.goal_poses.shape[0]
     result, final_q = planner.plan_sequence(task.goal_poses, start_q)
 
     if not result.success:
         failed_at = result.failed_at_goal
-        if failed_at is not None:
-            print(f"[cuRobo] Planning failed at goal {failed_at}/{n_goals}.")
-        else:
-            print("[cuRobo] Planning failed.")
         if result.path:
             print(
                 f"[cuRobo] Executing partial plan: {len(result.path)} waypoints up to goal {failed_at}."
             )
             if visualize:
-                dense = interpolate_path(result.path, step=0.03)
-                print(
-                    f"Animating partial plan — {len(dense)} frames (failure at goal {failed_at}/{n_goals}) ..."
-                )
                 animate_plan(
                     morph,
                     task,
-                    dense,
+                    result.path,
                     curobo_planner=planner,
                     failed_at_goal=failed_at,
                     best_ik_q=result.best_ik_q,
@@ -139,12 +132,11 @@ def run_plan(
 
     print(f"\nSequence complete: {len(result.path)} waypoints through {n_goals} goals.")
     if visualize:
-        dense = interpolate_path(result.path, step=0.03)
-        print(f"Animating — {len(dense)} frames ...")
+        print(f"Animating — {len(result.path)} frames ...")
         animate_plan(
             morph,
             task,
-            dense,
+            result.path,
             curobo_planner=planner,
             failed_at_goal=None,
             best_ik_q=None,

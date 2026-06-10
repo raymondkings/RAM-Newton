@@ -2,7 +2,6 @@ import contextlib
 import io
 import os
 import tempfile
-import traceback
 
 import torch
 import numpy as np
@@ -12,28 +11,19 @@ from interface import Morphology, Task
 from interface.plan_result import PlanResult
 from util.mdh import to_urdf
 from util.kinematics import (
-    forward_kinematics,
     build_sphere_dict,
     build_self_collision_ignore,
-    _mat_to_goal_pose,
     build_scene,
+    mat_to_goal_pose,
 )
 from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
 from curobo.types import JointState
 
 
 class CuroboPlanner:
-    """cuRobo MotionPlanner wrapper for a fixed (Morphology, Task) pair.
+    """cuRobo MotionPlanner wrapper for a fixed (Morphology, Task) pair."""
 
-    Failure diagnostics — see ``_diagnose_failure`` — classify each failure as one of:
-    ``joint limits`` (start_q out of bounds), ``IK`` (no IK seed converged on the goal),
-    ``collision`` (IK reached the goal but graph seeding rejected every seed for being
-    in collision), ``TrajOpt`` (trajectory ends short of the goal), or ``trajectory``
-    (trajectory reached the goal but at least one waypoint is infeasible). For the last
-    case ``_first_path_violation`` scans the returned interpolated trajectory waypoint by
-    waypoint and reports the first concrete violation, since cuRobo clears its internal
-    per-constraint metrics during topk reduction and we can't read them off the result.
-    """
+    # === Construction ===
 
     def __init__(
         self,
@@ -45,123 +35,86 @@ class CuroboPlanner:
         ignore_ground: bool = False,
         ignore_obstacles: bool = False,
     ) -> None:
+        """Build a cuRobo MotionPlanner for a fixed (Morphology, Task) pair.
+
+        Writes the morphology to a temporary URDF, constructs collision spheres and
+        the world scene, then warms up the underlying ``MotionPlanner``.
+
+        Args:
+            morph: Robot morphology (MDH params, link count, dtype).
+            task: Task description used to build the world collision scene.
+            device: Torch device for cuRobo tensors (typically a CUDA device).
+            num_ik_seeds: IK seeds per pose solve.
+            num_trajopt_seeds: TrajOpt seeds per plan.
+            ignore_ground: If True, omit the ground plane from the scene.
+            ignore_obstacles: If True, plan without any world collision geometry.
+        """
         self._device = device
         self._morph = morph
         self._ignore_ground = ignore_ground
         self._ignore_obstacles = ignore_obstacles
-
-        n = morph.n_links
-        ee_link = f"link_{n - 1}"
-
         self._dtype = morph.params.dtype
 
-        urdf_str = to_urdf(morph)
-        tmp = tempfile.NamedTemporaryFile(suffix=".urdf", delete=False, mode="w")
-        tmp.write(urdf_str)
-        tmp.flush()
-        tmp.close()
-        self._urdf_path = tmp.name
+        with tempfile.NamedTemporaryFile(suffix=".urdf", delete=False, mode="w") as f:
+            f.write(to_urdf(morph))
+            self._urdf_path = f.name
 
-        sphere_dict = build_sphere_dict(morph)
-        self._sphere_dict = sphere_dict
-        self._self_collision_ignore = build_self_collision_ignore(morph)
+        self._sphere_dict = build_sphere_dict(morph)
+        sphere_links = set(self._sphere_dict)
+        self._self_collision_ignore = {
+            k: [v for v in vs if v in sphere_links]
+            for k, vs in build_self_collision_ignore(morph).items()
+            if k in sphere_links
+        }
+
         robot_dict = {
             "kinematics": {
                 "urdf_path": self._urdf_path,
                 "base_link": "base_link",
-                "tool_frames": [ee_link],
-                "collision_spheres": sphere_dict,
-                "collision_link_names": list(sphere_dict.keys()),
+                "tool_frames": [f"link_{morph.n_links - 1}"],
+                "collision_spheres": self._sphere_dict,
+                "collision_link_names": list(self._sphere_dict.keys()),
                 "collision_sphere_buffer": 0.01,
-                "self_collision_buffer": {k: 0.0 for k in sphere_dict},
+                "self_collision_buffer": {k: 0.0 for k in self._sphere_dict},
                 "self_collision_ignore": self._self_collision_ignore,
             }
         }
-        if self._ignore_obstacles:
-            self.scene = None
-        else:
-            self.scene = build_scene(
-                task,
-                ignore_ground=self._ignore_ground,
-                ignore_obstacles=self._ignore_obstacles,
-            )
 
-        config = MotionPlannerCfg.create(
+        self.scene = (
+            None
+            if ignore_obstacles
+            else build_scene(
+                task, ignore_ground=ignore_ground, ignore_obstacles=ignore_obstacles
+            )
+        )
+
+        if self.scene is not None:
+            # Sized exactly to the scene; self.scene is treated as immutable after
+            # construction. If we ever add post-init scene mutation, add headroom here.
+            n_cuboids = len(getattr(self.scene, "cuboid", None) or [])
+            collision_cache = {"cuboid": max(n_cuboids, 1)}
+        else:
+            collision_cache = None
+        planner_config = MotionPlannerCfg.create(
             robot=robot_dict,
             scene_model=self.scene,
-            collision_cache={"cuboid": 20} if self.scene is not None else None,
+            collision_cache=collision_cache,
             num_ik_seeds=num_ik_seeds,
             num_trajopt_seeds=num_trajopt_seeds,
         )
-        self._planner = MotionPlanner(config)
+        self._planner = MotionPlanner(planner_config)
         self._planner.warmup(enable_graph=True, num_warmup_iterations=3)
 
-    def check_start_feasibility(self, q: torch.Tensor) -> bool:
-        """Return True if q is free of self-collision, world collision, and joint limits."""
-        gp = self._planner.graph_planner
-        if gp is None:
-            # Graph planner not initialised (warmup not called with enable_graph=True);
-            # cannot verify feasibility — skip check.
-            print(
-                "[Warning] check_start_feasibility: graph_planner is None, skipping check."
-            )
-            return True
-        q_check = q.float().unsqueeze(0).to(self._device)
-        return bool(gp.check_samples_feasibility(q_check).all())
-
     def __del__(self):
+        path = getattr(self, "_urdf_path", None)
+        if path is None:
+            return
         try:
-            os.unlink(self._urdf_path)
+            os.unlink(path)
         except Exception:
             pass
 
-    # ----------------------------------------------------------------------
-    # Public API
-    # ----------------------------------------------------------------------
-
-    def plan(
-        self,
-        goal_pose: torch.Tensor,
-        start_q: torch.Tensor | None = None,
-        max_attempts: int = 5,
-    ) -> tuple[PlanResult, torch.Tensor | None]:
-        """Plan a trajectory from start_q to a goal pose in the shared world/base frame.
-
-        Returns (PlanResult, goal_q) where goal_q is the final joint config,
-        or None if no solution was found.
-        """
-        result, goal, start_q = self._plan_pose_raw(goal_pose, start_q, max_attempts)
-
-        if result is None or not result.success.any():
-            best_ik_q = self._diagnose_failure(result, goal, start_q)
-            return PlanResult(
-                success=False, path=[], n_iterations=0, n_nodes=0, best_ik_q=best_ik_q
-            ), None
-
-        path = self._result_to_path(result)
-        return (
-            PlanResult(success=True, path=path, n_iterations=1, n_nodes=len(path)),
-            path[-1],
-        )
-
-    @staticmethod
-    def _skip_consecutive_duplicate_poses(
-        goal_poses: torch.Tensor,
-        *,
-        atol: float = 1e-7,
-    ) -> tuple[torch.Tensor, list[int]]:
-        """Collapse adjacent duplicate poses while preserving original indices."""
-        if goal_poses.shape[0] <= 1:
-            return goal_poses, list(range(goal_poses.shape[0]))
-
-        keep = [0]
-        for i in range(1, goal_poses.shape[0]):
-            is_duplicate = torch.allclose(
-                goal_poses[i], goal_poses[keep[-1]], atol=atol, rtol=0.0
-            )
-            if not is_duplicate:
-                keep.append(i)
-        return goal_poses[keep], keep
+    # === Public API — planning ===
 
     def plan_sequence(
         self,
@@ -169,208 +122,237 @@ class CuroboPlanner:
         start_q: torch.Tensor | None = None,
         max_attempts: int = 5,
     ) -> tuple[PlanResult, torch.Tensor | None]:
-        """Plan a trajectory through a sequence of goal poses.
+        """Plan a chained trajectory through a sequence of EE goal poses.
 
-        Chains individual plans: start_q → goal[0] → goal[1] → … → goal[N-1].
-        Returns the concatenated path and the final joint config, or None on failure.
+        Plans ``start_q → goal[0] → goal[1] → … → goal[N-1]`` by feeding each plan's
+        final joint state as the next plan's start. On failure prints a diagnostic
+        and returns immediately with the partial path.
+
+        Args:
+            goal_poses: Goal EE poses as ``(N, 4, 4)`` homogeneous transforms.
+            start_q: Initial joint config; if None, sampled via :meth:`default_start_q`.
+            max_attempts: Max cuRobo plan_pose retries per goal.
+
+        Returns:
+            ``(PlanResult, final_q)``. On success ``final_q`` is the last joint
+            config of the chained path; on failure it is ``None`` and the
+            ``PlanResult`` contains the partial path, ``failed_at_goal``, and the
+            closest IK config for visualization.
         """
         n_total = goal_poses.shape[0]
-        goal_poses_to_plan, original_goal_indices = (
-            self._skip_consecutive_duplicate_poses(goal_poses)
-        )
-        n_plan = goal_poses_to_plan.shape[0]
-        n_skipped = n_total - n_plan
-        suffix = (
-            f" ({n_total} input goals; skipped {n_skipped} consecutive duplicates)"
-            if n_skipped
-            else ""
-        )
-        print(
-            f"Planning sequence of {n_plan} goals with cuRobo "
-            f"(GPU TrajOpt + graph search){suffix}..."
-        )
         full_path: list[torch.Tensor] = []
         current_q = start_q
 
-        for plan_i, original_i in enumerate(original_goal_indices):
-            result, goal, start_q_used = self._plan_pose_raw(
-                goal_poses_to_plan[plan_i], current_q, max_attempts
+        for i in range(n_total):
+            result, goal, start_q_used = self._plan_pose(
+                goal_poses[i], current_q, max_attempts
             )
-            if result is None or not result.success.any():
+            if result is None or result.success is None or not result.success.any():
+                reachable_ratio = i / n_total if n_total > 0 else 0.0
                 best_ik_q = self._diagnose_failure(
                     result,
                     goal,
                     start_q_used,
-                    report_header=f"Goal {original_i}/{n_total} failed",
+                    report_header=(
+                        f"Goal {i}/{n_total} failed "
+                        f"({reachable_ratio * 100:.1f}% reached)"
+                    ),
+                    goal_label=f"goal {i}",
                 )
                 return PlanResult(
                     success=False,
                     path=full_path,
                     n_iterations=0,
                     n_nodes=len(full_path),
-                    failed_at_goal=original_i,
+                    failed_at_goal=i,
                     best_ik_q=best_ik_q,
+                    reachable_ratio=reachable_ratio,
                 ), None
 
-            path = self._result_to_path(result)
+            path, current_q = self._result_to_path(result)
             full_path.extend(path)
-            current_q = path[-1]
 
+        print(f"[cuRobo]   reachable goals: {n_total}/{n_total} (100.0%)")
         return PlanResult(
-            success=True, path=full_path, n_iterations=1, n_nodes=len(full_path)
+            success=True,
+            path=full_path,
+            n_iterations=1,
+            n_nodes=len(full_path),
+            reachable_ratio=1.0,
         ), current_q
 
-    def default_start_q(self, n_samples: int = 4096, seed: int = 0) -> torch.Tensor:
-        """Sample a feasible start config in joint space.
+    def sequence_reachability_ratio(
+        self,
+        goal_poses: torch.Tensor,
+        start_q: torch.Tensor | None = None,
+        max_attempts: int = 5,
+    ) -> float:
+        """Plan the sequence and return only the reachable-goal fraction.
 
-        Draws ``n_samples`` configs within the joint limits, returns the first cuRobo
-        certifies feasible (collision + limits), else zeros. (cuRobo checks in
-        chunks of 2000, so 4096 = 3 passes.)
+        Args:
+            goal_poses: Goal EE poses as ``(N, 4, 4)`` homogeneous transforms.
+            start_q: Initial joint config; if None, sampled via :meth:`default_start_q`.
+            max_attempts: Max cuRobo plan_pose retries per goal.
+
+        Returns:
+            Fraction in ``[0, 1]``: number of goals reached over total goals.
         """
-        dtype = self._dtype
-        gp = self._planner.graph_planner
+        result, _ = self.plan_sequence(goal_poses, start_q, max_attempts)
+        return result.reachable_ratio
 
-        # Per-joint limits drive the sampling range. position is [2, dof]: row 0 = lower
-        # limits, row 1 = upper limits, in joint_names order.
+    # === Public API — feasibility & utilities ===
+
+    def is_q_feasible(self, q: torch.Tensor) -> bool:
+        """Check whether a single joint config satisfies all planner constraints.
+
+        Args:
+            q: Joint config tensor, shape ``(dof,)``.
+
+        Returns:
+            True if ``q`` is collision-free (self + world) and within joint limits.
+        """
+        q_check = q.float().unsqueeze(0).to(self._device)
+        return bool(
+            self._planner.graph_planner.check_samples_feasibility(q_check).all()
+        )
+
+    def default_start_q(self, n_samples: int = 4096, seed: int = 0) -> torch.Tensor:
+        """Joint-space rejection sampling for a collision-free start config.
+
+        Draws ``n_samples`` uniform configs inside the joint-limit box and returns
+        the first one cuRobo flags as collision-free (self + world) and within
+        limits.
+
+        Args:
+            n_samples: Number of uniform samples to draw and feasibility-check
+                in a single batch.
+            seed: RNG seed for reproducible sampling.
+
+        Returns:
+            Feasible joint config tensor of shape ``(dof,)`` on CPU in the
+            morphology dtype.
+
+        Raises:
+            RuntimeError: No feasible config found in ``n_samples`` draws (scene
+                over-constrained or robot in persistent self-collision).
+        """
         lims = self._planner.kinematics.get_joint_limits().position
         lo, hi = lims[0], lims[1]
         dof = lo.shape[0]
 
-        if gp is None:
-            print(
-                "[Warning] default_start_q: graph_planner is None. Cannot verify feasibility => returning zero start "
-                "configuration."
-            )
-            return torch.zeros(dof, dtype=dtype)
-
-        # Seed a private Random Number Generator
-        generator = torch.Generator(device=lo.device)
-        generator.manual_seed(seed)
-
-        # Draw n_samples candidate configs. Each row is one config, each column one joint. Every value a uniform random number in [0, 1).
+        gen = torch.Generator(device=lo.device).manual_seed(seed)
         q_unit = torch.rand(
-            n_samples, dof, generator=generator, device=lo.device, dtype=lo.dtype
+            n_samples, dof, generator=gen, device=lo.device, dtype=lo.dtype
         )
-        # Scale each [0, 1) value into that joint's [lower, upper] range, so every candidate lands inside the joint limits
-        candidates = lo + (hi - lo) * q_unit  # [n_samples, dof]
+        candidates = lo + (hi - lo) * q_unit
 
-        # Ask cuRobo which candidates are actually feasible => free of self / environmental collision
-        feasible = gp.check_samples_feasibility(candidates).reshape(-1).bool()
-
-        # Indices of every feasible candidate, take the first one.
+        feasible = (
+            self._planner.graph_planner.check_samples_feasibility(candidates)
+            .reshape(-1)
+            .bool()
+        )
         feasible_idx = feasible.nonzero(as_tuple=False)
-        if feasible_idx.numel() > 0:
-            i = int(feasible_idx[0].item())
-            print(
-                f"[Info] Feasible start config found by config-space sampling "
-                f"(sample {i + 1}/{n_samples})."
-            )
-            # Move off the GPU and match the morphology dtype for downstream use.
-            return candidates[i].detach().cpu().to(dtype)
 
-        # Otherwise returns zeros if nothing works.
-        print(
-            f"[Warning] No feasible start config found in {n_samples} samples — "
-            "falling back to zero start configuration."
-        )
-        return torch.zeros(dof, dtype=dtype)
+        if feasible_idx.numel() == 0:
+            raise RuntimeError(
+                f"No feasible start config found in {n_samples} joint-space samples "
+                "(scene may be over-constrained or robot may be in persistent self-collision)."
+            )
+
+        i = int(feasible_idx[0].item())
+        print(f"[Info] Feasible start config found (sample {i + 1}/{n_samples}).")
+        return candidates[i].detach().cpu().to(self._dtype)
 
     def robot_spheres_world(self, q: torch.Tensor) -> np.ndarray:
-        """Return collision sphere positions for joint config q in world frame.
+        """Forward-kinematics the collision spheres for ``q`` into the world frame.
 
-        Returns an (N, 4) float32 array of (x, y, z, radius) values.
+        Args:
+            q: Joint config tensor, shape ``(dof,)``.
+
+        Returns:
+            ``(N, 4)`` float32 array of ``(x, y, z, radius)`` for every collision
+            sphere on the robot, expressed in the world frame. Empty
+            ``(0, 4)`` array when no spheres exist.
         """
-        n = self._morph.n_links
-        q_cpu = q.float().cpu()
-        # MDH has n rows; last row is the EE link (theta=0)
-        theta = torch.zeros(n, 1, device="cpu")
-        theta[: n - 1] = q_cpu.unsqueeze(1)
-        mdh = self._morph.params.float().cpu()
-        link_poses_world = forward_kinematics(mdh, theta).numpy()
-
-        results = []
-        for s in self._sphere_dict.get("base_link", []):
-            results.append([*s["center"], s["radius"]])
-        for j in range(n):
-            T = link_poses_world[j]
-            for s in self._sphere_dict.get(f"link_{j}", []):
-                c = np.array(s["center"] + [1.0])
-                p = T @ c
-                results.append([p[0], p[1], p[2], s["radius"]])
-
-        return (
-            np.array(results, dtype=np.float32)
-            if results
-            else np.zeros((0, 4), dtype=np.float32)
+        js = JointState.from_position(
+            q.float().reshape(1, -1).to(self._device),
+            joint_names=self._planner.joint_names,
         )
+        spheres = self._planner.compute_kinematics(js).robot_spheres
+        if spheres is None:
+            return np.zeros((0, 4), dtype=np.float32)
+        return spheres.reshape(-1, 4).cpu().numpy().astype(np.float32)
 
-    # ----------------------------------------------------------------------
-    # Plan execution
-    # ----------------------------------------------------------------------
+    # === Internal — single pose plan ===
 
-    def _plan_pose_raw(
-        self,
-        goal_pose: torch.Tensor,
-        start_q: torch.Tensor | None,
-        max_attempts: int,
-    ):
-        """Run a single cuRobo plan_pose call and return (raw_result, goal, start_q_used).
+    def _plan_pose(self, goal_pose, start_q, max_attempts):
+        """Run a single cuRobo ``plan_pose`` call.
 
-        Diagnostics are left to callers so each call site can attach its own context
-        (e.g. the goal index inside a sequence).
+        cuRobo's stdout is suppressed; failure is diagnosed by callers.
+
+        Args:
+            goal_pose: Goal EE pose as a ``(4, 4)`` homogeneous transform.
+            start_q: Initial joint config tensor ``(dof,)`` or None (sampled then).
+            max_attempts: Max plan_pose retries.
+
+        Returns:
+            ``(result, goal, start_q_used)``: cuRobo's raw ``MotionPlanResult``,
+            the converted goal pose object, and the actual start config used.
         """
         if start_q is None:
             start_q = self.default_start_q()
 
-        goal = _mat_to_goal_pose(
+        goal = mat_to_goal_pose(
             goal_pose.to(self._dtype), self._planner.tool_frames, self._device
         )
-
+        start_q_dev = start_q.float().unsqueeze(0)
+        if start_q_dev.device != self._device:
+            start_q_dev = start_q_dev.to(self._device)
         start_state = JointState.from_position(
-            start_q.float().unsqueeze(0).to(self._device),
+            start_q_dev,
             joint_names=self._planner.joint_names,
         )
 
-        # Suppress cuRobo's internal stdout chatter; we reconstruct the failure cause ourselves.
-        try:
-            with contextlib.redirect_stdout(io.StringIO()):
-                result = self._planner.plan_pose(
-                    goal, start_state, max_attempts=max_attempts
-                )
-        except Exception:
-            traceback.print_exc()
-            raise
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = self._planner.plan_pose(
+                goal, start_state, max_attempts=max_attempts
+            )
 
         return result, goal, start_q
 
-    def _result_to_path(self, result) -> list[torch.Tensor]:
+    def _result_to_path(self, result) -> "tuple[list[torch.Tensor], torch.Tensor]":
+        """Extract the interpolated trajectory and the final joint state.
+
+        Args:
+            result: cuRobo ``MotionPlanResult`` from a successful plan.
+
+        Returns:
+            ``(waypoints, last_q)`` where ``waypoints`` is a list of joint-config
+            tensors on CPU in the morphology dtype (one per interpolated waypoint,
+            each shaped ``(dof,)``), and ``last_q`` is the final waypoint kept on
+            the planner device for re-use as the next plan's start (avoids a
+            CPU→GPU round-trip in chained sequence planning).
+        """
         n_joints = len(self._planner.joint_names)
-        interp = result.get_interpolated_plan()
-        positions = interp.position.cpu().to(self._dtype).reshape(-1, n_joints)
-        return [positions[t] for t in range(positions.shape[0])]
+        positions_gpu = result.get_interpolated_plan().position.reshape(-1, n_joints)
+        last_q = positions_gpu[-1].clone()
+        positions = positions_gpu.cpu().to(self._dtype)
+        return list(positions.unbind(0)), last_q
 
-    # ----------------------------------------------------------------------
-    # Geometry & joint-limit helpers
-    # ----------------------------------------------------------------------
+    # === Internal — feasibility checks ===
 
-    def _joint_limit_violations(self, q: torch.Tensor) -> "tuple[int, float] | None":
-        """Return (#joints out of bounds, worst overshoot in radians), or None on error."""
-        try:
-            lims = self._planner.kinematics.get_joint_limits().position
-            q_dev = q.to(lims.device).reshape(-1)
-            lo, hi = lims[0], lims[1]
-            below = (lo - q_dev).clamp(min=0.0)
-            above = (q_dev - hi).clamp(min=0.0)
-            worst = float(torch.maximum(below, above).max().item())
-            n_bad = int(((below + above) > 0).sum().item())
-            return n_bad, worst
-        except Exception:
-            return None
+    def _joint_limit_status(self, q: torch.Tensor) -> "tuple[int, float, str]":
+        """Check joint limits and report count, worst overshoot, and per-joint detail.
 
-    def _joint_limit_detail(self, q: torch.Tensor) -> str:
-        """Per-joint breakdown of out-of-bounds joints for q.
+        Args:
+            q: Joint config tensor, shape ``(dof,)``.
 
-        Example: ``j2 q=+1.234 ∉ [-1.000, +1.000] (over by 0.234)``. Empty when none.
+        Returns:
+            ``(n_violating_joints, worst_overshoot_rad, detail_str)`` where
+            ``detail_str`` is a comma-separated breakdown like
+            ``"j2 q=+1.234 ∉ [-1.000, +1.000] (over by 0.234)"``. Returns
+            ``(0, 0.0, "")`` when no joint violates its limits or limits couldn't
+            be read.
         """
         try:
             lims = self._planner.kinematics.get_joint_limits().position
@@ -378,33 +360,44 @@ class CuroboPlanner:
             hi = lims[1].detach().cpu().tolist()
             q_list = q.detach().cpu().reshape(-1).tolist()
         except Exception:
-            return ""
-        parts = []
+            return 0, 0.0, ""
+        parts: list[str] = []
+        worst = 0.0
+        n_bad = 0
         for i, (qi, loi, hii) in enumerate(zip(q_list, lo, hi)):
             if qi < loi:
+                over = loi - qi
                 parts.append(
-                    f"j{i} q={qi:+.3f} ∉ [{loi:+.3f}, {hii:+.3f}] (under by {loi - qi:.3f})"
+                    f"j{i} q={qi:+.3f} ∉ [{loi:+.3f}, {hii:+.3f}] (under by {over:.3f})"
                 )
             elif qi > hii:
+                over = qi - hii
                 parts.append(
-                    f"j{i} q={qi:+.3f} ∉ [{loi:+.3f}, {hii:+.3f}] (over by {qi - hii:.3f})"
+                    f"j{i} q={qi:+.3f} ∉ [{loi:+.3f}, {hii:+.3f}] (over by {over:.3f})"
                 )
-        return ", ".join(parts)
+            else:
+                continue
+            n_bad += 1
+            if over > worst:
+                worst = over
+        return n_bad, worst, ", ".join(parts)
 
-    def _collision_report(
-        self, robot_spheres: torch.Tensor
-    ) -> "tuple[tuple[float, str, str] | None, tuple[float, str, str, float] | None]":
-        """Inspect collision-sphere positions for world- and self-overlaps.
+    def _collision_report(self, robot_spheres):
+        """Find the worst world and self collisions for one config's spheres.
 
-        Sphere positions are in the shared world/base frame.
-        Returns (worst_world, worst_self), each ``None`` if no overlap; otherwise
-        ``(penetration_m, cuboid_or_link_a, link_or_link_b[, center_dist_m])``.
+        Args:
+            robot_spheres: Sphere tensor in world frame, shape ``(N, 4)`` as
+                ``(x, y, z, radius)``. Zero-radius rows are skipped.
+
+        Returns:
+            ``(worst_world, worst_self)`` where each entry is ``None`` if no
+            overlap exists. Otherwise:
+              * ``worst_world`` = ``(penetration_m, cuboid_name, link_name)``
+              * ``worst_self``  = ``(penetration_m, link_a, link_b, center_dist_m)``
         """
         spheres = robot_spheres.detach().reshape(-1, 4).cpu().numpy()
         link_names = list(self._sphere_dict.keys())
-        sphere_link = []
-        for ln in link_names:
-            sphere_link.extend([ln] * len(self._sphere_dict[ln]))
+        sphere_link = [ln for ln in link_names for _ in self._sphere_dict[ln]]
         keep = spheres[:, 3] > 0
         spheres = spheres[keep]
         sphere_link = [sphere_link[i] for i, k in enumerate(keep) if k]
@@ -418,13 +411,11 @@ class CuroboPlanner:
         worst_world = None
         for cub in cuboids:
             px, py, pz, qw, qx, qy, qz = cub.pose
-            R_cw = Rotation.from_quat([qx, qy, qz, qw]).as_matrix()
-            R_wc = R_cw.T
+            R_wc = Rotation.from_quat([qx, qy, qz, qw]).as_matrix().T
             half = np.array(cub.dims, dtype=np.float64) * 0.5
             for s, ln in zip(spheres, sphere_link):
                 p_local = R_wc @ (s[:3].astype(np.float64) - np.array([px, py, pz]))
-                clamped = np.clip(p_local, -half, half)
-                dist = float(np.linalg.norm(p_local - clamped))
+                dist = float(np.linalg.norm(p_local - np.clip(p_local, -half, half)))
                 penetration = float(s[3]) - dist
                 if penetration > 0 and (
                     worst_world is None or penetration > worst_world[0]
@@ -447,13 +438,21 @@ class CuroboPlanner:
         return worst_world, worst_self
 
     def _classify_q(self, q: torch.Tensor) -> str:
-        """One-line reason why joint config q is infeasible against the actual scene.
+        """Build a one-line human-readable reason ``q`` is infeasible.
 
-        Checks joint limits, world-collision, and self-collision. Returns ``"feasible"``
-        if no violation is found.
+        Checks joint limits, world collisions, and self-collisions against the
+        current scene.
+
+        Args:
+            q: Joint config tensor, shape ``(dof,)``.
+
+        Returns:
+            Semicolon-joined reason string (e.g.
+            ``"joint limits: j2 ...; world collision (table ↔ link_3, pen 0.012 m)"``),
+            or ``"feasible"`` if no violation is found.
         """
         reasons: list[str] = []
-        jl_detail = self._joint_limit_detail(q)
+        _, _, jl_detail = self._joint_limit_status(q)
         if jl_detail:
             reasons.append(f"joint limits: {jl_detail}")
         try:
@@ -474,83 +473,53 @@ class CuroboPlanner:
             pass
         return "; ".join(reasons) if reasons else "feasible"
 
-    def _world_collision_free_seeds(
-        self, solutions: torch.Tensor
-    ) -> "torch.Tensor | None":
-        """Boolean mask over seeds, True where the config is free of world (environment)
-        collision.
+    # === Internal — IK helpers ===
 
-        Returns ``None`` when no collision geometry is in play (obstacles ignored or
-        kinematics unavailable) so callers can skip constraint filtering entirely.
-        """
-        if self.scene is None:
-            return None
-        try:
-            js = JointState.from_position(
-                solutions.float().to(self._device),
-                joint_names=self._planner.joint_names,
-            )
-            kin = self._planner.compute_kinematics(js)
-            robot_spheres = getattr(kin, "robot_spheres", None)
-            if robot_spheres is None:
-                return None
-            n = solutions.shape[0]
-            spheres_per_seed = robot_spheres.reshape(n, -1, 4)
-            free = torch.ones(n, dtype=torch.bool)
-            for k in range(n):
-                world, _ = self._collision_report(spheres_per_seed[k])
-                free[k] = world is None
-            return free
-        except Exception:
-            return None
+    def _pick_best_seed(
+        self, solutions: torch.Tensor, score: torch.Tensor
+    ) -> "tuple[int, bool]":
+        """Pick the seed minimizing ``score``, preferring graph-feasible ones.
 
-    # ----------------------------------------------------------------------
-    # Pose / IK helpers
-    # ----------------------------------------------------------------------
+        Args:
+            solutions: IK joint configs, shape ``(n_seeds, dof)``.
+            score: Per-seed score tensor, shape ``(n_seeds,)``.
 
-    def _actual_pose_error_at_traj_end(
-        self, result, goal
-    ) -> "tuple[float, float] | tuple[None, None]":
-        """True EE-to-goal residual at the trajectory's final joint state, in (m, rad).
-
-        cuRobo's ``result.position_error``/``rotation_error`` are hinged weighted-square
-        cost values — when a topk seed lands inside the convergence tolerance the hinge
-        fires and they read 0 even if the EE is visibly far from the goal. This re-FKs
-        the trajectory's last knot to get the actual Euclidean position and quaternion
-        angular distance.
+        Returns:
+            ``(best_idx, was_feasible)``. ``was_feasible`` is True iff at least
+            one feasible seed existed and the returned index is one of them.
         """
         try:
-            js_pos = result.js_solution.position  # (B, topk, H, dof_full)
-            last_q = js_pos[..., -1, :].reshape(-1, js_pos.shape[-1])
-            n_actuated = len(self._planner.joint_names)
-            if last_q.shape[-1] != n_actuated:
-                last_q = last_q[:, :n_actuated]
-            js = JointState.from_position(
-                last_q.float().to(self._device),
-                joint_names=self._planner.joint_names,
+            feasible = (
+                self._planner.graph_planner.check_samples_feasibility(
+                    solutions.float().to(self._device)
+                )
+                .reshape(-1)
+                .bool()
+                .cpu()
             )
-            kin = self._planner.compute_kinematics(js)
-            tp = kin.tool_poses
-            ee_pos = tp.position.reshape(-1, 3)
-            ee_quat = tp.quaternion.reshape(-1, 4)
-            gp = goal.position.reshape(-1, 3)[0].to(ee_pos.device)
-            gq = goal.quaternion.reshape(-1, 4)[0].to(ee_quat.device)
-            d_pos = torch.linalg.norm(ee_pos - gp, dim=-1)
-            dot = torch.abs((ee_quat * gq).sum(dim=-1)).clamp(max=1.0)
-            d_rot = 2.0 * torch.acos(dot)
-            return float(d_pos.min().item()), float(d_rot.min().item())
         except Exception:
-            return None, None
+            feasible = None
+        if feasible is not None and bool(feasible.any().item()):
+            masked = score.clone()
+            masked[~feasible.to(score.device)] = float("inf")
+            return int(masked.argmin().item()), True
+        return int(score.argmin().item()), False
 
-    def _get_best_ik_q(
-        self, goal, current_q: "torch.Tensor | None" = None
-    ) -> "torch.Tensor | None":
-        """Return the IK joint config closest to goal in pose error, even if IK didn't converge.
+    def _get_best_ik_q(self, goal, current_q=None):
+        """Solve IK for ``goal`` and return the seed closest in pose error.
 
-        Seeded from ``current_q`` when provided so the returned config is anchored near
-        the trajectory's start state. Without current_state seeding cuRobo's IK runs from
-        its default seeds and may return an arbitrary unconverged solution that looks
-        unrelated to the goal in the viewer.
+        Returns a config even if no seed converged within IK tolerance, so the
+        caller can visualize the planner's best guess. Seeding from ``current_q``
+        keeps the returned config anchored near the trajectory start, instead of
+        an arbitrary unrelated arm of the IK manifold.
+
+        Args:
+            goal: cuRobo goal pose object.
+            current_q: Optional anchor for IK seeding, shape ``(dof,)``.
+
+        Returns:
+            Best IK joint config, shape ``(dof,)`` on CPU in the morphology
+            dtype, or ``None`` if IK produced no usable solution.
         """
         try:
             current_state = None
@@ -569,86 +538,138 @@ class CuroboPlanner:
                 return None
             n_joints = len(self._planner.joint_names)
             solutions = ik_result.solution.reshape(-1, n_joints)
-            pos_err = (
-                ik_result.position_error.reshape(-1)
-                if ik_result.position_error is not None
-                else None
-            )
+            pos_err = ik_result.position_error
+            if pos_err is None:
+                return solutions[0].cpu().to(self._dtype)
+            pos_err = pos_err.reshape(-1)
             rot_err = (
                 ik_result.rotation_error.reshape(-1)
                 if ik_result.rotation_error is not None
                 else torch.zeros_like(pos_err)
-                if pos_err is not None
-                else None
             )
-            if pos_err is not None:
-                score = pos_err + rot_err
-                best = int(score.argmin().item())
-            else:
-                best = 0
+            score = pos_err + rot_err
+            best, _ = self._pick_best_seed(solutions, score)
             return solutions[best].cpu().to(self._dtype)
         except Exception:
             return None
 
-    # ----------------------------------------------------------------------
-    # Failure diagnostics
-    # ----------------------------------------------------------------------
+    def _actual_pose_error_at_traj_end(self, result, goal):
+        """Re-FK the trajectory's last joint state and compute true EE-to-goal error.
+
+        cuRobo's ``result.position_error`` / ``rotation_error`` are hinged
+        weighted-square costs that read 0 once a topk seed lands inside the
+        convergence tolerance — even when the EE is visibly far from the goal.
+        This method bypasses that by recomputing the geometric residual directly.
+
+        Args:
+            result: cuRobo ``MotionPlanResult``.
+            goal: cuRobo goal pose object with ``position`` and ``quaternion``.
+
+        Returns:
+            ``(pos_err_m, rot_err_rad)`` — Euclidean position error and quaternion
+            angular distance over the topk last-knot configs (min). Returns
+            ``(None, None)`` if recomputation fails.
+        """
+        try:
+            js_pos = result.js_solution.position
+            last_q = js_pos[..., -1, :].reshape(-1, js_pos.shape[-1])
+            n_actuated = len(self._planner.joint_names)
+            if last_q.shape[-1] != n_actuated:
+                last_q = last_q[:, :n_actuated]
+            js = JointState.from_position(
+                last_q.float().to(self._device),
+                joint_names=self._planner.joint_names,
+            )
+            kin = self._planner.compute_kinematics(js)
+            ee_pos = kin.tool_poses.position.reshape(-1, 3)
+            ee_quat = kin.tool_poses.quaternion.reshape(-1, 4)
+            gp = goal.position.reshape(-1, 3)[0].to(ee_pos.device)
+            gq = goal.quaternion.reshape(-1, 4)[0].to(ee_quat.device)
+            d_pos = torch.linalg.norm(ee_pos - gp, dim=-1)
+            dot = torch.abs((ee_quat * gq).sum(dim=-1)).clamp(min=0.0, max=1.0)
+            d_rot = 2.0 * torch.acos(dot)
+            return float(d_pos.min().item()), float(d_rot.min().item())
+        except Exception:
+            return None, None
+
+    # === Internal — failure diagnostics ===
+
+    @staticmethod
+    def _log(prefix: str, category: str, *lines: str) -> None:
+        """Print a diagnostic block: ``prefix+category`` then indented detail lines."""
+        print(f"{prefix}{category}")
+        for line in lines:
+            print(f"[cuRobo]   {line}")
 
     def _diagnose_failure(
-        self,
-        result,
-        goal,
-        start_q: torch.Tensor,
-        report_header: str | None = None,
-    ) -> "torch.Tensor | None":
-        """Print a 2-3 line failure summary categorized as joint limits / IK / collision /
-        TrajOpt / trajectory.
+        self, result, goal, start_q, report_header=None, goal_label=None
+    ):
+        """Classify a planning failure and print a 2–3 line diagnostic summary.
 
-        Returns the IK config to visualize for this failure. For IK failures this is the
-        exact seed whose classification was printed, so the static debug scene and the
-        printed reason always describe the same joint config (and the same world-collision
-        verdict). For other failure types it falls back to the closest IK seed to the goal.
+        Categories: ``joint limits`` (start out of bounds), ``IK`` (no IK seed
+        reached the goal), ``collision`` (IK reached the goal but graph seeding
+        rejected the seeds), ``TrajOpt`` (trajectory ends short of the goal), or
+        ``trajectory`` (goal reached but a waypoint violates a constraint).
+
+        Args:
+            result: cuRobo ``MotionPlanResult`` or ``None`` if plan returned None.
+            goal: cuRobo goal pose object.
+            start_q: The start config used for the plan, shape ``(dof,)``.
+            report_header: Optional prefix label (e.g. ``"Goal 3/5 failed"``).
+            goal_label: Optional short label (e.g. ``"goal 3"``) folded into the
+                trajectory-violation body line so it self-identifies which goal's
+                plan the waypoint belongs to.
+
+        Returns:
+            Best-effort IK joint config to render in the debug viewer, or ``None``
+            if no IK config is available.
         """
         prefix = f"[cuRobo] {report_header}: " if report_header else "[cuRobo] failed: "
 
-        jl = self._joint_limit_violations(start_q)
-        if jl is not None and jl[0] > 0:
-            n_bad, worst = jl
-            detail = self._joint_limit_detail(start_q)
-            print(f"{prefix}joint limits")
-            print(
-                f"[cuRobo]   start_q violates {n_bad} joints (worst overshoot {worst:.3f} rad)"
-            )
+        n_bad, worst, detail = self._joint_limit_status(start_q)
+        if n_bad > 0:
+            lines = [
+                f"start_q violates {n_bad} joints (worst overshoot {worst:.3f} rad)"
+            ]
             if detail:
-                print(f"[cuRobo]   {detail}")
+                lines.append(detail)
+            self._log(prefix, "joint limits", *lines)
             return self._get_best_ik_q(goal, current_q=start_q)
 
         if result is None:
             try:
                 return self._diagnose_ik_failure(prefix, goal, start_q)
             except Exception:
-                print(f"{prefix}IK")
-                print("[cuRobo]   IK diagnostics failed (internal error)")
+                self._log(prefix, "IK", "IK diagnostics failed (internal error)")
                 return None
 
         try:
-            self._diagnose_trajopt_failure(prefix, result, goal)
+            self._diagnose_trajopt_failure(prefix, result, goal, goal_label=goal_label)
         except Exception:
-            print(f"{prefix}trajectory")
-            print("[cuRobo]   TrajOpt diagnostics failed (internal error)")
+            self._log(
+                prefix, "trajectory", "TrajOpt diagnostics failed (internal error)"
+            )
         return self._get_best_ik_q(goal, current_q=start_q)
 
-    def _diagnose_ik_failure(
-        self, prefix: str, goal, start_q: torch.Tensor
-    ) -> "torch.Tensor | None":
-        """plan_pose returned None — re-run IK, classify the seeds, and return the one to render.
+    def _diagnose_ik_failure(self, prefix, goal, start_q):
+        """Diagnose a failure where ``plan_pose`` returned None.
 
-        A single seed (the one closest to the goal in pos+rot error) is chosen as the
-        "best seed". Its classification is what gets printed, and the same config is
-        returned so the static debug scene shows exactly the pose the message describes.
+        Re-runs IK, picks a single "best seed" (closest in pos+rot error,
+        preferring world-collision-free seeds when any exist), and prints its
+        classification. The same config is returned so the static debug scene
+        shows exactly the pose described in the printed message.
+
+        Args:
+            prefix: Header string already formatted for log lines.
+            goal: cuRobo goal pose object.
+            start_q: Start config used for the original plan, shape ``(dof,)``.
+
+        Returns:
+            Best IK config to visualize, shape ``(dof,)``, or ``None`` if IK
+            yielded nothing usable.
         """
         try:
-            num_seeds = self._planner.trajopt_solver.config.num_seeds
+            num_seeds = self._planner.ik_solver.config.num_seeds
             start_state = JointState.from_position(
                 start_q.float().unsqueeze(0).to(self._device),
                 joint_names=self._planner.joint_names,
@@ -661,9 +682,10 @@ class CuroboPlanner:
         except Exception:
             ik = None
         if ik is None or ik.position_error is None:
-            print(f"{prefix}IK")
-            print(
-                "[cuRobo]   IK did not converge for any seed (no diagnostic available)"
+            self._log(
+                prefix,
+                "IK",
+                "IK did not converge for any seed (no diagnostic available)",
             )
             return None
 
@@ -687,48 +709,39 @@ class CuroboPlanner:
             else None
         )
 
-        # Single source of truth for both the printed "best seed" and the rendered config.
-        # With environment collision active in planning, prefer the closest seed that
-        # actually satisfies that constraint (world-collision-free); only fall back to the
-        # closest colliding seed when no returned seed is collision-free. Score is combined
-        # pos+rot error; nan rotations (no rot error reported) score on position alone.
+        # Prefer closest feasible seed; else closest seed overall.
         best_q = None
         best_idx = 0
-        best_is_free = False
+        best_is_feasible = False
         if solutions is not None:
             score = pos_per_seed + torch.nan_to_num(rot_per_seed, nan=0.0)
-            free = self._world_collision_free_seeds(solutions)
-            if free is not None and bool(free.any().item()):
-                masked = score.clone()
-                masked[~free.to(score.device)] = float("inf")
-                best_idx = int(masked.argmin().item())
-                best_is_free = True
-            else:
-                best_idx = int(score.argmin().item())
+            best_idx, best_is_feasible = self._pick_best_seed(solutions, score)
             best_q = solutions[best_idx].cpu().to(self._dtype)
 
-        # IK had valid solutions but plan_pose still returned None → graph seeding rejected them.
+        # IK valid but plan_pose None → graph seeding rejected the seeds.
         if n_ik_success > 0 and solutions is not None:
-            self._diagnose_graph_rejection(prefix, solutions, start_q, n_returned)
+            self._diagnose_graph_rejection(
+                prefix, solutions, start_q, n_ik_success, ik_success
+            )
             return best_q
 
         n_pose_ok = int(pose_ok.sum().item())
-        print(f"{prefix}IK")
+        lines: list[str] = []
         if n_pose_ok == 0:
             if best_q is not None:
                 best_pos = float(pos_per_seed[best_idx].item())
                 best_rot = float(rot_per_seed[best_idx].item())
-                qual = "collision-free " if best_is_free else ""
-                print(
-                    f"[cuRobo]   pose unreachable (best {qual}seed {best_pos * 1000:.1f}mm/"
+                qual = "feasible " if best_is_feasible else ""
+                lines.append(
+                    f"pose unreachable (best {qual}seed {best_pos * 1000:.1f}mm/"
                     f"{best_rot:.3f}rad, tol {pos_tol * 1000:.1f}mm/{rot_tol:.3f}rad)"
                 )
-                print(f"[cuRobo]   best seed: {self._classify_q(solutions[best_idx])}")
+                lines.append(f"best seed: {self._classify_q(solutions[best_idx])}")
             else:
                 best_pos = float(pos_per_seed.min().item())
                 best_rot = float(rot_per_seed.min().item())
-                print(
-                    f"[cuRobo]   pose unreachable (best {best_pos * 1000:.1f}mm/{best_rot:.3f}rad, "
+                lines.append(
+                    f"pose unreachable (best {best_pos * 1000:.1f}mm/{best_rot:.3f}rad, "
                     f"tol {pos_tol * 1000:.1f}mm/{rot_tol:.3f}rad)"
                 )
         else:
@@ -738,102 +751,117 @@ class CuroboPlanner:
                 if solutions is not None
                 else "n/a"
             )
-            print(
-                f"[cuRobo]   pose reachable but all {n_pose_ok}/{n_returned} solutions infeasible: {summary}"
+            lines.append(
+                f"pose reachable but all {n_pose_ok}/{n_returned} solutions infeasible: {summary}"
             )
+        self._log(prefix, "IK", *lines)
         return best_q
 
     def _diagnose_graph_rejection(
-        self,
-        prefix: str,
-        solutions: torch.Tensor,
-        start_q: torch.Tensor,
-        n_returned: int,
-    ) -> None:
-        """IK produced valid seeds but graph-seeding rejected them — classify as collision."""
-        gp = self._planner.graph_planner
-        if gp is None:
-            print(f"{prefix}collision")
-            print(
-                "[cuRobo]   graph planner rejected plan (no graph planner for diagnosis)"
-            )
-            return
+        self, prefix, solutions, start_q, n_ik_success, ik_success
+    ):
+        """Diagnose graph-planner rejection of otherwise valid IK seeds.
 
+        Re-checks each IK-successful seed and the start state against the graph
+        planner and prints whether the start is in collision or which fraction
+        of converged IK goals was rejected, with reason summaries.
+
+        Args:
+            prefix: Header string for log lines.
+            solutions: IK joint configs, shape ``(n_seeds, dof)``.
+            start_q: Start config used for the original plan, shape ``(dof,)``.
+            n_ik_success: Number of IK seeds that converged on the pose.
+            ik_success: Per-seed IK convergence flags, shape ``(n_seeds,)``.
+        """
+        gp = self._planner.graph_planner
         sols_dev = solutions.to(self._device).float()
-        feas_graph = gp.check_samples_feasibility(sols_dev).reshape(-1).bool()
+        feas_graph = gp.check_samples_feasibility(sols_dev).reshape(-1).bool().cpu()
         start_dev = start_q.float().reshape(1, -1).to(self._device)
         start_ok = bool(gp.check_samples_feasibility(start_dev).all().item())
-        bad = (~feas_graph).nonzero(as_tuple=False).reshape(-1).tolist()
+        # Only count IK-converged seeds; an IK-failed seed being graph-infeasible
+        # tells us nothing useful.
+        rejected_mask = (~feas_graph) & ik_success.cpu()
+        bad = rejected_mask.nonzero(as_tuple=False).reshape(-1).tolist()
 
-        print(f"{prefix}collision")
         if not start_ok:
-            print(f"[cuRobo]   start state in collision: {self._classify_q(start_q)}")
+            line = f"start state in collision: {self._classify_q(start_q)}"
         elif bad:
             summary = self._summarize_seed_reasons(solutions, bad)
-            print(
-                f"[cuRobo]   graph planner rejected {len(bad)}/{n_returned} IK goals: {summary}"
+            line = (
+                f"graph planner rejected {len(bad)}/{n_ik_success} converged "
+                f"IK goals: {summary}"
             )
         else:
-            print("[cuRobo]   graph planner rejected plan (cause unclear on re-check)")
+            line = "graph planner rejected plan (cause unclear on re-check)"
+        self._log(prefix, "collision", line)
 
-    def _diagnose_trajopt_failure(self, prefix: str, result, goal) -> None:
-        """TrajOpt ran but failed. Distinguish:
-          * pose unreached at trajectory end (``TrajOpt``)
-          * pose reached but a waypoint along the returned path violates a constraint (``trajectory``)
-          * pose reached and waypoints clean → cuRobo's internal infeasibility was about
-            dynamics (velocity/acceleration/jerk) on the smoothed trajectory.
+    def _diagnose_trajopt_failure(self, prefix, result, goal, goal_label=None):
+        """Diagnose a TrajOpt failure, distinguishing three sub-cases.
 
-        Uses actual EE-to-goal distance (re-FK'd) rather than cuRobo's hinged metric, and
-        scans the returned interpolated trajectory ourselves since cuRobo clears the
+        Distinguishes:
+          * pose unreached at trajectory end → ``TrajOpt``
+          * pose reached but a waypoint violates a constraint → ``trajectory``
+          * pose reached and waypoints clean → cuRobo's infeasibility flag is
+            about dynamics (velocity/acceleration/jerk on the smoothed trajectory).
+
+        Uses re-FK'd EE-to-goal distance instead of cuRobo's hinged metric and
+        scans the returned interpolated trajectory ourselves, since cuRobo clears
         per-constraint metrics during topk reduction.
+
+        Args:
+            prefix: Header string for log lines.
+            result: cuRobo ``MotionPlanResult``.
+            goal: cuRobo goal pose object.
+            goal_label: Optional short label (e.g. ``"goal 3"``) used to qualify
+                the waypoint-violation body line.
         """
         pos_err, rot_err = self._actual_pose_error_at_traj_end(result, goal)
         if pos_err is None or rot_err is None:
-            pos_err = (
-                float(result.position_error.min().item())
-                if result.position_error is not None
-                else float("nan")
+            self._log(
+                prefix,
+                "TrajOpt",
+                "could not recompute geometric EE error from trajectory "
+                "(cuRobo's hinged metric is unreliable here; skipping pose check)",
             )
-            rot_err = (
-                float(result.rotation_error.min().item())
-                if result.rotation_error is not None
-                else float("nan")
-            )
+            return
         to_cfg = self._planner.trajopt_solver.config
         pos_tol = getattr(to_cfg, "position_tolerance", result.position_tolerance)
         rot_tol = getattr(to_cfg, "orientation_tolerance", result.orientation_tolerance)
 
         if pos_err > pos_tol or rot_err > rot_tol:
-            print(f"{prefix}TrajOpt")
-            print(
-                f"[cuRobo]   pose not reached (trajectory ends {pos_err * 1000:.1f}mm/"
-                f"{rot_err:.3f}rad from goal, tol {pos_tol * 1000:.1f}mm/{rot_tol:.3f}rad)"
+            self._log(
+                prefix,
+                "TrajOpt",
+                f"pose not reached (trajectory ends {pos_err * 1000:.1f}mm/"
+                f"{rot_err:.3f}rad from goal, tol {pos_tol * 1000:.1f}mm/{rot_tol:.3f}rad)",
             )
             return
 
-        # Pose was reached → at least one waypoint must violate something.
-        print(f"{prefix}trajectory")
         idx, n_total, reason = self._first_path_violation(result)
         pose_str = f"pose OK ({pos_err * 1000:.1f}mm/{rot_err:.3f}rad)"
+        wp_owner = f"{goal_label} plan " if goal_label else ""
         if reason is not None:
-            print(f"[cuRobo]   {pose_str}, waypoint {idx}/{n_total}: {reason}")
+            line = f"{pose_str}, {wp_owner}waypoint {idx}/{n_total}: {reason}"
         else:
-            print(
-                f"[cuRobo]   {pose_str}, returned path clean — cuRobo's failure flag is "
+            line = (
+                f"{pose_str}, {wp_owner}returned path clean — cuRobo's failure flag is "
                 "from dynamics (velocity/acceleration/jerk over the smoothed trajectory)"
             )
+        self._log(prefix, "trajectory", line)
 
-    def _first_path_violation(
-        self, result
-    ) -> "tuple[int, int, str] | tuple[None, int, None]":
-        """Scan the returned interpolated trajectory and return the first violating waypoint.
+    def _first_path_violation(self, result):
+        """Scan the interpolated trajectory and locate the first bad waypoint.
 
-        Returns ``(idx, n_total, reason)`` for the first waypoint where a joint limit,
-        world collision, or self-collision is violated. Returns ``(None, n_total, None)``
-        if the entire returned path is clean.
+        Args:
+            result: cuRobo ``MotionPlanResult``.
+
+        Returns:
+            ``(idx, n_total, reason)`` for the first waypoint violating a joint
+            limit, world collision, or self-collision. Returns
+            ``(None, n_total, None)`` if the entire trimmed path is clean, or
+            ``(None, 0, None)`` if no interpolated trajectory is available.
         """
-        traj = getattr(result, "interpolated_trajectory", None)
-        positions = traj.position if traj is not None else None
+        positions = result.get_interpolated_plan().position
         if positions is None:
             return None, 0, None
         waypoints = positions.reshape(-1, positions.shape[-1])
@@ -856,9 +884,8 @@ class CuroboPlanner:
 
         lims = self._planner.kinematics.get_joint_limits().position
         w_dev = waypoints.to(lims.device)
-        lo, hi = lims[0], lims[1]
-        below = (lo - w_dev).clamp(min=0.0)
-        above = (w_dev - hi).clamp(min=0.0)
+        below = (lims[0] - w_dev).clamp(min=0.0)
+        above = (w_dev - lims[1]).clamp(min=0.0)
         jl_per_wp = ((below + above).sum(dim=-1) > 0).cpu().tolist()
 
         for k in range(n_total):
@@ -866,7 +893,7 @@ class CuroboPlanner:
                 return (
                     k,
                     n_total,
-                    f"joint limits: {self._joint_limit_detail(waypoints[k])}",
+                    f"joint limits: {self._joint_limit_status(waypoints[k])[2]}",
                 )
             if spheres_per_wp is None:
                 continue
@@ -881,24 +908,17 @@ class CuroboPlanner:
         return None, n_total, None
 
     def _summarize_seed_reasons(self, solutions: torch.Tensor, indices) -> str:
-        """Classify each seed in ``indices`` and group identical reasons with a count."""
+        """Classify a subset of IK seeds and group identical reasons with counts.
+
+        Args:
+            solutions: All IK joint configs, shape ``(n_seeds, dof)``.
+            indices: Iterable of seed indices to classify.
+
+        Returns:
+            Comma-separated string like ``"3× world collision (...); 1× joint limits ..."``.
+        """
         reasons: dict[str, int] = {}
         for k in indices:
             r = self._classify_q(solutions[k])
             reasons[r] = reasons.get(r, 0) + 1
         return ", ".join(f"{n}× {r}" for r, n in reasons.items())
-
-
-def interpolate_path(
-    path: list[torch.Tensor], step: float = 0.02
-) -> list[torch.Tensor]:
-    """Densify a joint-space path so consecutive frames are at most ``step`` apart."""
-    if len(path) < 2:
-        return path
-    out = [path[0]]
-    for q_a, q_b in zip(path[:-1], path[1:]):
-        delta = q_b - q_a
-        n = max(1, int(torch.ceil(delta.norm() / step).item()))
-        for k in range(1, n + 1):
-            out.append(q_a + (k / n) * delta)
-    return out
