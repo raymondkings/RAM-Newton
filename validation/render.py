@@ -13,18 +13,14 @@ from util.self_collision import get_joint_limits
 from task.morphology_sampler import yoshikawa_manipulability
 from validation.ground import add_ground_grid_to_viser, make_origin_axes
 
-# PD gains for joint position control during Newton simulation
-_KE = 500.0  # position stiffness  [N·m/rad]
-_KD = 50.0  # velocity damping    [N·m·s/rad]
 
-
-def _trajectory_manipulability(
-    curobo_planner, path: list, n_joints: int
-) -> np.ndarray:
+def _trajectory_manipulability(curobo_planner, path: list, n_joints: int) -> np.ndarray:
     """Yoshikawa manipulability index at every waypoint of a joint-space path.
 
     The end-effector Jacobian is read directly off cuRobo's kinematics (see
-    ``CuroboPlanner.tool_jacobian``); the index is then ``sqrt(det(J Jᵀ))``.
+    ``CuroboPlanner.tool_jacobian``); the index is the product of the singular
+    values of J — equal to ``sqrt(det(J Jᵀ))`` for dof ≥ 6, and falling back to
+    the singular-value product for dof < 6 where ``det(J Jᵀ)`` is degenerate.
 
     Returns a float64 array of shape (len(path),).
     """
@@ -38,7 +34,7 @@ def _trajectory_svd_values(curobo_planner, path: list, n_joints: int) -> np.ndar
     """Singular values of J at every waypoint. Returns [N, k] float64, k = min(6, dof)."""
     qs = torch.stack([p[:n_joints] for p in path])
     jac = curobo_planner.tool_jacobian(qs)  # [N, 6, dof]
-    _, s, _ = torch.linalg.svd(jac)         # [N, min(6, dof)]
+    _, s, _ = torch.linalg.svd(jac)  # [N, min(6, dof)]
     return s.detach().cpu().double().numpy()
 
 
@@ -48,11 +44,71 @@ def _eef_world_positions(morph: "Morphology", path: list) -> np.ndarray:
     n_joints = n_links - 1
     N = len(path)
     qs = torch.stack([p[:n_joints] for p in path])
-    thetas = torch.zeros(N, n_links, 1, device=morph.params.device, dtype=morph.params.dtype)
+    thetas = torch.zeros(
+        N, n_links, 1, device=morph.params.device, dtype=morph.params.dtype
+    )
     thetas[:, :n_joints, 0] = qs
     mdh = morph.params.unsqueeze(0).expand(N, -1, -1)
     poses = forward_kinematics(mdh, thetas)  # [N, n_links, 4, 4]
     return poses[:, -1, :3, 3].detach().cpu().float().numpy()
+
+
+def _densify_path(path: list[torch.Tensor], step_dq: float) -> list[torch.Tensor]:
+    """Resample a joint-space path at uniform arc length so frame speed is constant.
+
+    cuRobo returns a velocity-profiled trajectory (bell-shaped: slow near goals,
+    fast mid-transit), so rendering one waypoint per frame produces visibly
+    uneven speed. We accumulate joint-space arc length and re-sample at uniform
+    steps of ``step_dq`` rad — every consecutive pair in the returned list
+    differs by exactly ``step_dq`` (the last step may be shorter). The first
+    and last waypoints are preserved exactly.
+    """
+    if len(path) < 2 or step_dq <= 0:
+        return list(path)
+
+    qs = torch.stack(list(path))  # [N, dof]
+    seg = (qs[1:] - qs[:-1]).norm(dim=-1)  # [N-1]
+    s = torch.cat([torch.zeros(1, device=qs.device, dtype=qs.dtype), seg.cumsum(0)])
+    total = float(s[-1])
+    if total < step_dq:
+        return [path[0], path[-1]]
+
+    n_steps = int(math.ceil(total / step_dq))
+    s_target = torch.linspace(0.0, total, n_steps + 1, device=qs.device, dtype=qs.dtype)
+
+    # For each target arc length, find the original segment that contains it
+    # (right-side bucket so s_target == s[i] picks segment i) and interpolate.
+    idx = torch.searchsorted(s, s_target, right=True).clamp_(1, len(s) - 1)
+    s0 = s[idx - 1]
+    s1 = s[idx]
+    alpha = (
+        ((s_target - s0) / (s1 - s0).clamp_min(1e-12)).clamp_(0.0, 1.0).unsqueeze(-1)
+    )
+    q0 = qs[idx - 1]
+    q1 = qs[idx]
+    out_qs = q0 * (1.0 - alpha) + q1 * alpha
+    return [out_qs[i] for i in range(out_qs.shape[0])]
+
+
+def _resample_uniform_arc(
+    pts: np.ndarray, values: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Resample a polyline at uniform Cartesian arc length, keeping the same count.
+
+    Returns (new_pts, new_values) with the same shape as the inputs. If the path
+    has zero total length, the inputs are returned unchanged.
+    """
+    seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+    s = np.concatenate(([0.0], np.cumsum(seg)))
+    total = float(s[-1])
+    if total < 1e-9:
+        return pts, values
+    s_target = np.linspace(0.0, total, len(pts))
+    new_pts = np.stack(
+        [np.interp(s_target, s, pts[:, d]) for d in range(pts.shape[1])], axis=1
+    ).astype(pts.dtype)
+    new_values = np.interp(s_target, s, values).astype(values.dtype)
+    return new_pts, new_values
 
 
 def _manip_colormap(values: np.ndarray) -> np.ndarray:
@@ -61,7 +117,7 @@ def _manip_colormap(values: np.ndarray) -> np.ndarray:
     t = (values - v_min) / max(float(v_max - v_min), 1e-9)
     colors = np.zeros((len(values), 3), dtype=np.uint8)
     colors[:, 0] = (255 * (1.0 - t)).astype(np.uint8)
-    colors[:, 1] = (200 * t).astype(np.uint8)
+    colors[:, 1] = (255 * t).astype(np.uint8)
     return colors
 
 
@@ -160,8 +216,6 @@ def make_eef_pose_axes(morph, q_joints: torch.Tensor, axis_length: float = 0.05)
         wp.array(ends_list, dtype=wp.vec3),
         wp.array(colors_list, dtype=wp.vec3),
     )
-
-
 
 
 _GHOST_COLOR = (160, 60, 255)  # purple — best IK approximation
@@ -548,7 +602,7 @@ def animate_plan(
     loop: bool = True,
     sim_substeps: int = 4,
     startup_delay: float = 5.0,
-    max_joint_speed: float = math.pi,
+    max_joint_speed: float = math.pi / 4,
     curobo_planner=None,
     failed_at_goal: int | None = "unknown",
     best_ik_q=None,
@@ -566,9 +620,10 @@ def animate_plan(
         sim_substeps: physics substeps per rendered frame.
         startup_delay: seconds to hold the initial pose before playback starts,
             giving time to open the browser tab.
-        max_joint_speed: maximum joint speed in rad/s. Frames with large joint
-            displacements are paced slower so speed never exceeds this limit,
-            without affecting the physics timestep.
+        max_joint_speed: joint-space playback speed in rad/s. The cuRobo path
+            is resampled at uniform arc length so every frame advances by
+            ``max_joint_speed * frame_dt`` rad — i.e. this is the actual joint
+            speed during playback (the GUI slider further scales wall time).
     """
     n_joints = morph.n_links - 1
 
@@ -577,6 +632,11 @@ def animate_plan(
     state = model.state()
 
     frame_dt = 1.0 / fps
+    # Resample the cuRobo path at uniform joint-space arc length so every frame
+    # advances by the same dq. This replaces cuRobo's bell-shaped velocity
+    # profile with a constant joint-space speed of max_joint_speed, giving
+    # visually uniform playback even across long, goal-sparse transits.
+    path = _densify_path(path, max_joint_speed * frame_dt)
 
     viewer = _setup_viewer(model, port, share, curobo_planner)
     add_goals_to_viser(viewer._server, task, failed_at_goal)
@@ -642,8 +702,10 @@ def animate_plan(
     # Feature 1: EEF trajectory colored green→red by manipulability.
     # Painted once as a static point cloud so it is visible throughout playback.
     if manip_values is not None:
-        _eef_pts = _eef_world_positions(morph, path)
-        _eef_colors = _manip_colormap(manip_values)
+        _eef_pts, _eef_manip = _resample_uniform_arc(
+            _eef_world_positions(morph, path), manip_values
+        )
+        _eef_colors = _manip_colormap(_eef_manip)
         viewer._server.scene.add_point_cloud(
             "/manip_trajectory",
             points=_eef_pts,

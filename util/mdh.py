@@ -20,6 +20,8 @@ _LINK_COLORS = [
 ]
 _JOINT_MARKER_COLOR = wp.vec3(0.0, 0.0, 0.0)
 _JOINT_MARKER_RADIUS_SCALE = 1.25
+
+
 def _link_color(i: int) -> wp.vec3:
     return _LINK_COLORS[i % len(_LINK_COLORS)]
 

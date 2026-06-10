@@ -16,7 +16,6 @@ from util.kinematics import (
     build_scene,
     mat_to_goal_pose,
 )
-from task.morphology_sampler import geometric_jacobian, yoshikawa_manipulability
 from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
 from curobo.kinematics import Kinematics
 from curobo.types import JointState
@@ -208,7 +207,7 @@ class CuroboPlanner:
         return result.reachable_ratio
 
     # === Public API — feasibility & utilities ===
-   
+
     def tool_jacobian(self, qs: torch.Tensor) -> torch.Tensor:
         """End-effector geometric Jacobian (base frame) for a batch of joint configs.
 
@@ -317,7 +316,6 @@ class CuroboPlanner:
         return spheres.reshape(-1, 4).cpu().numpy().astype(np.float32)
 
     # === Internal — single pose plan ===
-    
 
     # ----------------------------------------------------------------------
     # Plan execution
