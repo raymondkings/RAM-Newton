@@ -17,6 +17,7 @@ from util.kinematics import (
     mat_to_goal_pose,
 )
 from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
+from curobo.kinematics import Kinematics
 from curobo.types import JointState
 
 
@@ -104,6 +105,10 @@ class CuroboPlanner:
         )
         self._planner = MotionPlanner(planner_config)
         self._planner.warmup(enable_graph=True, num_warmup_iterations=3)
+
+        self._jac_kin = Kinematics(
+            self._planner.kinematics.config, compute_jacobian=True
+        )
 
     def __del__(self):
         path = getattr(self, "_urdf_path", None)
@@ -202,6 +207,26 @@ class CuroboPlanner:
 
     # === Public API — feasibility & utilities ===
 
+    def tool_jacobian(self, qs: torch.Tensor) -> torch.Tensor:
+        """End-effector geometric Jacobian (base frame) for a batch of joint configs.
+
+        Reads the Jacobian straight off cuRobo's kinematics.
+
+        Args:
+            qs: Joint configurations, shape ``[N, dof]`` (dof = len(joint_names)).
+
+        Returns:
+            Jacobians of shape ``[N, 6, dof]``; rows 0:3 are linear, 3:6 angular —
+            the layout ``yoshikawa_manipulability`` expects.
+        """
+        js = JointState.from_position(
+            qs.float().reshape(-1, len(self._planner.joint_names)).to(self._device),
+            joint_names=self._planner.joint_names,
+        )
+        state = self._jac_kin.compute_kinematics(js)
+        # tool_jacobians: [batch, horizon=1, n_tool_frames, 6, dof]; tool frame 0 is the EE.
+        return state.tool_jacobians[:, 0, 0].to(self._dtype)
+
     def is_q_feasible(self, q: torch.Tensor) -> bool:
         """Check whether a single joint config satisfies all planner constraints.
 
@@ -284,6 +309,10 @@ class CuroboPlanner:
         return spheres.reshape(-1, 4).cpu().numpy().astype(np.float32)
 
     # === Internal — single pose plan ===
+
+    # ----------------------------------------------------------------------
+    # Plan execution
+    # ----------------------------------------------------------------------
 
     def _plan_pose(self, goal_pose, start_q, max_attempts):
         """Run a single cuRobo ``plan_pose`` call.

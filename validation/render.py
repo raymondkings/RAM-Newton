@@ -10,11 +10,115 @@ from interface import Morphology, Task
 from util.kinematics import compute_link_world_poses, forward_kinematics
 from util.mdh import add_robot_to_builder
 from util.self_collision import get_joint_limits
+from task.morphology_sampler import yoshikawa_manipulability
 from validation.ground import add_ground_grid_to_viser, make_origin_axes
 
-# PD gains for joint position control during Newton simulation
-_KE = 500.0  # position stiffness  [N·m/rad]
-_KD = 50.0  # velocity damping    [N·m·s/rad]
+
+def _trajectory_manipulability(curobo_planner, path: list, n_joints: int) -> np.ndarray:
+    """Yoshikawa manipulability index at every waypoint of a joint-space path.
+
+    The end-effector Jacobian is read directly off cuRobo's kinematics (see
+    ``CuroboPlanner.tool_jacobian``); the index is the product of the singular
+    values of J — equal to ``sqrt(det(J Jᵀ))`` for dof ≥ 6, and falling back to
+    the singular-value product for dof < 6 where ``det(J Jᵀ)`` is degenerate.
+
+    Returns a float64 array of shape (len(path),).
+    """
+    qs = torch.stack([p[:n_joints] for p in path])  # [N, dof]
+    jac = curobo_planner.tool_jacobian(qs)  # [N, 6, dof]
+    manip = yoshikawa_manipulability(jac, soft=True)  # [N]
+    return manip.detach().cpu().double().numpy()
+
+
+def _trajectory_svd_values(curobo_planner, path: list, n_joints: int) -> np.ndarray:
+    """Singular values of J at every waypoint. Returns [N, k] float64, k = min(6, dof)."""
+    qs = torch.stack([p[:n_joints] for p in path])
+    jac = curobo_planner.tool_jacobian(qs)  # [N, 6, dof]
+    _, s, _ = torch.linalg.svd(jac)  # [N, min(6, dof)]
+    return s.detach().cpu().double().numpy()
+
+
+def _eef_world_positions(morph: "Morphology", path: list) -> np.ndarray:
+    """EEF world position at every waypoint. Returns [N, 3] float32."""
+    n_links = morph.n_links
+    n_joints = n_links - 1
+    N = len(path)
+    qs = torch.stack([p[:n_joints] for p in path])
+    thetas = torch.zeros(
+        N, n_links, 1, device=morph.params.device, dtype=morph.params.dtype
+    )
+    thetas[:, :n_joints, 0] = qs
+    mdh = morph.params.unsqueeze(0).expand(N, -1, -1)
+    poses = forward_kinematics(mdh, thetas)  # [N, n_links, 4, 4]
+    return poses[:, -1, :3, 3].detach().cpu().float().numpy()
+
+
+def _densify_path(path: list[torch.Tensor], step_dq: float) -> list[torch.Tensor]:
+    """Resample a joint-space path at uniform arc length so frame speed is constant.
+
+    cuRobo returns a velocity-profiled trajectory (bell-shaped: slow near goals,
+    fast mid-transit), so rendering one waypoint per frame produces visibly
+    uneven speed. We accumulate joint-space arc length and re-sample at uniform
+    steps of ``step_dq`` rad — every consecutive pair in the returned list
+    differs by exactly ``step_dq`` (the last step may be shorter). The first
+    and last waypoints are preserved exactly.
+    """
+    if len(path) < 2 or step_dq <= 0:
+        return list(path)
+
+    qs = torch.stack(list(path))  # [N, dof]
+    seg = (qs[1:] - qs[:-1]).norm(dim=-1)  # [N-1]
+    s = torch.cat([torch.zeros(1, device=qs.device, dtype=qs.dtype), seg.cumsum(0)])
+    total = float(s[-1])
+    if total < step_dq:
+        return [path[0], path[-1]]
+
+    n_steps = int(math.ceil(total / step_dq))
+    s_target = torch.linspace(0.0, total, n_steps + 1, device=qs.device, dtype=qs.dtype)
+
+    # For each target arc length, find the original segment that contains it
+    # (right-side bucket so s_target == s[i] picks segment i) and interpolate.
+    idx = torch.searchsorted(s, s_target, right=True).clamp_(1, len(s) - 1)
+    s0 = s[idx - 1]
+    s1 = s[idx]
+    alpha = (
+        ((s_target - s0) / (s1 - s0).clamp_min(1e-12)).clamp_(0.0, 1.0).unsqueeze(-1)
+    )
+    q0 = qs[idx - 1]
+    q1 = qs[idx]
+    out_qs = q0 * (1.0 - alpha) + q1 * alpha
+    return [out_qs[i] for i in range(out_qs.shape[0])]
+
+
+def _resample_uniform_arc(
+    pts: np.ndarray, values: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Resample a polyline at uniform Cartesian arc length, keeping the same count.
+
+    Returns (new_pts, new_values) with the same shape as the inputs. If the path
+    has zero total length, the inputs are returned unchanged.
+    """
+    seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+    s = np.concatenate(([0.0], np.cumsum(seg)))
+    total = float(s[-1])
+    if total < 1e-9:
+        return pts, values
+    s_target = np.linspace(0.0, total, len(pts))
+    new_pts = np.stack(
+        [np.interp(s_target, s, pts[:, d]) for d in range(pts.shape[1])], axis=1
+    ).astype(pts.dtype)
+    new_values = np.interp(s_target, s, values).astype(values.dtype)
+    return new_pts, new_values
+
+
+def _manip_colormap(values: np.ndarray) -> np.ndarray:
+    """Map manipulability values to RGB uint8 colors: red=low, green=high. Returns [N, 3]."""
+    v_min, v_max = values.min(), values.max()
+    t = (values - v_min) / max(float(v_max - v_min), 1e-9)
+    colors = np.zeros((len(values), 3), dtype=np.uint8)
+    colors[:, 0] = (255 * (1.0 - t)).astype(np.uint8)
+    colors[:, 1] = (255 * t).astype(np.uint8)
+    return colors
 
 
 def add_curobo_scene_to_viser(server, scene) -> None:
@@ -231,7 +335,8 @@ def _add_goal_legend(server) -> None:
         "**Coordinate frames**\n\n"
         "🟥 &nbsp;X-axis\n\n"
         "🟩 &nbsp;Y-axis\n\n"
-        "🟦 &nbsp;Z-axis"
+        "🟦 &nbsp;Z-axis\n\n"
+        "---"
     )
 
 
@@ -278,7 +383,7 @@ def _add_joint_limit_panel(
 
     interactive = on_change is not None
     handles: list = []
-    folder = server.gui.add_folder(folder_label)
+    folder = server.gui.add_folder(folder_label, expand_by_default=False)
     with folder:
         for i in range(n_joints):
             lo, hi = float(limits[i, 0]), float(limits[i, 1])
@@ -497,7 +602,7 @@ def animate_plan(
     loop: bool = True,
     sim_substeps: int = 4,
     startup_delay: float = 5.0,
-    max_joint_speed: float = math.pi,
+    max_joint_speed: float = math.pi / 4,
     curobo_planner=None,
     failed_at_goal: int | None = "unknown",
     best_ik_q=None,
@@ -515,9 +620,10 @@ def animate_plan(
         sim_substeps: physics substeps per rendered frame.
         startup_delay: seconds to hold the initial pose before playback starts,
             giving time to open the browser tab.
-        max_joint_speed: maximum joint speed in rad/s. Frames with large joint
-            displacements are paced slower so speed never exceeds this limit,
-            without affecting the physics timestep.
+        max_joint_speed: joint-space playback speed in rad/s. The cuRobo path
+            is resampled at uniform arc length so every frame advances by
+            ``max_joint_speed * frame_dt`` rad — i.e. this is the actual joint
+            speed during playback (the GUI slider further scales wall time).
     """
     n_joints = morph.n_links - 1
 
@@ -526,6 +632,11 @@ def animate_plan(
     state = model.state()
 
     frame_dt = 1.0 / fps
+    # Resample the cuRobo path at uniform joint-space arc length so every frame
+    # advances by the same dq. This replaces cuRobo's bell-shaped velocity
+    # profile with a constant joint-space speed of max_joint_speed, giving
+    # visually uniform playback even across long, goal-sparse transits.
+    path = _densify_path(path, max_joint_speed * frame_dt)
 
     viewer = _setup_viewer(model, port, share, curobo_planner)
     add_goals_to_viser(viewer._server, task, failed_at_goal)
@@ -533,6 +644,12 @@ def animate_plan(
         viewer._server, curobo_planner, best_ik_q, n_joints
     )
     _add_ghost_toggle(viewer._server, ghost_handles)
+
+    speed_slider = viewer._server.gui.add_slider(
+        "Playback speed", min=0.0, max=4.0, step=0.05, initial_value=1.0
+    )
+    viewer._server.gui.add_markdown("---")
+
     joint_limit_handles, joint_limit_bounds, _ = _add_joint_limit_panel(
         viewer._server, morph, curobo_planner, initial_q=path[0]
     )
@@ -542,9 +659,88 @@ def animate_plan(
         task.goal_poses, axis_length=_GOAL_FRAME_AXIS_LENGTH
     )
 
-    speed_slider = viewer._server.gui.add_slider(
-        "Playback speed", min=0.0, max=4.0, step=0.05, initial_value=1.0
+    # Yoshikawa manipulability over the whole trajectory. The Jacobian comes from
+    # cuRobo, so the signal is only available when a planner is set up. Values are
+    # precomputed in a single batched cuRobo kinematics call.
+    manip_values = (
+        _trajectory_manipulability(curobo_planner, path, n_joints)
+        if curobo_planner is not None
+        else None
     )
+    manip_readout = None
+    manip_plot = None
+    if manip_values is not None:
+        from viser import uplot
+
+        manip_folder = viewer._server.gui.add_folder("Yoshikawa Manipulability")
+        with manip_folder:
+            manip_readout = viewer._server.gui.add_markdown("—")
+            xs = np.arange(len(manip_values), dtype=np.float64)
+            ys_full = np.asarray(manip_values, dtype=np.float64)
+            # The curve grows as playback advances: values past the current
+            # frame are NaN so they aren't drawn, giving a visual indication of
+            # progress through the trajectory.
+            ys0 = np.full_like(ys_full, np.nan)
+            ys0[0] = ys_full[0]
+            manip_plot = viewer._server.gui.add_uplot(
+                data=(xs, ys0),
+                series=(
+                    uplot.Series(label="frame"),
+                    uplot.Series(label="manipulability", stroke="#3b82f6", width=2),
+                ),
+                scales={
+                    "x": uplot.Scale(time=False),
+                    "y": uplot.Scale(
+                        auto=False,
+                        min=float(ys_full.min()),
+                        max=float(ys_full.max()),
+                    ),
+                },
+                aspect=2.0,
+            )
+
+    # Feature 1: EEF trajectory colored green→red by manipulability.
+    # Painted once as a static point cloud so it is visible throughout playback.
+    if manip_values is not None:
+        _eef_pts, _eef_manip = _resample_uniform_arc(
+            _eef_world_positions(morph, path), manip_values
+        )
+        _eef_colors = _manip_colormap(_eef_manip)
+        viewer._server.scene.add_point_cloud(
+            "/manip_trajectory",
+            points=_eef_pts,
+            colors=_eef_colors,
+            point_size=0.015,
+            point_shape="circle",
+        )
+
+    # Feature 3: per-singular-value progress bars — one bar per σᵢ of J,
+    # normalized to the largest singular value seen across the full trajectory.
+    svd_values = (
+        _trajectory_svd_values(curobo_planner, path, n_joints)
+        if curobo_planner is not None
+        else None
+    )
+    sv_max = float(svd_values.max()) + 1e-9 if svd_values is not None else 1.0
+    sv_bars: list = []
+    sv_labels: list = []
+    if svd_values is not None:
+        k = svd_values.shape[1]
+        sv_folder = viewer._server.gui.add_folder(
+            "Singular values  σ₁ ≥ … ≥ σₖ", expand_by_default=False
+        )
+        with sv_folder:
+            viewer._server.gui.add_markdown(
+                "<small>Bars normalized to the global max σ₁. "
+                "Bottom bar collapsing to zero signals a singularity.</small>"
+            )
+            for i in range(k):
+                lbl = viewer._server.gui.add_markdown(f"σ{i + 1}")
+                bar = viewer._server.gui.add_progress_bar(
+                    float(svd_values[0, i] / sv_max)
+                )
+                sv_labels.append(lbl)
+                sv_bars.append(bar)
 
     def _sleep(dt: float) -> None:
         """Sleep for one frame; spin-wait if playback is paused (speed == 0)."""
@@ -572,7 +768,19 @@ def animate_plan(
             )
             robot_sphere_handles.append(h)
 
-    def render_q(q, t: float) -> None:
+    def render_q(q, t: float, frame_idx: int | None = None) -> None:
+        if manip_values is not None and frame_idx is not None:
+            value = float(manip_values[frame_idx])
+            if manip_readout is not None:
+                manip_readout.content = f"{value:.6g}"
+            if manip_plot is not None:
+                grown = np.full_like(ys_full, np.nan)
+                grown[: frame_idx + 1] = ys_full[: frame_idx + 1]
+                manip_plot.data = (xs, grown)
+            for i, (lbl, bar) in enumerate(zip(sv_labels, sv_bars)):
+                sv = float(svd_values[frame_idx, i])
+                lbl.content = f"σ{i + 1} = {sv:.4g}"
+                bar.value = sv / sv_max
         arr = q.detach().cpu().numpy().astype(np.float32)[:n_joints]
         state.joint_q.assign(arr)
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
@@ -596,34 +804,36 @@ def animate_plan(
     try:
         t = 0.0
 
+        last_idx = len(path) - 1
+
         # Hold the initial pose during startup so the browser can connect
         stop = time.monotonic() + startup_delay
         while time.monotonic() < stop and viewer.is_running():
-            render_q(path[0], t)
+            render_q(path[0], t, 0)
             t += frame_dt
             _sleep(frame_dt)
 
         while viewer.is_running():
             for _ in range(hold_frames):
-                render_q(path[0], t)
+                render_q(path[0], t, 0)
                 t += frame_dt
                 _sleep(frame_dt)
                 if not viewer.is_running():
                     break
 
             prev_q = path[0]
-            for q in path:
+            for frame_idx, q in enumerate(path):
                 if not viewer.is_running():
                     break
                 dq = float((q - prev_q).norm())
                 frame_time = max(frame_dt, dq / max_joint_speed)
-                render_q(q, t)
+                render_q(q, t, frame_idx)
                 t += frame_time
                 _sleep(frame_time)
                 prev_q = q
 
             for _ in range(hold_frames):
-                render_q(path[-1], t)
+                render_q(path[-1], t, last_idx)
                 t += frame_dt
                 _sleep(frame_dt)
                 if not viewer.is_running():
