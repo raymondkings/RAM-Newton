@@ -843,11 +843,16 @@ def build_crit_distance_timeline(per_frame_worst, link_labels):
         }
     fig.update_layout(
         title=title,
-        xaxis={"title": "frame", "range": [0, max(len(d) - 1, 1)]},
-        yaxis={"title": "d_crit (m)", "range": [y_lo, y_hi]},
+        xaxis={
+            "title": "frame",
+            "range": [0, max(len(d) - 1, 1)],
+            "fixedrange": True,
+        },
+        yaxis={"title": "d_crit (m)", "range": [y_lo, y_hi], "fixedrange": True},
         margin={"l": 55, "r": 15, "t": 55, "b": 35},
         showlegend=False,
         plot_bgcolor="white",
+        dragmode=False,
     )
     return fig
 
