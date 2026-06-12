@@ -228,9 +228,9 @@ def optimize_morphology(
                 msg = (
                     f"[Iter {update_idx:>4}/{n_iter}] "
                     f"loss={loss.item():.6f}, "
-                    f"val_se3={best_se3:.6f}, "
-                    f"ik_success_pose_rate={ik_success_rate * 100.0:.2f}%, "
-                    f"nrm_prob={prob.item():.6f}"
+                    f"nrm_prob={prob.item():.6f},"
+                    f"best_se3={best_se3:.6f}, "
+                    f"ik_success_pose_rate={ik_success_rate * 100.0:.2f}%"
                 )
 
                 tqdm.write(msg)
@@ -323,11 +323,11 @@ def optimize_morphology(
         )
 
         msg = (
-            f"[Final NRM] "
+            f"[Iter {final_iteration:>4}/{n_iter}] "
             f"loss={final_loss.item():.6f}, "
+            f"nrm_prob={final_prob.item():.6f},"
             f"final_se3_err={final_se3_err:.6f}, "
-            f"ik_success_pose_rate={final_ik_success_rate * 100.0:.2f}%, "
-            f"nrm_prob={final_prob.item():.6f}"
+            f"ik_success_pose_rate={final_ik_success_rate * 100.0:.2f}%"
         )
         print(msg)
 

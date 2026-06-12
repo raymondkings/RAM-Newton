@@ -8,7 +8,7 @@ from typing import Any
 import torch
 
 
-NUM_SAMPLES = 10
+NUM_SAMPLES = 50
 NUM_EXTRA_PATHS = 4
 ALPHA_RANGE_DEGREES = (0.0, 180.0)
 BETA_RANGE_DEGREES = (-30.0, 30.0)
