@@ -675,11 +675,23 @@ def precompute_self_collision_data(
     Returns:
         link_clearance_matrix: (n_links, n_links) float — min over all frames of
             the per-frame link clearance (``+inf`` for always-ignored pairs).
-        per_frame_worst: list of ``(d_crit, li, lj)`` per frame.
-            ``(+inf, -1, -1)`` when every pair is ignored that frame.
+        per_frame_worst: list of ``(d_crit, li, lj, si, sj)`` per frame, where
+            ``si``/``sj`` are the sphere indices realising the gap (used to
+            highlight the pair and draw the gap ruler in the 3-D scene).
+            ``(+inf, -1, -1, -1, -1)`` when every pair is ignored that frame.
     """
     link_clearance_matrix = np.full((n_links, n_links), np.inf, dtype=np.float64)
     per_frame_worst = []
+    if not spheres_per_frame:
+        return link_clearance_matrix, per_frame_worst
+
+    # Sphere -> link id, lifting the link-level ignore mask to sphere level so a
+    # single argmin yields both the critical link pair and the sphere pair.
+    n_spheres = spheres_per_frame[0].shape[0]
+    link_ids = np.zeros(n_spheres, dtype=np.int64)
+    link_ids[block_starts[1:]] = 1
+    link_ids = np.cumsum(link_ids)
+    sphere_ignore = ignore_mask[link_ids[:, None], link_ids[None, :]]
 
     for spheres in spheres_per_frame:
         centers = spheres[:, :3].astype(np.float64)
@@ -695,6 +707,7 @@ def precompute_self_collision_data(
         if invalid.any():
             clearance[invalid, :] = np.inf
             clearance[:, invalid] = np.inf
+        clearance[sphere_ignore] = np.inf
 
         # Collapse sphere -> link by taking the min over each contiguous block,
         # first along rows then along columns.
@@ -703,15 +716,18 @@ def precompute_self_collision_data(
             block_starts,
             axis=1,
         )
-        link_clear[ignore_mask] = np.inf
 
-        flat = int(np.argmin(link_clear))
-        li, lj = np.unravel_index(flat, link_clear.shape)
-        d_crit = float(link_clear[li, lj])
+        # The global sphere-pair minimum realises the link-level minimum, so one
+        # argmin gives the critical link pair and the exact sphere pair.
+        flat = int(np.argmin(clearance))
+        si, sj = np.unravel_index(flat, clearance.shape)
+        d_crit = float(clearance[si, sj])
         if np.isfinite(d_crit):
-            per_frame_worst.append((d_crit, int(li), int(lj)))
+            per_frame_worst.append(
+                (d_crit, int(link_ids[si]), int(link_ids[sj]), int(si), int(sj))
+            )
         else:
-            per_frame_worst.append((np.inf, -1, -1))
+            per_frame_worst.append((np.inf, -1, -1, -1, -1))
 
         np.minimum(link_clearance_matrix, link_clear, out=link_clearance_matrix)
 
@@ -809,7 +825,7 @@ def build_crit_distance_timeline(per_frame_worst, link_labels):
     subtitle = None
     if any_finite:
         i_min = int(np.nanargmin(d))
-        d_min, li, lj = per_frame_worst[i_min]
+        d_min, li, lj = per_frame_worst[i_min][:3]
         value = f"{d_min:+.3f} m".replace("-", "−")
         pair = f"{link_labels[li]}↔{link_labels[lj]}"
         subtitle = f"worst over trajectory: {value} ({pair}) at frame {i_min}"
@@ -869,13 +885,70 @@ def _set_timeline_cursor(handle, figure, frame_idx: int) -> None:
 
 
 def _format_crit_label(worst, link_labels) -> str:
-    """Format one ``(d_crit, li, lj)`` entry as the live markdown label."""
-    d, li, lj = worst
+    """Format one ``per_frame_worst`` entry as the live markdown label."""
+    d, li, lj = worst[:3]
     if not np.isfinite(d) or li < 0:
         return "**d_crit = n/a**  (all pairs ignored)"
     dot = "🟢" if d > _CLEAR_SAFE else "🟠" if d > _CLEAR_WARN else "🔴"
     value = f"{d:+.3f} m".replace("-", "−")  # + flag makes a negative gap obvious
     return f"**d_crit = {value}**  {dot}  [{link_labels[li]} ↔ {link_labels[lj]}]"
+
+
+_SPHERE_DEFAULT_COLOR = (0, 200, 255)
+# Sentinel "no critical pair" entry; feeding it to _update_crit_highlight resets
+# the sphere colors and hides the gap ruler (used when the toggle is off).
+_CRIT_HIGHLIGHT_OFF = (np.inf, -1, -1, -1, -1)
+
+
+def _severity_color(d: float) -> tuple[int, int, int]:
+    """Clearance -> RGB, same thresholds as the live label and timeline bands."""
+    if d > _CLEAR_SAFE:
+        return (40, 160, 40)
+    if d > _CLEAR_WARN:
+        return (240, 150, 0)
+    return (200, 0, 0)
+
+
+def _update_crit_highlight(
+    worst, spheres, sphere_handles, link_spheres, gap_handle, state
+) -> None:
+    """Highlight the critical link pair in the 3-D scene and draw the gap ruler.
+
+    The collision spheres of the two critical links take the severity color and
+    a line segment spans the closest gap (surface to surface, so its length is
+    d_crit). ``state`` is a one-element list holding the currently applied
+    ``(li, lj, color)``; sphere colors are only pushed when the pair or the
+    severity band changes, the ruler endpoints every frame.
+    """
+    d, li, lj, si, sj = worst
+    color = _severity_color(d) if li >= 0 else None
+    prev_li, prev_lj, prev_color = state[0]
+    if (li, lj, color) != (prev_li, prev_lj, prev_color):
+        if prev_li >= 0:
+            for k in link_spheres[prev_li] + link_spheres[prev_lj]:
+                sphere_handles[k].color = _SPHERE_DEFAULT_COLOR
+        if li >= 0:
+            for k in link_spheres[li] + link_spheres[lj]:
+                sphere_handles[k].color = color
+        state[0] = (li, lj, color)
+
+    if li < 0:
+        if gap_handle.visible:
+            gap_handle.visible = False
+        return
+    pi = np.asarray(spheres[si][:3], dtype=np.float64)
+    pj = np.asarray(spheres[sj][:3], dtype=np.float64)
+    delta = pj - pi
+    norm = float(np.linalg.norm(delta))
+    if norm > 1e-9:
+        u = delta / norm
+        a = pi + u * float(spheres[si][3])
+        b = pj - u * float(spheres[sj][3])
+    else:
+        a, b = pi, pj
+    gap_handle.points = np.array([[a, b]], dtype=np.float32)
+    gap_handle.colors = np.tile(np.array(color, dtype=np.uint8), (1, 2, 1))
+    gap_handle.visible = True
 
 
 def animate_plan(
@@ -1050,7 +1123,7 @@ def animate_plan(
             h = viewer._server.scene.add_icosphere(
                 f"/curobo/robot/sphere_{i}",
                 radius=float(r),
-                color=(0, 200, 255),
+                color=_SPHERE_DEFAULT_COLOR,
                 position=(float(x), float(y), float(z)),
             )
             robot_sphere_handles.append(h)
@@ -1065,6 +1138,10 @@ def animate_plan(
     crit_timeline_handle = None
     crit_timeline_fig = None
     crit_cursor_state = [-1, 0.0]  # [last pushed frame_idx, last push time]
+    crit_gap_handle = None
+    crit_link_spheres = None
+    crit_highlight_state = [(-1, -1, None)]  # (li, lj, color) currently applied
+    crit_highlight_toggle = None
     if curobo_planner is not None:
         try:
             crit_link_labels, block_starts, ignore_mask, n_spheres_exp = (
@@ -1088,6 +1165,23 @@ def animate_plan(
                 crit_label_handle = viewer._server.gui.add_markdown(
                     _format_crit_label(per_frame_worst[0], crit_link_labels)
                 )
+                # Sphere indices per link, so the critical pair can be recolored
+                # in the scene; plus the gap-ruler segment (hidden until shown).
+                block_ends = np.append(block_starts[1:], n_spheres_exp)
+                crit_link_spheres = [
+                    list(range(int(s), int(e)))
+                    for s, e in zip(block_starts, block_ends)
+                ]
+                crit_gap_handle = viewer._server.scene.add_line_segments(
+                    "/curobo/crit_gap",
+                    points=np.zeros((1, 2, 3), dtype=np.float32),
+                    colors=np.zeros((1, 2, 3), dtype=np.uint8),
+                    line_width=6.0,
+                    visible=False,
+                )
+                crit_highlight_toggle = viewer._server.gui.add_checkbox(
+                    "Highlight critical pair (3D)", initial_value=True
+                )
             else:
                 per_frame_worst = None
                 print(
@@ -1097,12 +1191,14 @@ def animate_plan(
                 )
         except ImportError as exc:
             crit_label_handle = crit_timeline_handle = per_frame_worst = None
+            crit_gap_handle = None
             print(
                 f"[viewer] Self-collision timeline needs plotly ({exc}); "
                 "install it with `uv pip install plotly`."
             )
         except Exception as exc:  # noqa: BLE001 - timeline is diagnostics only
             crit_label_handle = crit_timeline_handle = per_frame_worst = None
+            crit_gap_handle = None
             print(f"[viewer] Self-collision timeline unavailable: {exc}")
 
     def render_q(q, t: float, frame_idx: int | None = None) -> None:
@@ -1125,6 +1221,17 @@ def animate_plan(
             spheres = curobo_planner.robot_spheres_world(q[:n_joints])
             for h, (x, y, z, *_) in zip(robot_sphere_handles, spheres):
                 h.position = (float(x), float(y), float(z))
+            if per_frame_worst is not None and frame_idx is not None:
+                _update_crit_highlight(
+                    per_frame_worst[frame_idx]
+                    if crit_highlight_toggle.value
+                    else _CRIT_HIGHLIGHT_OFF,
+                    spheres,
+                    robot_sphere_handles,
+                    crit_link_spheres,
+                    crit_gap_handle,
+                    crit_highlight_state,
+                )
         eef_b, eef_e, eef_c = make_eef_pose_axes(
             morph, q, axis_length=_EEF_FRAME_AXIS_LENGTH
         )
