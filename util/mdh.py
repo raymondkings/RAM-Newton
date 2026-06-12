@@ -20,39 +20,10 @@ _LINK_COLORS = [
 ]
 _JOINT_MARKER_COLOR = wp.vec3(0.0, 0.0, 0.0)
 _JOINT_MARKER_RADIUS_SCALE = 1.25
-_JOINT_AXIS_COLOR = wp.vec3(0.24, 0.24, 0.24)
-_JOINT_AXIS_DOT_COUNT = 7
-_JOINT_AXIS_DOT_RADIUS_SCALE = 0.22
-_JOINT_AXIS_LENGTH_SCALE = 5.0
 
 
 def _link_color(i: int) -> wp.vec3:
     return _LINK_COLORS[i % len(_LINK_COLORS)]
-
-
-def _add_joint_axis_markers(
-    builder: newton.ModelBuilder,
-    body: int,
-    joint_idx: int,
-    link_radius: float,
-) -> None:
-    half_length = link_radius * _JOINT_AXIS_LENGTH_SCALE
-    dot_radius = link_radius * _JOINT_AXIS_DOT_RADIUS_SCALE
-    if _JOINT_AXIS_DOT_COUNT <= 1:
-        offsets = [0.0]
-    else:
-        step = 2.0 * half_length / (_JOINT_AXIS_DOT_COUNT - 1)
-        offsets = [-half_length + k * step for k in range(_JOINT_AXIS_DOT_COUNT)]
-
-    for k, z in enumerate(offsets):
-        builder.add_shape_sphere(
-            body=body,
-            radius=dot_radius,
-            xform=wp.transform(p=wp.vec3(0.0, 0.0, z), q=wp.quat_identity()),
-            as_site=True,
-            color=_JOINT_AXIS_COLOR,
-            label=f"joint_{joint_idx}_axis_{k}",
-        )
 
 
 def to_urdf(morph: Morphology) -> str:
@@ -151,7 +122,6 @@ def add_robot_to_builder(
             color=_JOINT_MARKER_COLOR,
             label=f"joint_{i}_marker",
         )
-        _add_joint_axis_markers(builder, link, i, morph.link_radius)
 
         d_val = morph.d[i].item()
         a_val = morph.a[i].item()
