@@ -11,11 +11,38 @@ from tqdm import tqdm
 
 from interface import Morphology, Task
 from util.kinematics import forward_kinematics, se3_distance
-from util.self_collision import get_capsules
+from util.self_collision import get_capsules, get_joint_limits
 from validation.optimization_validation import run_optimization_validation
 
 
 EPS = 0.005
+JOINT_LIMIT_MARGIN = 0.05  # rad — inward margin so solutions never land on the collision boundary
+
+
+def _resolve_candidate_dofs(value) -> list[int]:
+    if isinstance(value, str):
+        parts = value.replace(",", " ").split()
+        dofs  = [int(p) for p in parts]
+    else:
+        dofs = [int(d) for d in value]
+    if not dofs:
+        raise ValueError("candidate_dofs must not be empty.")
+    if any(d <= 0 for d in dofs):
+        raise ValueError(f"candidate_dofs must be positive, got {dofs}.")
+    return sorted(set(dofs))
+
+
+def _compute_joint_bounds(mdh: Tensor, n_joints: int) -> tuple[Tensor, Tensor]:
+    """Per-joint lower/upper bounds from morphology self-collision limits.
+
+    get_joint_limits returns [n_links, 2] where last dim = [range, offset].
+    Allowed interval: [offset, offset + range].
+    Only the first n_joints rows are used (last row = fixed EE joint, range=0).
+    """
+    limits = get_joint_limits(mdh)      # [n_links, 2]
+    offset = limits[:n_joints, 1]       # [n_joints]
+    rng    = limits[:n_joints, 0]       # [n_joints]
+    return offset, offset + rng         # q_lo, q_hi
 
 
 @dataclass
