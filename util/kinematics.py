@@ -163,14 +163,45 @@ def build_sphere_dict(morph) -> dict[str, list[dict]]:
     return sphere_dict
 
 
+def _is_degenerate_link(morph, j: int, r: float) -> bool:
+    """True if link_j collapses to the single fallback sphere in build_sphere_dict.
+
+    A link has no capsule when its own offset d_j and its outgoing length a_{j+1}
+    are both below 2r (the last link has no a_{j+1}). Such a zero-length body sits
+    at the joint origin, so it cannot separate its neighbours.
+    """
+    n = morph.n_links
+    has_d = abs(morph.d[j].item()) > 2.0 * r
+    has_a_next = j < n - 1 and abs(morph.a[j + 1].item()) > 2.0 * r
+    return not (has_d or has_a_next)
+
+
 def build_self_collision_ignore(morph) -> dict[str, list[str]]:
-    """Ignore adjacent and two-hop link pairs to suppress false contacts."""
-    links = ["base_link"] + [f"link_{i}" for i in range(morph.n_links)]
-    ignore: dict[str, list[str]] = {lnk: [] for lnk in links}
-    for i, a in enumerate(links):
-        for b in links[i + 1 : i + 3]:
-            ignore[a].append(b)
-            ignore[b].append(a)
+    """Ignore each link's effective neighbours to suppress false contacts.
+
+    Two links are effectively adjacent — and thus permanently touching at a
+    shared joint — when every link strictly between them is degenerate (a
+    zero-length body, see _is_degenerate_link). This skips over runs of
+    degenerate links, so a real link in between (which can genuinely fold into
+    contact) is left checked, matching the paper's "closest non-zero capsule"
+    rule. base_link is included unconditionally; absent names are filtered by
+    the caller.
+    """
+    chain = ["base_link"] + [f"link_{i}" for i in range(morph.n_links)]
+    # base_link is never a "between" link, so its degeneracy is irrelevant.
+    degenerate = [False] + [
+        _is_degenerate_link(morph, i, morph.link_radius) for i in range(morph.n_links)
+    ]
+    ignore: dict[str, list[str]] = {lnk: [] for lnk in chain}
+    for i in range(len(chain)):
+        j = i + 1
+        while j < len(chain):
+            ignore[chain[i]].append(chain[j])
+            ignore[chain[j]].append(chain[i])
+            # Extend to j+1 only while link j (the next "between") is degenerate.
+            if not degenerate[j]:
+                break
+            j += 1
     return ignore
 
 
