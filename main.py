@@ -12,12 +12,10 @@ from validation.curobo_planner import CuroboPlanner
 from validation.render import animate_plan, render_scene
 from util.csv_log_reader import load_latest_optimized_morphology
 
-
-
 ##########Optimizer Selection########################################
 from optim.nrm_alpha_random_selection import optimize_morphology
-#from optim.hjcdik_baseline import optimize_morphology
-#from optim.IFT_baseline_jax import optimize_morphology
+# from optim.hjcdik_baseline import optimize_morphology
+# from optim.IFT_baseline_jax import optimize_morphology
 ######################################################################
 
 # target selecting

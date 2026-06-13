@@ -50,17 +50,15 @@ try:
         ca, sa = jnp.cos(alpha), jnp.sin(alpha)
         ct, st = jnp.cos(theta), jnp.sin(theta)
         zero, one = jnp.zeros_like(alpha), jnp.ones_like(alpha)
-        row1 = jnp.concatenate([ct,      -st,      zero, a    ], axis=-1)
-        row2 = jnp.concatenate([st*ca,    ct*ca,  -sa,  -d*sa ], axis=-1)
-        row3 = jnp.concatenate([st*sa,    ct*sa,   ca,   d*ca ], axis=-1)
-        row4 = jnp.concatenate([zero,     zero,    zero, one  ], axis=-1)
+        row1 = jnp.concatenate([ct, -st, zero, a], axis=-1)
+        row2 = jnp.concatenate([st * ca, ct * ca, -sa, -d * sa], axis=-1)
+        row3 = jnp.concatenate([st * sa, ct * sa, ca, d * ca], axis=-1)
+        row4 = jnp.concatenate([zero, zero, zero, one], axis=-1)
         return jnp.stack([row1, row2, row3, row4], axis=-2)
 
     def _fk_jax(mdh, theta):
         """mdh: [..., n_links, 3], theta: [..., n_links, 1] → poses [..., n_links, 4, 4]"""
-        transforms = _jax_transform(
-            mdh[..., 0:1], mdh[..., 1:2], mdh[..., 2:3], theta
-        )
+        transforms = _jax_transform(mdh[..., 0:1], mdh[..., 1:2], mdh[..., 2:3], theta)
         n = mdh.shape[-2]
         pose_shape = mdh.shape[:-2] + (4, 4)
         pose = jnp.broadcast_to(jnp.eye(4), pose_shape)
@@ -68,7 +66,7 @@ try:
         for i in range(n):
             pose = pose @ transforms[..., i, :, :]
             poses.append(pose)
-        return jnp.stack(poses, axis=-3)   # [..., n_links, 4, 4]
+        return jnp.stack(poses, axis=-3)  # [..., n_links, 4, 4]
 
     # ── Preprocessing (same custom_vjp as before) ─────────────────────────────
     import lineax as lx
@@ -88,13 +86,13 @@ try:
     # Normaliser with explicit zero-guard backward (mirrors NAGE normaliser_bwd)
     @jax.custom_vjp
     def _normalise(param):
-        l2   = jnp.hypot(param[:, 0:1], param[:, 1:2])
+        l2 = jnp.hypot(param[:, 0:1], param[:, 1:2])
         norm = jnp.sum(l2, axis=0, keepdims=True)
         return param / jnp.maximum(norm, 1e-12)
 
     def _normalise_fwd(param):
-        l2        = jnp.hypot(param[:, 0:1], param[:, 1:2])
-        norm      = jnp.sum(l2, axis=0, keepdims=True)
+        l2 = jnp.hypot(param[:, 0:1], param[:, 1:2])
+        norm = jnp.sum(l2, axis=0, keepdims=True)
         safe_norm = jnp.maximum(norm, 1e-12)
         return param / safe_norm, (param, l2, safe_norm)
 
@@ -107,7 +105,7 @@ try:
             param / safe_l2,
             jnp.zeros_like(param),
         )
-        grad = (g * safe_norm - chain * jnp.sum(g * param)) / safe_norm ** 2
+        grad = (g * safe_norm - chain * jnp.sum(g * param)) / safe_norm**2
         return (grad,)
 
     _normalise.defvjp(_normalise_fwd, _normalise_bwd)
@@ -123,10 +121,10 @@ try:
     def _ik_residual(joints, args):
         """Residual for optx.least_squares.  joints: [n_links, 1]"""
         morph, target_pose = args
-        reached = _fk_jax(morph, joints)[-1]          # [4, 4]
-        t_err   = reached[:3, 3] - target_pose[:3, 3]
-        r_err   = (reached[:3, :3] - target_pose[:3, :3]).flatten()
-        reg     = joints.flatten() * 1e-4              # Tikhonov: keeps J full-rank
+        reached = _fk_jax(morph, joints)[-1]  # [4, 4]
+        t_err = reached[:3, 3] - target_pose[:3, 3]
+        r_err = (reached[:3, :3] - target_pose[:3, :3]).flatten()
+        reg = joints.flatten() * 1e-4  # Tikhonov: keeps J full-rank
         return jnp.concatenate([t_err, r_err, reg])
 
     # ── Single IK solve with IFT gradient via ImplicitAdjoint ────────────────
@@ -134,7 +132,7 @@ try:
     def _solve_ik(morph, target_pose, init_joints):
         """morph: [n_links, 3], target_pose: [4, 4], init_joints: [n_links, 1]"""
         solver = optx.LevenbergMarquardt(rtol=1e-4, atol=1e-4)
-        sol    = optx.least_squares(
+        sol = optx.least_squares(
             fn=_ik_residual,
             solver=solver,
             y0=init_joints,
@@ -147,7 +145,7 @@ try:
             ),
             throw=False,
         )
-        return sol.value   # [n_links, 1]
+        return sol.value  # [n_links, 1]
 
     # vmap over (target_pose, init_joints); morph is shared
     _vmap_ik = jax.vmap(_solve_ik, in_axes=(None, 0, 0))
@@ -155,16 +153,24 @@ try:
     # ── SE3 distance (from NAGE utils.py) ─────────────────────────────────────
 
     def _jax_distance(x1, x2):
-        t_err_sq  = jnp.sum((x1[:3, 3] - x2[:3, 3]) ** 2)
+        t_err_sq = jnp.sum((x1[:3, 3] - x2[:3, 3]) ** 2)
         r_err_mat = x1[:3, :3].T @ x2[:3, :3]
-        trace     = r_err_mat[0, 0] + r_err_mat[1, 1] + r_err_mat[2, 2]
-        cos_a     = jnp.clip((trace - 1.0) / 2.0, -1.0 + 1e-7, 1.0 - 1e-7)
-        rot_err   = jnp.arccos(cos_a)
-        return jnp.sqrt(t_err_sq / 8.0 + rot_err ** 2 / (2.0 * jnp.pi ** 2) + 1e-12)
+        trace = r_err_mat[0, 0] + r_err_mat[1, 1] + r_err_mat[2, 2]
+        cos_a = jnp.clip((trace - 1.0) / 2.0, -1.0 + 1e-7, 1.0 - 1e-7)
+        rot_err = jnp.arccos(cos_a)
+        return jnp.sqrt(t_err_sq / 8.0 + rot_err**2 / (2.0 * jnp.pi**2) + 1e-12)
 
     # ── Loss function (IK + SE3, over all task poses) ─────────────────────────
 
-    def _loss_fn(lengths, alpha, task_poses, init_joints, link_radius, zero_link_weight, success_eps):
+    def _loss_fn(
+        lengths,
+        alpha,
+        task_poses,
+        init_joints,
+        link_radius,
+        zero_link_weight,
+        success_eps,
+    ):
         """
         lengths:         [n_links, 2]
         alpha:           [n_links, 1]
@@ -174,37 +180,42 @@ try:
         success_eps:     se3 threshold below which a pose is considered reached
         """
         processed = _preprocess_jax(lengths, link_radius)
-        morph     = jnp.concatenate([alpha, processed], axis=1)  # [n_links, 3]
+        morph = jnp.concatenate([alpha, processed], axis=1)  # [n_links, 3]
 
         # IK for every pose with its own random init_joints
         optimal_joints = _vmap_ik(morph, task_poses, init_joints)  # [N, n_links, 1]
 
         # FK at IK solutions
-        bmorph       = jnp.broadcast_to(morph, (task_poses.shape[0], *morph.shape))
-        reached      = jax.vmap(_fk_jax)(bmorph, optimal_joints)   # [N, n_links, 4, 4]
-        ee_poses     = reached[:, -1, :, :]                         # [N, 4, 4]
+        bmorph = jnp.broadcast_to(morph, (task_poses.shape[0], *morph.shape))
+        reached = jax.vmap(_fk_jax)(bmorph, optimal_joints)  # [N, n_links, 4, 4]
+        ee_poses = reached[:, -1, :, :]  # [N, 4, 4]
 
-        dists = jax.vmap(_jax_distance)(ee_poses, task_poses)       # [N]
+        dists = jax.vmap(_jax_distance)(ee_poses, task_poses)  # [N]
 
         # Alpha-aware zero-link penalty: stronger when alpha=0 (identity-transform risk).
-        link_norm_sq = processed[:, 0] ** 2 + processed[:, 1] ** 2   # [n_links]
-        alpha_scale  = 1.0 + jnp.exp(-alpha[:, 0] ** 2 / 0.1)        # [n_links]
-        zero_link_penalty = jnp.mean(alpha_scale * jnp.exp(-link_norm_sq / (link_radius ** 2)))
+        link_norm_sq = processed[:, 0] ** 2 + processed[:, 1] ** 2  # [n_links]
+        alpha_scale = 1.0 + jnp.exp(-(alpha[:, 0] ** 2) / 0.1)  # [n_links]
+        zero_link_penalty = jnp.mean(
+            alpha_scale * jnp.exp(-link_norm_sq / (link_radius**2))
+        )
 
-        return jnp.mean(jax.nn.relu(dists - success_eps)) + zero_link_weight * zero_link_penalty, (morph, optimal_joints)
+        return jnp.mean(
+            jax.nn.relu(dists - success_eps)
+        ) + zero_link_weight * zero_link_penalty, (morph, optimal_joints)
 
     _JAX_AVAILABLE = True
 
 except ImportError as _e:
-    _JAX_AVAILABLE    = False
+    _JAX_AVAILABLE = False
     _JAX_IMPORT_ERROR = str(_e)
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────
 
+
 def optimize_morphology(
     morph: Morphology,
-    task:  Task,
+    task: Task,
     optimization_parameters: dict,
 ) -> tuple[Morphology, Path]:
     """NAGE baseline morphology optimiser (JAX + optax AdamW + IFT gradient)."""
@@ -215,64 +226,72 @@ def optimize_morphology(
             f"  (original error: {_JAX_IMPORT_ERROR})"
         )
 
-    n_iter             = int(optimization_parameters.get("num_iterations",     100))
-    logging_           = bool(optimization_parameters.get("logging",           True))
-    eval_interval      = int(optimization_parameters.get("eval_interval",       20))
-    random_seed        = int(optimization_parameters.get("random_seed",         42))
-    number_random_seed = int(optimization_parameters.get("number_random_seed",  32))
-    percentage_poses   = float(optimization_parameters.get("percentage_poses",   1.0))
-    ignore_ground      = bool(optimization_parameters.get("ignore_ground",     False))
-    ignore_obstacles   = bool(optimization_parameters.get("ignore_obstacles",  False))
-    learning_rate      = float(optimization_parameters.get("learning_rate",    0.01))
-    collision_weight   = float(optimization_parameters.get("collision_weight",  10.0))
-    success_eps        = float(optimization_parameters.get("success_eps",       1e-4))
-    collision_margin   = float(optimization_parameters.get("collision_margin",   0.0))
-    ik_weight          = float(optimization_parameters.get("ik_weight",           1.0))
-    zero_link_weight   = float(optimization_parameters.get("zero_link_weight",    1.0))
+    n_iter = int(optimization_parameters.get("num_iterations", 100))
+    logging_ = bool(optimization_parameters.get("logging", True))
+    eval_interval = int(optimization_parameters.get("eval_interval", 20))
+    random_seed = int(optimization_parameters.get("random_seed", 42))
+    number_random_seed = int(optimization_parameters.get("number_random_seed", 32))
+    percentage_poses = float(optimization_parameters.get("percentage_poses", 1.0))
+    ignore_ground = bool(optimization_parameters.get("ignore_ground", False))
+    ignore_obstacles = bool(optimization_parameters.get("ignore_obstacles", False))
+    learning_rate = float(optimization_parameters.get("learning_rate", 0.01))
+    collision_weight = float(optimization_parameters.get("collision_weight", 10.0))
+    success_eps = float(optimization_parameters.get("success_eps", 1e-4))
+    collision_margin = float(optimization_parameters.get("collision_margin", 0.0))
+    ik_weight = float(optimization_parameters.get("ik_weight", 1.0))
+    zero_link_weight = float(optimization_parameters.get("zero_link_weight", 1.0))
 
     device = morph.params.device
 
     candidate_dofs_raw = optimization_parameters.get("candidate_dofs", None)
     morph_dof = morph.n_links - 1
-    dof = _resolve_candidate_dofs(candidate_dofs_raw)[0] if candidate_dofs_raw else morph_dof
+    dof = (
+        _resolve_candidate_dofs(candidate_dofs_raw)[0]
+        if candidate_dofs_raw
+        else morph_dof
+    )
 
     link_radius = morph.link_radius
-    n_links     = dof + 1
+    n_links = dof + 1
 
     if dof != morph_dof:
         if logging_:
-            print(f"[NumericalIK-JAX] DOF mismatch: morph={morph_dof}, sampling {dof}-DOF.")
+            print(
+                f"[NumericalIK-JAX] DOF mismatch: morph={morph_dof}, sampling {dof}-DOF."
+            )
         torch.manual_seed(random_seed)
-        sampled       = sample_morph(1, dof, analytically_solvable=False, device=device)[0]
-        alpha_torch   = sampled[:, 0:1].clone()
+        sampled = sample_morph(1, dof, analytically_solvable=False, device=device)[0]
+        alpha_torch = sampled[:, 0:1].clone()
         lengths_torch = sampled[:, 1:].clone()
     else:
-        alpha_torch   = morph.params[:, 0:1].clone().to(device)
+        alpha_torch = morph.params[:, 0:1].clone().to(device)
         lengths_torch = morph.params[:, 1:].clone().to(device)
 
-    alpha_jnp   = jnp.array(alpha_torch.cpu().numpy())    # [n_links, 1]
+    alpha_jnp = jnp.array(alpha_torch.cpu().numpy())  # [n_links, 1]
     lengths_jnp = jnp.array(lengths_torch.cpu().numpy())  # [n_links, 2]
 
     # Joint bounds derived from initial morphology (kept fixed; morph alpha doesn't change).
     _mdh_init = torch.cat([alpha_torch, lengths_torch], dim=1).float()
     _q_lo, _q_hi = _compute_joint_bounds(_mdh_init, dof)
-    _q_lo = (_q_lo + JOINT_LIMIT_MARGIN).cpu().numpy()    # [dof]
-    _q_hi = (_q_hi - JOINT_LIMIT_MARGIN).cpu().numpy()    # [dof]
-    q_lo_jnp = jnp.array(_q_lo)[:, None]                  # [dof, 1]
-    q_hi_jnp = jnp.array(_q_hi)[:, None]                  # [dof, 1]
+    _q_lo = (_q_lo + JOINT_LIMIT_MARGIN).cpu().numpy()  # [dof]
+    _q_hi = (_q_hi - JOINT_LIMIT_MARGIN).cpu().numpy()  # [dof]
+    q_lo_jnp = jnp.array(_q_lo)[:, None]  # [dof, 1]
+    q_hi_jnp = jnp.array(_q_hi)[:, None]  # [dof, 1]
 
     if logging_:
         print(f"[NumericalIK-JAX] {dof}-DOF, {n_iter} iters, lr={learning_rate}")
         print(f"[NumericalIK-JAX] JAX backend: {jax.default_backend()}")
 
     scene = build_optimization_validation_context(
-        task=task, device=device,
-        ignore_ground=ignore_ground, ignore_obstacles=ignore_obstacles,
+        task=task,
+        device=device,
+        ignore_ground=ignore_ground,
+        ignore_obstacles=ignore_obstacles,
     )
 
     goal_poses_torch = task.goal_poses.to(device)
-    total_poses      = goal_poses_torch.shape[0]
-    n_sample         = (
+    total_poses = goal_poses_torch.shape[0]
+    n_sample = (
         max(1, int(round(total_poses * percentage_poses)))
         if percentage_poses <= 1.0
         else min(total_poses, int(round(percentage_poses)))
@@ -280,9 +299,7 @@ def optimize_morphology(
     goal_poses_all_jnp = jnp.array(goal_poses_torch.cpu().numpy())  # [N, 4, 4]
 
     # JIT-compile loss + grad
-    _loss_and_grad = eqx.filter_jit(
-        jax.value_and_grad(_loss_fn, has_aux=True)
-    )
+    _loss_and_grad = eqx.filter_jit(jax.value_and_grad(_loss_fn, has_aux=True))
 
     # optax: zero_nans → clip_by_global_norm → adamw  (same as NAGE baseline)
     optimizer = optax.chain(
@@ -292,21 +309,25 @@ def optimize_morphology(
     )
     opt_state = optimizer.init(lengths_jnp)
 
-    csv_logger    = OptimizationCSVLogger(root_dir=_PROJECT_ROOT)
+    csv_logger = OptimizationCSVLogger(root_dir=_PROJECT_ROOT)
     val_generator = torch.Generator(device=device)
     val_generator.manual_seed(random_seed + 1)
-    rng           = np.random.default_rng(random_seed)
+    rng = np.random.default_rng(random_seed)
 
     if logging_:
         print(f"[NumericalIK-JAX] CSV: {csv_logger.csv_path}")
-        print(f"[NumericalIK-JAX] n_poses={n_sample}/{total_poses}, "
-              f"collision_weight={collision_weight}")
+        print(
+            f"[NumericalIK-JAX] n_poses={n_sample}/{total_poses}, "
+            f"collision_weight={collision_weight}"
+        )
 
     # ── PyTorch collision penalty helper ──────────────────────────────────────
 
     def _collision_penalty_and_grad(lengths_np, theta_stars_np):
         lengths_pt = torch.tensor(
-            lengths_np.reshape(n_links, 2), dtype=torch.float32, device=device,
+            lengths_np.reshape(n_links, 2),
+            dtype=torch.float32,
+            device=device,
             requires_grad=True,
         )
         processed_pt, _ = _preprocess_lengths(lengths_pt, link_radius)
@@ -319,18 +340,18 @@ def optimize_morphology(
             # theta_stars: [N, n_links, 1] → append fixed EE joint
             # theta_stars from JAX has shape [N, n_links, 1]
             theta_full = theta_pt.reshape(N, n_links, 1)
-            mdh_batch  = mdh_pt.unsqueeze(0).expand(N, -1, -1)
-            all_poses  = forward_kinematics(mdh_batch, theta_full)
-            crit_dist  = _collision_critical_distance(mdh_batch, all_poses, link_radius)
+            mdh_batch = mdh_pt.unsqueeze(0).expand(N, -1, -1)
+            all_poses = forward_kinematics(mdh_batch, theta_full)
+            crit_dist = _collision_critical_distance(mdh_batch, all_poses, link_radius)
         else:
             zero_theta = torch.zeros(n_links, 1, device=device, dtype=torch.float32)
             zero_poses = forward_kinematics(mdh_pt, zero_theta)
-            crit_dist  = _collision_critical_distance(
+            crit_dist = _collision_critical_distance(
                 mdh_pt.unsqueeze(0), zero_poses.unsqueeze(0), link_radius
             )
 
         col_penalty = F.relu(collision_margin - crit_dist).mean()
-        loss_col    = collision_weight * col_penalty
+        loss_col = collision_weight * col_penalty
         loss_col.backward()
         grad_col = lengths_pt.grad.detach().cpu().numpy().flatten().astype(np.float64)
         return float(loss_col.detach()), grad_col
@@ -338,63 +359,80 @@ def optimize_morphology(
     # ── Optimisation loop (Python for-loop, same as NAGE) ────────────────────
 
     try:
-        progress_bar = tqdm(range(n_iter), desc=f"NumericalIK-JAX {dof}-DOF",
-                            dynamic_ncols=True)
+        progress_bar = tqdm(
+            range(n_iter), desc=f"NumericalIK-JAX {dof}-DOF", dynamic_ncols=True
+        )
 
         for update_idx in progress_bar:
             # Random pose subset
-            idx         = rng.choice(total_poses, size=n_sample, replace=False)
-            poses_batch = goal_poses_all_jnp[idx]                   # [N, 4, 4]
+            idx = rng.choice(total_poses, size=n_sample, replace=False)
+            poses_batch = goal_poses_all_jnp[idx]  # [N, 4, 4]
 
             # Random initial joints sampled within self-collision joint bounds.
-            key          = jax.random.PRNGKey(update_idx)
-            unit         = jax.random.uniform(key, shape=(n_sample, dof, 1))
-            init_joints  = unit * (q_hi_jnp - q_lo_jnp) + q_lo_jnp  # [N, dof, 1]
+            key = jax.random.PRNGKey(update_idx)
+            unit = jax.random.uniform(key, shape=(n_sample, dof, 1))
+            init_joints = unit * (q_hi_jnp - q_lo_jnp) + q_lo_jnp  # [N, dof, 1]
             # Append fixed EE joint (zero) to match n_links
-            init_joints  = jnp.concatenate(
+            init_joints = jnp.concatenate(
                 [init_joints, jnp.zeros((n_sample, 1, 1))], axis=1
             )  # [N, n_links, 1]
 
             # IK loss + IFT gradient
             (ik_loss, (morph_jax, theta_stars)), ik_grads = _loss_and_grad(
-                lengths_jnp, alpha_jnp, poses_batch, init_joints, link_radius, zero_link_weight,
+                lengths_jnp,
+                alpha_jnp,
+                poses_batch,
+                init_joints,
+                link_radius,
+                zero_link_weight,
                 success_eps,
             )
 
             # Collision penalty (PyTorch)
-            theta_stars_np = np.array(theta_stars)             # [N, n_links, 1]
+            theta_stars_np = np.array(theta_stars)  # [N, n_links, 1]
             col_val, col_grad = _collision_penalty_and_grad(
                 np.array(lengths_jnp), theta_stars_np
             )
 
             # Combine gradients: IFT (JAX) + collision (PyTorch)
             ik_grads_np = np.array(ik_grads)
-            total_grads = jnp.array(ik_weight * ik_grads_np + col_grad.reshape(n_links, 2))
-            total_loss  = ik_weight * float(ik_loss) + col_val
+            total_grads = jnp.array(
+                ik_weight * ik_grads_np + col_grad.reshape(n_links, 2)
+            )
+            total_loss = ik_weight * float(ik_loss) + col_val
 
             # optax step (zero_nans + clip + adamw)
             updates, opt_state = optimizer.update(total_grads, opt_state, lengths_jnp)
             lengths_jnp = optax.apply_updates(lengths_jnp, updates)
-            lengths_jnp = lengths_jnp.at[-1, 1].set(jnp.maximum(lengths_jnp[-1, 1], 0.0))
+            lengths_jnp = lengths_jnp.at[-1, 1].set(
+                jnp.maximum(lengths_jnp[-1, 1], 0.0)
+            )
 
             with torch.no_grad():
-                proc_np  = np.array(jnp.concatenate(
-                    [alpha_jnp, _preprocess_jax(lengths_jnp, link_radius)], axis=1))
-                raw_np   = np.array(jnp.concatenate([alpha_jnp, lengths_jnp], axis=1))
-                proc_t   = torch.tensor(proc_np, device=device)
-                raw_t    = torch.tensor(raw_np,  device=device)
+                proc_np = np.array(
+                    jnp.concatenate(
+                        [alpha_jnp, _preprocess_jax(lengths_jnp, link_radius)], axis=1
+                    )
+                )
+                raw_np = np.array(jnp.concatenate([alpha_jnp, lengths_jnp], axis=1))
+                proc_t = torch.tensor(proc_np, device=device)
+                raw_t = torch.tensor(raw_np, device=device)
 
             # Periodic validation (after morphology update)
             validation_data = None
             if eval_interval > 0 and update_idx % eval_interval == 0 and logging_:
                 validation_data = run_optimization_validation(
-                    processed_morphology=proc_t.detach(), morph=morph, task=task,
-                    scene=scene, device=device, percentage_poses=percentage_poses,
+                    processed_morphology=proc_t.detach(),
+                    morph=morph,
+                    task=task,
+                    scene=scene,
+                    device=device,
+                    percentage_poses=percentage_poses,
                     number_random_seed=number_random_seed,
                     pose_sampling_generator=val_generator,
                 )
                 val_se3 = validation_data["best_se3_dist_mean"].detach().cpu().item()
-                val_ik  = validation_data["ik_success_pose_rate"].detach().cpu().item()
+                val_ik = validation_data["ik_success_pose_rate"].detach().cpu().item()
                 tqdm.write(
                     f"[Iter {update_idx:>4}/{n_iter}] "
                     f"loss={total_loss:.6f}, "
@@ -419,15 +457,22 @@ def optimize_morphology(
             )
 
         # ── Final evaluation ─────────────────────────────────────────────────
-        final_proc_np = np.array(jnp.concatenate(
-            [alpha_jnp, _preprocess_jax(lengths_jnp, link_radius)], axis=1))
-        final_raw_np  = np.array(jnp.concatenate([alpha_jnp, lengths_jnp], axis=1))
-        final_proc_t  = torch.tensor(final_proc_np, device=device)
-        final_raw_t   = torch.tensor(final_raw_np,  device=device)
+        final_proc_np = np.array(
+            jnp.concatenate(
+                [alpha_jnp, _preprocess_jax(lengths_jnp, link_radius)], axis=1
+            )
+        )
+        final_raw_np = np.array(jnp.concatenate([alpha_jnp, lengths_jnp], axis=1))
+        final_proc_t = torch.tensor(final_proc_np, device=device)
+        final_raw_t = torch.tensor(final_raw_np, device=device)
 
         final_val = run_optimization_validation(
-            processed_morphology=final_proc_t, morph=morph, task=task,
-            scene=scene, device=device, percentage_poses=percentage_poses,
+            processed_morphology=final_proc_t,
+            morph=morph,
+            task=task,
+            scene=scene,
+            device=device,
+            percentage_poses=percentage_poses,
             number_random_seed=number_random_seed,
             pose_sampling_generator=val_generator,
         )
@@ -442,7 +487,7 @@ def optimize_morphology(
         csv_logger.close()
 
         final_se3 = final_val["best_se3_dist_mean"].detach().cpu().item()
-        final_ik  = final_val["ik_success_pose_rate"].detach().cpu().item()
+        final_ik = final_val["ik_success_pose_rate"].detach().cpu().item()
         print(
             f"[Final IFT-JAX] "
             f"loss={total_loss:.6f}, "
