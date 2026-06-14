@@ -11,6 +11,8 @@ from util.kinematics import compute_link_world_poses, forward_kinematics
 from util.mdh import add_robot_to_builder
 from util.self_collision import get_joint_limits
 from task.morphology_sampler import yoshikawa_manipulability
+from validation.critical_distance import build_critical_distance_monitor
+from validation.critical_distance_style import SPHERE_DEFAULT_COLOR
 from validation.ground import add_ground_grid_to_viser, make_origin_axes
 
 
@@ -763,10 +765,17 @@ def animate_plan(
             h = viewer._server.scene.add_icosphere(
                 f"/curobo/robot/sphere_{i}",
                 radius=float(r),
-                color=(0, 200, 255),
+                color=SPHERE_DEFAULT_COLOR,
                 position=(float(x), float(y), float(z)),
             )
             robot_sphere_handles.append(h)
+
+    # Per-frame critical self-collision distances
+    crit_monitor = None
+    if curobo_planner is not None:
+        crit_monitor = build_critical_distance_monitor(
+            viewer._server, curobo_planner, path, n_joints, robot_sphere_handles
+        )
 
     def render_q(q, t: float, frame_idx: int | None = None) -> None:
         if manip_values is not None and frame_idx is not None:
@@ -788,6 +797,8 @@ def animate_plan(
             spheres = curobo_planner.robot_spheres_world(q[:n_joints])
             for h, (x, y, z, *_) in zip(robot_sphere_handles, spheres):
                 h.position = (float(x), float(y), float(z))
+            if crit_monitor is not None and frame_idx is not None:
+                crit_monitor.update(frame_idx, spheres)
         eef_b, eef_e, eef_c = make_eef_pose_axes(
             morph, q, axis_length=_EEF_FRAME_AXIS_LENGTH
         )
@@ -813,6 +824,7 @@ def animate_plan(
             t += frame_dt
             _sleep(frame_dt)
 
+        last_idx = len(path) - 1
         while viewer.is_running():
             for _ in range(hold_frames):
                 render_q(path[0], t, 0)
