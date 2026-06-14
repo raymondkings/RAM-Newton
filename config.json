@@ -14,18 +14,10 @@
     "ignore_ground": true,
     "ignore_obstacles": true,
     "plan_goal_start": false,
-    "use_cached_optimized_morphology": false,
-    "cached_optimization_csv": null,
+    "use_cached_optimized_morphology": true,
+    "cached_optimization_csv": "output",
     "plot": {
         "enabled": false,
         "output_dir": "output/figures"
-    },
-    "timelapse": {
-        "enabled": true,
-        "frame_every_n_steps": 5,
-        "output_dir": "output/timelapse",
-        "format": "mp4",
-        "fps": 4,
-        "dpi": 200
     }
 }
