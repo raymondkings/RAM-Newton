@@ -66,3 +66,39 @@ To supply a different config file:
 uv run python main.py --config path/to/my_config.json
 ```
 
+> **Note:** the `use_cached_optimized_morphology` flag controls whether the
+> optimizer runs. When `true`, a run **skips optimization** and replays the most
+> recent optimized morphology from `output/`; when `false`, it runs the
+> optimizer. See [docs/configuration.md](docs/configuration.md).
+
+## How it works
+
+`main.py` loads a `Task` (a set of goal poses), then either optimizes a
+manipulator morphology against a frozen Neural Reachability Map (NRM) checkpoint
+or loads a cached one, and finally validates the result with collision-free
+motion planning via cuRobo.
+
+```mermaid
+flowchart LR
+    A[config + task poses] --> B{cached?}
+    B -->|no| C[optimize morphology<br/>to maximize NRM reachability]
+    B -->|yes| D[load cached morphology]
+    C --> E[cuRobo plan + render]
+    D --> E
+```
+
+## Documentation
+
+Deep reference lives in [`docs/`](docs/) — start at the
+[documentation index](docs/index.md):
+
+- [docs/architecture.md](docs/architecture.md) — repository layout, the full
+  pipeline, data flow, the paper↔code map, and the output CSV schema.
+- [docs/optimization.md](docs/optimization.md) — deep walkthrough of the
+  morphology optimizer (differentiable preprocessing, batched optimization,
+  early stopping, selection cascade).
+- [docs/configuration.md](docs/configuration.md) — every `config.json` key plus
+  the hard-coded knobs that live in source.
+- [docs/troubleshooting.md](docs/troubleshooting.md) — common failure points and
+  known issues.
+
