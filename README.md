@@ -97,6 +97,8 @@ Deep reference lives in [`docs/`](docs/) — start at the
 - [docs/optimization.md](docs/optimization.md) — deep walkthrough of the
   morphology optimizer (differentiable preprocessing, batched optimization,
   early stopping, selection cascade).
+- [docs/validation.md](docs/validation.md) — IK/FK validation, cuRobo motion
+  planning, and the viser visualization.
 - [docs/configuration.md](docs/configuration.md) — every `config.json` key plus
   the hard-coded knobs that live in source.
 - [docs/troubleshooting.md](docs/troubleshooting.md) — common failure points and
