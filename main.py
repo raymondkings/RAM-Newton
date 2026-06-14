@@ -146,25 +146,6 @@ def run_plan(
         # render_scene(morph, task, curobo_planner=planner, q=start_q)
 
 
-# def run_postprocess(csv_path: Path, task: Task, args: argparse.Namespace) -> None:
-#     """Run optional CSV-based plotting and timelapse generation."""
-#     plot_cfg = getattr(args, "plot", {})
-#     if isinstance(plot_cfg, dict) and plot_cfg.get("enabled", True):
-#         from postprocess.plot import create_plots_from_csv
-
-#         output_dir = plot_cfg.get("output_dir", "output/figures")
-#         paths = create_plots_from_csv(csv_path, output_dir=output_dir)
-#         for path in paths:
-#             print(f"[postprocess] Plot saved: {path}")
-
-#     tl_cfg = getattr(args, "timelapse", None)
-#     if isinstance(tl_cfg, dict) and tl_cfg.get("enabled", False):
-#         from postprocess.timelapse import create_timelapse_from_csv
-
-#         video_path = create_timelapse_from_csv(csv_path, task, tl_cfg)
-#         print(f"[postprocess] Timelapse saved: {video_path}")
-
-
 def run_postprocess(csv_path: Path, task: Task, args: argparse.Namespace) -> None:
     """Run candidate-selection CSV plotting. This is for the candidate selection algorithm
 
