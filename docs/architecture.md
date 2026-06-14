@@ -12,7 +12,7 @@
 | `util/` | Helpers: alpha candidates, distribution checker, cuRobo IK/FK wrappers, MDH transforms, CSV logging. |
 | `validation/` | `curobo_planner.py` (motion planning), `optimization_validation.py` (IK/FK), `render.py` (viser). |
 | `weights/` | Frozen NRM checkpoint (`checkpoint_5-7.pth`) + `metadata.json`. |
-| `output/` | Generated CSV logs, figures, timelapses (gitignored). |
+| `output/` | Generated CSV logs and candidate-selection figures (gitignored). |
 
 ## Pipeline overview
 
