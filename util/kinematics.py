@@ -157,6 +157,9 @@ def build_sphere_dict(morph) -> dict[str, list[dict]]:
                 spheres += _capsule_spheres(
                     [a_next / 2.0, 0.0, 0.0], abs(a_next) / 2.0, [1.0, 0.0, 0.0], r
                 )
+
+        # Degenerate-link fallback: if neither d_j nor a_{j+1} produced a capsule,
+        # `spheres` is empty, so `or` falls back to a single sphere at the joint origin.
         sphere_dict[f"link_{j}"] = spheres or [
             {"center": [0.0, 0.0, 0.0], "radius": float(r)}
         ]
