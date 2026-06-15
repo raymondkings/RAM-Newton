@@ -91,6 +91,8 @@ RESULT_FIELDS = [
     "success",
     "failure_reason",
     "duration_seconds",
+    "optim_duration_seconds",
+    "plan_duration_seconds",
     "returncode",
 ]
 
@@ -101,6 +103,8 @@ _ROW_PARSERS: dict[str, Callable[[str], Any]] = {
     "success": lambda v: v == "True",
     "failure_reason": str,
     "duration_seconds": float,
+    "optim_duration_seconds": lambda v: float(v) if v else None,
+    "plan_duration_seconds": lambda v: float(v) if v else None,
     "returncode": int,
     **{k: int for k in SAMPLER_KEYS},
 }
@@ -184,6 +188,16 @@ def build_config(
     return cfg
 
 
+def _extract_phase_timings(stdout: str) -> tuple[float | None, float | None]:
+    optim, plan = None, None
+    for line in stdout.splitlines():
+        if line.startswith("[Benchmark] optim_seconds="):
+            optim = float(line.split("=")[1])
+        elif line.startswith("[Benchmark] plan_seconds="):
+            plan = float(line.split("=")[1])
+    return optim, plan
+
+
 def run_single(
     seed: int,
     condition_name: str,
@@ -212,12 +226,15 @@ def run_single(
         duration = time.time() - start
         success, reason = classify_output(proc.stdout, proc.returncode, proc.stderr)
         returncode = proc.returncode
+        optim_dur, plan_dur = _extract_phase_timings(proc.stdout)
     except subprocess.TimeoutExpired:
         duration = time.time() - start
         success, reason, returncode = False, "timeout", -1
+        optim_dur, plan_dur = None, None
     except Exception as e:
         duration = time.time() - start
         success, reason, returncode = False, f"runner_error: {e}", -2
+        optim_dur, plan_dur = None, None
 
     return {
         "seed": seed,
@@ -226,6 +243,8 @@ def run_single(
         "success": success,
         "failure_reason": reason,
         "duration_seconds": round(duration, 1),
+        "optim_duration_seconds": round(optim_dur, 1) if optim_dur is not None else "",
+        "plan_duration_seconds": round(plan_dur, 1) if plan_dur is not None else "",
         "returncode": returncode,
     }
 

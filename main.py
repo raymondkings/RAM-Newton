@@ -1,6 +1,7 @@
 import argparse
 import json
 import random
+import time
 from pathlib import Path
 
 import torch
@@ -282,6 +283,7 @@ def main() -> None:
     )
 
     if not use_cached_optimized_morphology:
+        _optim_start = time.perf_counter()
         optimized_morph, csv_path = optimize_morphology(
             morph=morph,
             task=task,
@@ -301,6 +303,7 @@ def main() -> None:
                 "ignore_obstacles": args.ignore_obstacles,
             },
         )
+        print(f"[Benchmark] optim_seconds={time.perf_counter() - _optim_start:.2f}")
 
     # # for testing the alpha(different learning rate, different input)
     # optimized_morph, csv_path = optimize_morphology(
@@ -340,6 +343,7 @@ def main() -> None:
     else:
         plan_task = planner_task
 
+    _plan_start = time.perf_counter()
     run_plan(
         optimized_morph,
         plan_task,
@@ -348,6 +352,7 @@ def main() -> None:
         debug=args.debug,
         visualize=args.visualize,
     )
+    print(f"[Benchmark] plan_seconds={time.perf_counter() - _plan_start:.2f}")
 
 
 if __name__ == "__main__":
