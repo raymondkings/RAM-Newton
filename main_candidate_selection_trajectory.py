@@ -220,6 +220,7 @@ def main() -> None:
         False,
     )
     cached_optimization_csv = getattr(args, "cached_optimization_csv", None)
+    optimization_timing = [0.0, 0.0]
 
     if use_cached_optimized_morphology:
         csv_source = (
@@ -268,7 +269,7 @@ def main() -> None:
                 "num_alpha_candidates",
             )
 
-        optimized_morph, optimized_trajectory, csv_path = (
+        optimized_morph, optimized_trajectory, csv_path, optimization_timing = (
             optimize_morphology_and_trajectory(
                 morph=morph,
                 task=task,
@@ -282,6 +283,10 @@ def main() -> None:
     )
     print(f"[Info] Optimized trajectory poses: {optimized_trajectory.shape[0]}")
     print(f"[Info] Optimization CSV: {csv_path}")
+    print(
+        "[Info] Optimization timing "
+        f"T=[t_opt_or_baseline, t_validation_curobo] seconds: {optimization_timing}"
+    )
 
     run_postprocess(Path(csv_path), args)
 

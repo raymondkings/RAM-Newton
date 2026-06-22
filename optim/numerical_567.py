@@ -18,6 +18,7 @@ from task.morphology_sampler import sample_morph
 from util.kinematics import forward_kinematics
 from util.direct_ik_common import _collision_critical_distance
 from util.optimization_csv_logger import OptimizationCSVLogger
+from util.optimization_timing import OptimizationTimer
 from validation.optimization_validation import run_optimization_validation
 
 EPS = 1e-4
@@ -240,7 +241,7 @@ def optimize_morphology(
     morph: Morphology,
     task: Task,
     optimization_parameters: dict,
-) -> tuple[Morphology, Path]:
+) -> tuple[Morphology, Path, list[float]]:
     """
     GPU-batch NumericalIK + IFT + L-BFGS morphology optimisation.
 
@@ -267,6 +268,8 @@ def optimize_morphology(
     collision_margin = float(optimization_parameters.get("collision_margin", 0.0))
 
     device = morph.params.device
+    timer = OptimizationTimer(device)
+    timer.start()
 
     # ── DOF selection ────────────────────────────────────────────────────────
     candidate_dofs_raw = optimization_parameters.get("candidate_dofs", None)
@@ -405,16 +408,17 @@ def optimize_morphology(
                 with torch.no_grad():
                     pl, _ = _preprocess(lengths.detach(), link_radius)
                     proc = torch.cat([alpha, pl], dim=1)
-                validation_data = run_optimization_validation(
-                    processed_morphology=proc.detach(),
-                    morph=morph,
-                    task=task,
-                    scene=scene,
-                    device=device,
-                    percentage_poses=percentage_poses,
-                    number_random_seed=number_random_seed,
-                    pose_sampling_generator=val_generator,
-                )
+                with timer.validation():
+                    validation_data = run_optimization_validation(
+                        processed_morphology=proc.detach(),
+                        morph=morph,
+                        task=task,
+                        scene=scene,
+                        device=device,
+                        percentage_poses=percentage_poses,
+                        number_random_seed=number_random_seed,
+                        pose_sampling_generator=val_generator,
+                    )
                 best_se3 = validation_data["best_se3_dist_mean"].detach().cpu().item()
                 tqdm.write(
                     f"[Iter {update_idx:>4}/{n_iter}] "
@@ -443,16 +447,17 @@ def optimize_morphology(
             final_raw = torch.cat([alpha, lengths.detach()], dim=1)
             final_proc = torch.cat([alpha, final_pl], dim=1)
 
-        final_val = run_optimization_validation(
-            processed_morphology=final_proc,
-            morph=morph,
-            task=task,
-            scene=scene,
-            device=device,
-            percentage_poses=percentage_poses,
-            number_random_seed=number_random_seed,
-            pose_sampling_generator=val_generator,
-        )
+        with timer.validation():
+            final_val = run_optimization_validation(
+                processed_morphology=final_proc,
+                morph=morph,
+                task=task,
+                scene=scene,
+                device=device,
+                percentage_poses=percentage_poses,
+                number_random_seed=number_random_seed,
+                pose_sampling_generator=val_generator,
+            )
         csv_logger.log_iteration(
             iteration=n_iter,
             loss=torch.zeros(1),
@@ -467,6 +472,7 @@ def optimize_morphology(
         return (
             Morphology(params=final_proc.detach(), link_radius=link_radius),
             csv_logger.csv_path,
+            timer.result(),
         )
 
     finally:

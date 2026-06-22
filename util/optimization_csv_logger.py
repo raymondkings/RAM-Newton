@@ -158,3 +158,48 @@ class OptimizationCSVLogger:
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         self.close()
+
+
+class InternalOptimizationCSVLogger:
+    """Small CSV logger for optimizer-internal aggregate metrics."""
+
+    def __init__(self, parent_csv_path: str | Path, fieldnames: list[str]) -> None:
+        parent_csv_path = Path(parent_csv_path)
+        self.csv_path = parent_csv_path.with_name(
+            f"{parent_csv_path.stem}_internal_log.csv"
+        )
+        self.fieldnames = fieldnames
+
+        self._file = open(self.csv_path, "w", newline="", encoding="utf-8")
+        self._writer = csv.DictWriter(self._file, fieldnames=self.fieldnames)
+        self._writer.writeheader()
+        self._file.flush()
+
+    @staticmethod
+    def _to_cell(value) -> float | int | str:
+        if value is None:
+            return ""
+        if isinstance(value, Tensor):
+            value = value.detach().cpu()
+            if value.numel() == 1:
+                return float(value.item())
+            return json.dumps(value.tolist())
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int | float | str):
+            return value
+        return json.dumps(value)
+
+    def log_row(self, **values) -> None:
+        row = {field: self._to_cell(values.get(field)) for field in self.fieldnames}
+        self._writer.writerow(row)
+        self._file.flush()
+
+    def close(self) -> None:
+        self._file.close()
+
+    def __enter__(self) -> "InternalOptimizationCSVLogger":
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()

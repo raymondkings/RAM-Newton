@@ -237,6 +237,7 @@ def main() -> None:
         args, "use_cached_optimized_morphology", False
     )
     cached_optimization_csv = getattr(args, "cached_optimization_csv", None)
+    optimization_timing = [0.0, 0.0]
 
     if use_cached_optimized_morphology:
         csv_source = (
@@ -266,7 +267,7 @@ def main() -> None:
     )
 
     if not use_cached_optimized_morphology:
-        optimized_morph, csv_path = optimize_morphology(
+        optimized_morph, csv_path, optimization_timing = optimize_morphology(
             morph=morph,
             task=task,
             optimization_parameters={
@@ -287,7 +288,7 @@ def main() -> None:
         )
 
     # # for testing the alpha(different learning rate, different input)
-    # optimized_morph, csv_path = optimize_morphology(
+    # optimized_morph, csv_path, optimization_timing = optimize_morphology(
     #     morph=morph,
     #     task=task,
     #     optimization_parameters={
@@ -308,6 +309,10 @@ def main() -> None:
         f"[Info] Optimized morphology params:\n{optimized_morph.params} \nlink_radius={optimized_morph.link_radius}"
     )
     print(f"[Info] Optimization CSV: {csv_path}")
+    print(
+        "[Info] Optimization timing "
+        f"T=[t_opt_or_baseline, t_validation_curobo] seconds: {optimization_timing}"
+    )
 
     run_postprocess(Path(csv_path), task, args)
 

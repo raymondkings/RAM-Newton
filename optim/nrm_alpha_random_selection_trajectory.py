@@ -40,7 +40,11 @@ from util.fixed_alpha_morphology_candidates import (
     sample_fixed_alpha_morphology_candidates,
     sample_fixed_alpha_morphology_candidates_by_dof,
 )
-from util.optimization_csv_logger import OptimizationCSVLogger
+from util.optimization_csv_logger import (
+    InternalOptimizationCSVLogger,
+    OptimizationCSVLogger,
+)
+from util.optimization_timing import OptimizationTimer
 from validation.optimization_validation import (
     build_optimization_validation_context,
     run_optimization_validation,
@@ -83,6 +87,39 @@ DEFAULT_DISTRIBUTION_BATCH_SIZE = 128
 ZERO_ALPHA_RUN_EXCLUSION_LENGTH = DEFAULT_ZERO_ALPHA_RUN_EXCLUSION_LENGTH
 TOP_PROBABILITY_FRACTION = 0.025
 MORPHOLOGY_FINAL_D_PENALTY_WEIGHT = 100.0
+
+TRAJECTORY_INTERNAL_LOG_FIELDNAMES = [
+    "dof",
+    "iteration",
+    "outer_iteration",
+    "phase",
+    "phase_iteration",
+    "mean_loss",
+    "mean_nrm_prob",
+    "mean_morphology_loss",
+    "mean_trajectory_loss",
+    "mean_reachability_loss",
+    "mean_smoothness_loss",
+    "mean_distance_step_variance_loss",
+    "mean_rotation_step_variance_loss",
+    "mean_position_deviation_loss",
+    "mean_rotation_deviation_loss",
+    "mean_endpoint_side_loss",
+    "mean_wall_loss",
+    "mean_wall_repulsion_loss",
+]
+
+_TRAJECTORY_LOSS_STAT_KEYS = [
+    "reachability_loss",
+    "smoothness_loss",
+    "distance_step_variance_loss",
+    "rotation_step_variance_loss",
+    "position_deviation_loss",
+    "rotation_deviation_loss",
+    "endpoint_side_loss",
+    "wall_loss",
+    "wall_repulsion_loss",
+]
 
 
 def _load_model(device: torch.device) -> MLP:
@@ -616,6 +653,8 @@ def _optimize_all_candidates_iterative(
     learning_rate_pose: float,
     candidate_batch_size: int,
     logging: bool,
+    internal_logger: InternalOptimizationCSVLogger | None = None,
+    dof: int | None = None,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     """Optimize all candidates with alternating morphology/trajectory steps.
 
@@ -695,9 +734,10 @@ def _optimize_all_candidates_iterative(
         disable=not logging,
         dynamic_ncols=True,
     )
+    global_iteration = 0
 
     for outer_idx in range(num_iteratives):
-        for _ in range(morphology_steps):
+        for morph_step_idx in range(morphology_steps):
             length_optimizer.zero_grad(set_to_none=True)
 
             with torch.no_grad():
@@ -726,19 +766,33 @@ def _optimize_all_candidates_iterative(
                 current_loss_sum += float(loss_per_candidate.detach().sum().item())
 
             length_optimizer.step()
+            mean_loss = current_loss_sum / num_candidates
+            mean_prob = current_probs.mean().item()
+            if internal_logger is not None:
+                internal_logger.log_row(
+                    dof=dof,
+                    iteration=global_iteration,
+                    outer_iteration=outer_idx,
+                    phase="morph",
+                    phase_iteration=morph_step_idx,
+                    mean_loss=mean_loss,
+                    mean_nrm_prob=mean_prob,
+                    mean_morphology_loss=mean_loss,
+                )
             if logging:
                 progress.set_postfix(
                     phase="morph",
                     outer=f"{outer_idx + 1}/{num_iteratives}",
-                    loss=f"{current_loss_sum / num_candidates:.4f}",
-                    prob=f"{current_probs.mean().item():.3f}",
+                    loss=f"{mean_loss:.4f}",
+                    prob=f"{mean_prob:.3f}",
                 )
             progress.update(1)
+            global_iteration += 1
 
         if trajectory_optimizer is None:
             continue
 
-        for _ in range(trajectory_steps):
+        for trajectory_step_idx in range(trajectory_steps):
             trajectory_optimizer.zero_grad(set_to_none=True)
 
             with torch.no_grad():
@@ -750,6 +804,7 @@ def _optimize_all_candidates_iterative(
 
             current_probs = torch.empty(num_candidates, device=alpha_candidates.device)
             current_loss_sum = 0.0
+            current_stat_sums = {key: 0.0 for key in _TRAJECTORY_LOSS_STAT_KEYS}
             wall_values = []
 
             for start in range(0, num_candidates, candidate_batch_size):
@@ -772,19 +827,40 @@ def _optimize_all_candidates_iterative(
                 (loss_per_candidate.sum() / num_candidates).backward()
                 current_probs[start:end] = prob_per_candidate.detach()
                 current_loss_sum += float(loss_per_candidate.detach().sum().item())
+                for key in _TRAJECTORY_LOSS_STAT_KEYS:
+                    current_stat_sums[key] += float(stats[key].sum().item())
                 wall_values.append(stats["min_wall_clearance"])
 
             trajectory_optimizer.step()
+            mean_loss = current_loss_sum / num_candidates
+            mean_prob = current_probs.mean().item()
+            mean_stats = {
+                f"mean_{key}": value / num_candidates
+                for key, value in current_stat_sums.items()
+            }
+            if internal_logger is not None:
+                internal_logger.log_row(
+                    dof=dof,
+                    iteration=global_iteration,
+                    outer_iteration=outer_idx,
+                    phase="trajectory",
+                    phase_iteration=trajectory_step_idx,
+                    mean_loss=mean_loss,
+                    mean_nrm_prob=mean_prob,
+                    mean_trajectory_loss=mean_loss,
+                    **mean_stats,
+                )
             if logging:
                 wall_tensor = torch.cat(wall_values, dim=0)
                 progress.set_postfix(
                     phase="trajectory",
                     outer=f"{outer_idx + 1}/{num_iteratives}",
-                    loss=f"{current_loss_sum / num_candidates:.4f}",
-                    prob=f"{current_probs.mean().item():.3f}",
+                    loss=f"{mean_loss:.4f}",
+                    prob=f"{mean_prob:.3f}",
                     wall=f"{wall_tensor.min().item():.3f}",
                 )
             progress.update(1)
+            global_iteration += 1
 
     progress.close()
 
@@ -849,6 +925,7 @@ def _optimize_one_dof_group(
     candidate_batch_size: int,
     distribution_batch_size: int,
     logging: bool,
+    internal_logger: InternalOptimizationCSVLogger | None = None,
 ) -> list[dict[str, Any]]:
     """Optimize and post-filter one fixed-length DOF candidate group."""
     alpha_candidates = initial_candidate_morphologies[..., 0:1].detach()
@@ -873,6 +950,8 @@ def _optimize_one_dof_group(
         learning_rate_pose=learning_rate_pose,
         candidate_batch_size=candidate_batch_size,
         logging=logging,
+        internal_logger=internal_logger,
+        dof=dof,
     )
 
     post_valid_mask, _ = candidate_base._distribution_valid_mask(
@@ -926,6 +1005,7 @@ def _validate_candidate(
     percentage_poses: float,
     number_random_seed: int,
     random_seed: int,
+    timer: OptimizationTimer | None = None,
 ) -> dict:
     """Validate one candidate on its own optimized trajectory."""
     candidate_task = Task(
@@ -934,16 +1014,29 @@ def _validate_candidate(
         reachable_region=base_task.reachable_region,
         start_q=base_task.start_q,
     )
-    return run_optimization_validation(
-        processed_morphology=processed_morphology.detach(),
-        morph=morph,
-        task=candidate_task,
-        scene=scene,
-        device=device,
-        percentage_poses=percentage_poses,
-        number_random_seed=number_random_seed,
-        pose_sampling_generator=_validation_generator(device, random_seed),
-    )
+    pose_sampling_generator = _validation_generator(device, random_seed)
+    if timer is None:
+        return run_optimization_validation(
+            processed_morphology=processed_morphology.detach(),
+            morph=morph,
+            task=candidate_task,
+            scene=scene,
+            device=device,
+            percentage_poses=percentage_poses,
+            number_random_seed=number_random_seed,
+            pose_sampling_generator=pose_sampling_generator,
+        )
+    with timer.validation():
+        return run_optimization_validation(
+            processed_morphology=processed_morphology.detach(),
+            morph=morph,
+            task=candidate_task,
+            scene=scene,
+            device=device,
+            percentage_poses=percentage_poses,
+            number_random_seed=number_random_seed,
+            pose_sampling_generator=pose_sampling_generator,
+        )
 
 
 def _validate_top_records(
@@ -957,6 +1050,7 @@ def _validate_top_records(
     number_random_seed: int,
     random_seed: int,
     logging: bool,
+    timer: OptimizationTimer | None = None,
 ) -> tuple[Tensor, Tensor, list[dict]]:
     """Run validation on selected candidate records and return scores plus data."""
     se3_scores = torch.empty(len(records), device=device)
@@ -979,6 +1073,7 @@ def _validate_top_records(
             percentage_poses=percentage_poses,
             number_random_seed=number_random_seed,
             random_seed=random_seed,
+            timer=timer,
         )
         validation_data_list.append(validation_data)
         se3_scores[idx] = validation_data["best_se3_dist_mean"].detach().to(device)
@@ -1016,7 +1111,7 @@ def optimize_morphology_and_trajectory(
     morph: Morphology,
     task: Task,
     optimization_parameters: dict,
-) -> tuple[Morphology, Tensor, Path]:
+) -> tuple[Morphology, Tensor, Path, list[float]]:
     """Discrete-alpha candidate search with per-candidate trajectory optimization."""
     lr = float(optimization_parameters.get("learning_rate", 0.01))
     lr_pose = float(
@@ -1060,6 +1155,8 @@ def optimize_morphology_and_trajectory(
 
     num_iteratives, morphology_steps, trajectory_steps = _trajectory_step_counts()
     device = morph.params.device
+    timer = OptimizationTimer(device)
+    timer.start()
     selected_label = ",".join(str(dof) for dof in candidate_dofs)
 
     if logging:
@@ -1108,11 +1205,17 @@ def optimize_morphology_and_trajectory(
 
     model = _load_model(device)
     csv_logger = OptimizationCSVLogger(root_dir=_PROJECT_ROOT)
+    internal_logger: InternalOptimizationCSVLogger | None = None
 
     alpha_generator = torch.Generator(device=device)
     alpha_generator.manual_seed(random_seed)
 
     try:
+        internal_logger = InternalOptimizationCSVLogger(
+            csv_logger.csv_path,
+            fieldnames=TRAJECTORY_INTERNAL_LOG_FIELDNAMES,
+        )
+
         alpha_candidates_by_dof = _generate_alpha_candidates_by_dof(
             dofs=candidate_dofs,
             requested_num_candidates=num_alpha_candidates,
@@ -1133,6 +1236,7 @@ def optimize_morphology_and_trajectory(
 
         if logging:
             print(f"[Info] Writing CSV log to: {csv_logger.csv_path}")
+            print(f"[Info] Writing internal CSV log to: {internal_logger.csv_path}")
             for dof in candidate_dofs:
                 original_count = alpha_candidates_by_dof[dof].shape[0]
                 accepted_count = initial_candidate_morphologies_by_dof[dof].shape[0]
@@ -1158,6 +1262,7 @@ def optimize_morphology_and_trajectory(
                     candidate_batch_size=candidate_batch_size,
                     distribution_batch_size=distribution_batch_size,
                     logging=logging,
+                    internal_logger=internal_logger,
                 )
             )
 
@@ -1226,6 +1331,7 @@ def optimize_morphology_and_trajectory(
             number_random_seed=number_random_seed,
             random_seed=random_seed,
             logging=logging,
+            timer=timer,
         )
 
         best_ik_success_rate = ik_success_rates.max()
@@ -1308,9 +1414,16 @@ def optimize_morphology_and_trajectory(
             params=final_processed_morphology.detach(),
             link_radius=morph.link_radius,
         )
-        return optimized_morph, final_trajectory.detach(), csv_logger.csv_path
+        return (
+            optimized_morph,
+            final_trajectory.detach(),
+            csv_logger.csv_path,
+            timer.result(),
+        )
 
     finally:
+        if internal_logger is not None:
+            internal_logger.close()
         csv_logger.close()
 
 

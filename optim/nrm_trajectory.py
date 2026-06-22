@@ -22,6 +22,7 @@ from tqdm import tqdm
 from optim.model import MLP
 from interface import Morphology, Task
 from util.optimization_csv_logger import OptimizationCSVLogger
+from util.optimization_timing import OptimizationTimer
 from validation.optimization_validation import run_optimization_validation
 
 
@@ -436,6 +437,7 @@ def _validation_for_current_state(
     percentage_poses: float,
     number_random_seed: int,
     pose_sampling_generator: torch.Generator,
+    timer: OptimizationTimer | None = None,
 ) -> dict:
     current_task = Task(
         environment=base_task.environment,
@@ -443,26 +445,39 @@ def _validation_for_current_state(
         reachable_region=base_task.reachable_region,
         start_q=base_task.start_q,
     )
-    return run_optimization_validation(
-        processed_morphology=processed_morphology.detach(),
-        morph=Morphology(
-            params=processed_morphology.detach(),
-            link_radius=link_radius,
-        ),
-        task=current_task,
-        scene=scene,
-        device=device,
-        percentage_poses=percentage_poses,
-        number_random_seed=number_random_seed,
-        pose_sampling_generator=pose_sampling_generator,
+    validation_morph = Morphology(
+        params=processed_morphology.detach(),
+        link_radius=link_radius,
     )
+    if timer is None:
+        return run_optimization_validation(
+            processed_morphology=processed_morphology.detach(),
+            morph=validation_morph,
+            task=current_task,
+            scene=scene,
+            device=device,
+            percentage_poses=percentage_poses,
+            number_random_seed=number_random_seed,
+            pose_sampling_generator=pose_sampling_generator,
+        )
+    with timer.validation():
+        return run_optimization_validation(
+            processed_morphology=processed_morphology.detach(),
+            morph=validation_morph,
+            task=current_task,
+            scene=scene,
+            device=device,
+            percentage_poses=percentage_poses,
+            number_random_seed=number_random_seed,
+            pose_sampling_generator=pose_sampling_generator,
+        )
 
 
 def optimize_morphology_and_trajectory(
     morph: Morphology,
     task: Task,
     optimization_parameters: dict,
-) -> tuple[Morphology, Tensor, Path]:
+) -> tuple[Morphology, Tensor, Path, list[float]]:
     """Alternately optimize morphology lengths and intermediate trajectory poses.
 
     Returns:
@@ -472,6 +487,8 @@ def optimize_morphology_and_trajectory(
             Final trajectory, including fixed start and goal poses.
         csv_path:
             Path to output/log_<time>.csv.
+        timing:
+            [optimizer/backprop time, cuRobo validation time] in seconds.
     """
     lr = float(optimization_parameters.get("learning_rate", 0.01))
     lr_pose = float(
@@ -487,6 +504,8 @@ def optimize_morphology_and_trajectory(
     percentage_poses = float(optimization_parameters.get("percentage_poses", 1))
 
     device = morph.params.device
+    timer = OptimizationTimer(device)
+    timer.start()
 
     if task.goal_poses.shape[0] < 2:
         raise ValueError(
@@ -601,6 +620,7 @@ def optimize_morphology_and_trajectory(
                         percentage_poses=percentage_poses,
                         number_random_seed=number_random_seed,
                         pose_sampling_generator=pose_sampling_generator,
+                        timer=timer,
                     )
                     best_se3 = (
                         validation_data["best_se3_dist_mean"].detach().cpu().item()
@@ -678,6 +698,7 @@ def optimize_morphology_and_trajectory(
                         percentage_poses=percentage_poses,
                         number_random_seed=number_random_seed,
                         pose_sampling_generator=pose_sampling_generator,
+                        timer=timer,
                     )
                     best_se3 = (
                         validation_data["best_se3_dist_mean"].detach().cpu().item()
@@ -757,6 +778,7 @@ def optimize_morphology_and_trajectory(
             percentage_poses=percentage_poses,
             number_random_seed=number_random_seed,
             pose_sampling_generator=pose_sampling_generator,
+            timer=timer,
         )
 
         csv_logger.log_iteration(
@@ -791,7 +813,12 @@ def optimize_morphology_and_trajectory(
             link_radius=morph.link_radius,
         )
 
-        return optimized_morph, final_trajectory.detach(), csv_logger.csv_path
+        return (
+            optimized_morph,
+            final_trajectory.detach(),
+            csv_logger.csv_path,
+            timer.result(),
+        )
 
     finally:
         csv_logger.close()
