@@ -13,7 +13,9 @@ A summary + figure are generated once all runs complete.
 """
 
 import argparse
+import ast
 import csv
+import math
 import json
 import subprocess
 import time
@@ -51,7 +53,7 @@ SAMPLER_PARAMS = [
 SAMPLER_KEYS = [k for k, _ in SAMPLER_PARAMS]
 SAMPLER_DEFAULTS = dict(SAMPLER_PARAMS)
 SAMPLER_ABBREV = {
-    "num_samples": "ns",
+    "num_samples": "nsp",
     "num_line_samples": "nls",
     "num_extra_paths": "nep",
     "repeat_start_goal": "rsg",
@@ -78,16 +80,8 @@ PRESETS = {
             (6, 0, 4, 0),
         ],
         "num_seeds": 20,
-        "output_dir": PROJECT_DIR / "benchmark_results_main",
-    },
-    "small": {
-        "configs": [
-            (10, 10, 0, 4),
-            (25, 10, 0, 4),
-        ],
-        "num_seeds": 3,
-        "output_dir": PROJECT_DIR / "benchmark_results_small",
-    },
+        "output_dir": PROJECT_DIR / "benchmark_results",
+    }
 }
 
 RESULT_FIELDS = [
@@ -365,63 +359,73 @@ def _plot_outcome_breakdown(ax, rows: list[dict]) -> None:
         ax.text(i, 102, f"{rate:.1f}% success", ha="center", fontsize=10)
 
 
-def _plot_cumulative_success(ax, rows: list[dict]) -> None:
-    by_condition = group_by(rows, lambda r: r["condition"])
-    for cond in sorted(by_condition.keys()):
-        cond_rows = sorted(by_condition[cond], key=lambda r: r["seed"])
-        cumulative = np.cumsum([r["success"] for r in cond_rows])
-        seed_indices = np.array([r["seed"] for r in cond_rows])
-        denom = np.arange(1, len(cond_rows) + 1)
-        ax.plot(
-            seed_indices,
-            100 * cumulative / denom,
-            label=cond,
-            color=CONDITION_COLORS.get(cond, "#888"),
-            linewidth=2,
-        )
-    ax.axhline(100, color="#888", linewidth=1, linestyle="--", alpha=0.5)
-    ax.set_xlabel("Seed index")
-    ax.set_ylabel("Cumulative success rate (%)")
-    ax.set_title("Convergence of Success Rate", pad=5)
-    ax.set_ylim(0, 105)
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+def _detect_optim_module() -> str:
+    """Return the optim module name imported in main.py (e.g. 'nrm_alpha_random_selection')."""
+    src = (PROJECT_DIR / "main.py").read_text()
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.module is not None
+            and node.module.startswith("optim.")
+        ):
+            return node.module[len("optim.") :]
+    return "unknown"
 
 
 def _make_figure(results: list[dict], output_dir: Path) -> None:
     by_combo = group_by(results, combo_key)
     combos = sorted(by_combo.keys())
-    fig_path = output_dir / "benchmark_results.png"
+    optim_module = _detect_optim_module()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    fig_path = output_dir / f"benchmark_{optim_module}_{timestamp}.png"
 
     if len(combos) <= 1:
-        fig, axes = plt.subplots(1, 2, figsize=(11, 5))
+        fig, ax = plt.subplots(1, 1, figsize=(6, 5))
         fig.suptitle(
-            "Optimization + Planning Benchmark", fontsize=14, fontweight="bold"
-        )
-        _plot_outcome_breakdown(axes[0], results)
-        _plot_cumulative_success(axes[1], results)
-        plt.tight_layout()
-    else:
-        fig = plt.figure(figsize=(11, 4.2 * len(combos) + 1.2), layout="constrained")
-        fig.get_layout_engine().set(h_pad=0.25, hspace=0.0)
-        fig.suptitle(
-            "Optimization + Planning Benchmark — sampler param sweep",
+            f"Optimization + Planning Benchmark\nAlgorithm: {optim_module}",
             fontsize=14,
             fontweight="bold",
-            y=1.005,
         )
-        subfigs = fig.subfigures(len(combos), 1, hspace=0.0)
-        for subfig, key in zip(subfigs, combos):
+        _plot_outcome_breakdown(ax, results)
+        plt.tight_layout()
+    else:
+        ncols = 3
+        nrows = math.ceil(len(combos) / ncols)
+        fig, axes_grid = plt.subplots(
+            nrows, ncols, figsize=(5.5 * ncols, 4.5 * nrows + 1.2), squeeze=False
+        )
+        fig.suptitle(
+            f"Optimization + Planning Benchmark\nAlgorithm: {optim_module}",
+            fontsize=14,
+            fontweight="bold",
+            y=1.0,
+        )
+        abbrev_legend = "   |   ".join(
+            f"{abbr} = {key}" for key, abbr in SAMPLER_ABBREV.items()
+        )
+        plt.tight_layout(rect=[0, 0, 1, 0.96], h_pad=6.0)
+        fig.text(
+            0.5,
+            0.965,
+            abbrev_legend,
+            ha="center",
+            va="bottom",
+            fontsize=9,
+            style="italic",
+        )
+        axes_flat = axes_grid.flatten()
+        for ax, key in zip(axes_flat, combos):
             combo_rows = by_combo[key]
-            title = ", ".join(f"{k}={v}" for k, v in zip(SAMPLER_KEYS, key))
-            subfig.suptitle(
-                f"{title}  ({len(combo_rows)} runs)",
-                fontsize=12,
-                fontweight="bold",
+            title = "   ".join(
+                f"{SAMPLER_ABBREV[k]}={v}" for k, v in zip(SAMPLER_KEYS, key)
             )
-            axes = subfig.subplots(1, 2)
-            _plot_outcome_breakdown(axes[0], combo_rows)
-            _plot_cumulative_success(axes[1], combo_rows)
+            _plot_outcome_breakdown(ax, combo_rows)
+            ax.set_title(
+                f"{title}  ({len(combo_rows)} runs)", fontsize=10, fontweight="bold"
+            )
+        for ax in axes_flat[len(combos) :]:
+            ax.set_visible(False)
 
     plt.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close()
@@ -472,6 +476,11 @@ def parse_args() -> argparse.Namespace:
         help="Resume from an existing results CSV, skipping completed "
         "(seed, condition, *sampler_values) tuples",
     )
+    parser.add_argument(
+        "--replot",
+        action="store_true",
+        help="Load all CSVs from --output-dir and regenerate the figure without running benchmarks",
+    )
     for key in SAMPLER_KEYS:
         parser.add_argument(
             f"--{key.replace('_', '-')}",
@@ -498,14 +507,35 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     config_dir.mkdir(exist_ok=True)
 
+    if args.replot:
+        csv_files = sorted(output_dir.glob("benchmark_*.csv"))
+        if not csv_files:
+            print(f"[Benchmark] No CSV files found in {output_dir}")
+            return
+        all_results = []
+        for csv_path in csv_files:
+            with open(csv_path, newline="") as f:
+                all_results.extend(
+                    {k: _ROW_PARSERS[k](v) for k, v in row.items()}
+                    for row in csv.DictReader(f)
+                )
+        if all_results:
+            generate_report(all_results, output_dir)
+        else:
+            print("[Benchmark] No results to report.")
+        return
+
     with open(PROJECT_DIR / "config.json") as f:
         base_config = json.load(f)
 
+    optim_module = _detect_optim_module()
     if args.resume and args.resume.exists():
         results_csv = args.resume
         print(f"[Benchmark] Resuming from {results_csv}")
     else:
-        results_csv = output_dir / f"benchmark_{datetime.now():%Y%m%d_%H%M%S}.csv"
+        results_csv = (
+            output_dir / f"benchmark_{optim_module}_{datetime.now():%Y%m%d_%H%M%S}.csv"
+        )
         print(f"[Benchmark] Writing results to {results_csv}")
 
     completed = load_completed(results_csv)
