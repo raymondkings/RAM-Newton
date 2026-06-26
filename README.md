@@ -54,23 +54,55 @@ uv run python -c "import graphik, liegroups, torch_geometric, generative_graphik
 
 ## Usage
 
-Run the full pipeline with the default `config.json`:
+There are three pipeline entry points, each pairing a task formulation with an
+optimizer:
+
+- `main_candidate_selection_static.py` — candidate-selection heuristic over static
+  task poses (`optim/nrm_alpha_random_selection.py`).
+- `main_candidate_selection_trajectory.py` — **our heuristic**: candidate-selection
+  search extended to jointly pick a morphology and a trajectory
+  (`optim/nrm_alpha_random_selection_trajectory.py`).
+- `main_gradient_trajectory.py` — alternating gradient-based optimization of
+  morphology and trajectory (`optim/nrm_trajectory.py`), used as the baseline to
+  compare the heuristic against.
+
+Run any of them with the default `config.json`:
 
 ```bash
-uv run python main.py
+uv run python main_candidate_selection_static.py
+uv run python main_candidate_selection_trajectory.py
+uv run python main_gradient_trajectory.py
 ```
 
 To supply a different config file:
 
 ```bash
-uv run python main.py --config path/to/my_config.json
+uv run python main_gradient_trajectory.py --config path/to/my_config.json
 ```
 
 ## Benchmark
 
-`benchmarks/pipeline_benchmark.py` sweeps the full pipeline across N random seeds, running each
-seed with and without collision avoidance, and writes a crash-safe CSV plus a
-summary figure to `benchmark_results/`.
+`benchmarks/pipeline_benchmark.py` sweeps one of the entry points above across N
+random seeds, running each seed with and without collision avoidance, and writes a
+crash-safe CSV plus a summary figure to `benchmark_results/`. Pick the entry point
+with `--entry-point` (default `candidate_static`):
+
+```bash
+uv run python benchmarks/pipeline_benchmark.py --entry-point candidate_static
+uv run python benchmarks/pipeline_benchmark.py --entry-point candidate_trajectory
+uv run python benchmarks/pipeline_benchmark.py --entry-point gradient_trajectory
+```
+
+To compare our heuristic against the gradient baseline, run the same
+seeds/conditions through both trajectory entry points into separate output
+directories so their CSVs/figures don't mix:
+
+```bash
+uv run python benchmarks/pipeline_benchmark.py --entry-point candidate_trajectory \
+    --output-dir benchmark_results/candidate_trajectory
+uv run python benchmarks/pipeline_benchmark.py --entry-point gradient_trajectory \
+    --output-dir benchmark_results/gradient_trajectory
+```
 
 Run the default sweep (100 seeds × 2 conditions):
 
@@ -102,9 +134,12 @@ Outputs:
 
 ### Sampler-param sweep
 
-Named sweeps over `(num_samples, num_line_samples, num_extra_paths,
-repeat_start_goal)` tuples are defined in
-[benchmarks/presets.json](benchmarks/presets.json) and selected via `--preset`:
+Each entry point exposes its own sweepable sampler params: `candidate_static` has
+`(num_samples, num_line_samples, num_extra_paths, repeat_start_goal)`, while the two
+trajectory entry points have just `num_poses`. Named sweeps over a tuple of those
+values are defined in [benchmarks/presets.json](benchmarks/presets.json) and
+selected via `--preset`; a preset's tuples must match the current `--entry-point`'s
+params (the script raises an error otherwise):
 
 ```bash
 uv run python benchmarks/pipeline_benchmark.py --preset main   # 12-tuple production sweep, 20 seeds

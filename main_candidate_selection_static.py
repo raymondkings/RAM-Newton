@@ -113,6 +113,7 @@ def main() -> None:
         "[Info] Optimization timing "
         f"T=[t_opt_or_baseline, t_validation_curobo] seconds: {optimization_timing}"
     )
+    print(f"[Benchmark] optim_seconds={optimization_timing[0]:.2f}")
 
     run_postprocess(Path(csv_path), args)
 

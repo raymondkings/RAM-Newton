@@ -9,6 +9,7 @@ that was previously duplicated verbatim across all of them.
 import argparse
 import json
 import random
+import time
 from pathlib import Path
 
 import torch
@@ -116,6 +117,7 @@ def run_plan(
     debug: bool = False,
     visualize: bool = True,
 ) -> None:
+    plan_start = time.perf_counter()
     dtype = morph.params.dtype
     device = morph.params.device
     planner = CuroboPlanner(
@@ -142,6 +144,7 @@ def run_plan(
             "  Check that IK candidate poses are reachable for this morphology, or run with "
             "--ignore-ground / --ignore-obstacles to diagnose."
         )
+        print(f"[Benchmark] plan_seconds={time.perf_counter() - plan_start:.2f}")
         return
 
     n_goals = task.goal_poses.shape[0]
@@ -172,9 +175,11 @@ def run_plan(
                 best_ik_q=result.best_ik_q,
                 start_q=start_q,
             )
+        print(f"[Benchmark] plan_seconds={time.perf_counter() - plan_start:.2f}")
         return
 
     print(f"\nSequence complete: {len(result.path)} waypoints through {n_goals} goals.")
+    print(f"[Benchmark] plan_seconds={time.perf_counter() - plan_start:.2f}")
     if visualize:
         print(f"Animating -- {len(result.path)} frames ...")
         animate_plan(
