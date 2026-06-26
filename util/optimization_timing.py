@@ -2,12 +2,21 @@ from __future__ import annotations
 
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Iterator
 
 import torch
 
 
 _JAX_SYNC_UNAVAILABLE = False
+
+
+@dataclass(frozen=True)
+class OptimizationTiming:
+    """Wall-clock breakdown of a single optimize_morphology[_and_trajectory] call."""
+
+    optimizer_seconds: float
+    validation_seconds: float
 
 
 class OptimizationTimer:
@@ -66,11 +75,11 @@ class OptimizationTimer:
             self._sync()
             self.validation_elapsed += time.perf_counter() - start
 
-    def result(self) -> list[float]:
+    def result(self) -> OptimizationTiming:
         if self._total_start is None:
-            return [0.0, self.validation_elapsed]
+            return OptimizationTiming(0.0, self.validation_elapsed)
         if self._total_elapsed is None:
             self._sync()
             self._total_elapsed = time.perf_counter() - self._total_start
         optimizer_elapsed = max(0.0, self._total_elapsed - self.validation_elapsed)
-        return [optimizer_elapsed, self.validation_elapsed]
+        return OptimizationTiming(optimizer_elapsed, self.validation_elapsed)

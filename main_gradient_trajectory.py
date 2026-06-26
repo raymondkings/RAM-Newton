@@ -10,8 +10,10 @@ from task.task_pose_sampler_trajectory_ver import (
     NUM_POSES,
     create_task,
 )
+from util.optimization_timing import OptimizationTiming
 from util.pipeline_common import (
     build_arg_parser,
+    report_optimization_timing,
     resolve_initial_morphology,
     run_plan,
     run_postprocess,
@@ -94,7 +96,7 @@ def main() -> None:
         optimized_morph, csv_path, optimization_timing = (
             morph,
             cached_csv_path,
-            [0.0, 0.0],
+            OptimizationTiming(0.0, 0.0),
         )
         optimized_trajectory = task.goal_poses
     else:
@@ -119,11 +121,7 @@ def main() -> None:
     )
     print(f"[Info] Optimized trajectory poses: {optimized_trajectory.shape[0]}")
     print(f"[Info] Optimization CSV: {csv_path}")
-    print(
-        "[Info] Optimization timing "
-        f"T=[t_opt_or_baseline, t_validation_curobo] seconds: {optimization_timing}"
-    )
-    print(f"[Benchmark] optim_seconds={optimization_timing[0]:.2f}")
+    report_optimization_timing(optimization_timing)
 
     run_postprocess(Path(csv_path), args)
 

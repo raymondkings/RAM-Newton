@@ -9,8 +9,10 @@ from task.task_pose_sampler import (
     create_start_goal_poses,
     create_task_pose_sets,
 )
+from util.optimization_timing import OptimizationTiming
 from util.pipeline_common import (
     build_arg_parser,
+    report_optimization_timing,
     resolve_initial_morphology,
     run_plan,
     run_postprocess,
@@ -82,7 +84,7 @@ def main() -> None:
         optimized_morph, csv_path, optimization_timing = (
             morph,
             cached_csv_path,
-            [0.0, 0.0],
+            OptimizationTiming(0.0, 0.0),
         )
     else:
         optimized_morph, csv_path, optimization_timing = optimize_morphology(
@@ -109,11 +111,7 @@ def main() -> None:
         f"[Info] Optimized morphology params:\n{optimized_morph.params} \nlink_radius={optimized_morph.link_radius}"
     )
     print(f"[Info] Optimization CSV: {csv_path}")
-    print(
-        "[Info] Optimization timing "
-        f"T=[t_opt_or_baseline, t_validation_curobo] seconds: {optimization_timing}"
-    )
-    print(f"[Benchmark] optim_seconds={optimization_timing[0]:.2f}")
+    report_optimization_timing(optimization_timing)
 
     run_postprocess(Path(csv_path), args)
 

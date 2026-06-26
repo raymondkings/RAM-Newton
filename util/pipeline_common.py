@@ -17,8 +17,27 @@ import torch
 from interface import Morphology, Task
 from task.morphology_sampler import sample_initial_morphologies
 from util.csv_log_reader import load_latest_optimized_morphology
+from util.optimization_timing import OptimizationTiming
 from validation.curobo_planner import CuroboPlanner
 from validation.render import animate_plan, render_scene
+
+
+def emit_benchmark(**metrics: float) -> None:
+    """Print one `[Benchmark] name=value` line per metric, for benchmarks/pipeline_benchmark.py to scrape."""
+    for name, value in metrics.items():
+        print(f"[Benchmark] {name}={value:.2f}")
+
+
+def report_optimization_timing(timing: OptimizationTiming) -> None:
+    print(
+        "[Info] Optimization timing "
+        f"optimizer_seconds={timing.optimizer_seconds:.2f} "
+        f"validation_seconds={timing.validation_seconds:.2f}"
+    )
+    emit_benchmark(
+        optim_seconds=timing.optimizer_seconds,
+        validation_seconds=timing.validation_seconds,
+    )
 
 
 def set_global_seed(seed: int) -> None:
@@ -144,7 +163,7 @@ def run_plan(
             "  Check that IK candidate poses are reachable for this morphology, or run with "
             "--ignore-ground / --ignore-obstacles to diagnose."
         )
-        print(f"[Benchmark] plan_seconds={time.perf_counter() - plan_start:.2f}")
+        emit_benchmark(plan_seconds=time.perf_counter() - plan_start)
         return
 
     n_goals = task.goal_poses.shape[0]
@@ -175,11 +194,11 @@ def run_plan(
                 best_ik_q=result.best_ik_q,
                 start_q=start_q,
             )
-        print(f"[Benchmark] plan_seconds={time.perf_counter() - plan_start:.2f}")
+        emit_benchmark(plan_seconds=time.perf_counter() - plan_start)
         return
 
     print(f"\nSequence complete: {len(result.path)} waypoints through {n_goals} goals.")
-    print(f"[Benchmark] plan_seconds={time.perf_counter() - plan_start:.2f}")
+    emit_benchmark(plan_seconds=time.perf_counter() - plan_start)
     if visualize:
         print(f"Animating -- {len(result.path)} frames ...")
         animate_plan(
