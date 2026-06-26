@@ -3,18 +3,20 @@ Benchmark the optimization+planning pipeline across N random seeds,
 with and without collision avoidance.
 
 How it works:
-    --entry-point selects which main_*.py pipeline to benchmark: candidate_static
-    (today's heuristic over static poses), candidate_trajectory (our heuristic,
-    candidate-selection morphology+trajectory search), or gradient_trajectory
-    (the alternating gradient-based morphology+trajectory optimizer baseline).
-    Each entry point has its own sweepable sampler params (see ENTRY_POINTS).
+    Each algorithm entry in presets.json names an optim_algo, which selects
+    which main_*.py pipeline to benchmark: nrm_alpha_random_selection
+    (today's heuristic over static poses), nrm_alpha_random_selection_trajectory
+    (our heuristic, candidate-selection morphology+trajectory search), or
+    nrm_trajectory (the alternating gradient-based morphology+trajectory
+    optimizer baseline). Each optim_algo has its own sweepable sampler params
+    (see ENTRY_POINTS).
 
     The sweep is the cartesian product of seeds x sampler-param combos x
     CONDITIONS (obstacle collision on/off; ground collision is always
     ignored). For each combination, build_config() patches config.json with
     the seed, condition flags, and sampler overrides, writes it to
     <output_dir>/configs/, and run_single() shells out to
-    `uv run python <entry-point's script> --config <that file>` as a fresh
+    `uv run python <optim_algo's script> --config <that file>` as a fresh
     subprocess (so a crash or hang in one run can't take down the sweep).
 
     Each result row is appended to the results CSV immediately and the file
@@ -23,29 +25,28 @@ How it works:
     (seed, condition, *sampler_values) tuple already present via
     load_completed().
 
-    Sampler params for the current --entry-point can be swept directly with
-    flags like --num-samples 10,20,30, or via a named --preset, loaded from
-    presets.json next to this file, that bundles a list of param tuples with
-    its own --num-seeds/--output-dir defaults. Presets are tuple-shaped per
-    entry point, so a preset built for one entry point's sampler params can't
-    be used with another.
+    The algorithms to benchmark, and the sampler-param tuples to sweep for
+    each, are loaded from presets.json next to this file: a list of
+    "algorithms" entries, each pinned to its own optim_algo, sampler param
+    tuples ("configs"), and output_dir. The script always runs every entry
+    in that list sequentially, one after another, in a single invocation.
 
-    Once all runs finish (or with --replot against an --output-dir of
-    existing CSVs), generate_report() prints a per-condition success/failure
-    breakdown and _make_figure() renders it to a PNG — one subfigure per
-    sampler-param combo when more than one was swept.
+    Once all runs for an algorithm finish (or with --replot against its
+    --output-dir of existing CSVs), generate_report() prints a per-condition
+    success/failure breakdown and _make_figure() renders it to a PNG — one
+    subfigure per sampler-param combo when more than one was swept. This
+    report+figure step repeats once per algorithm.
 
-    To compare our heuristic against the alternating gradient baseline, run
-    the same seeds/conditions through both trajectory entry points into
-    separate --output-dirs and compare the resulting CSVs/figures.
+    To compare our heuristic against the alternating gradient baseline, bundle
+    both trajectory optim_algo values as separate "algorithms" entries in
+    presets.json so they run back-to-back into their own output_dirs, then
+    compare the resulting CSVs/figures.
 
 Usage:
-    uv run python benchmarks/pipeline_benchmark.py                        # candidate_static, 100 seeds, both conditions
+    uv run python benchmarks/pipeline_benchmark.py                        # run every algorithm in presets.json, one after another
     uv run python benchmarks/pipeline_benchmark.py --num-seeds 5          # quick smoke test
     uv run python benchmarks/pipeline_benchmark.py --seeds-start 50       # resume from seed 50
-    uv run python benchmarks/pipeline_benchmark.py --resume results.csv   # skip already-done rows
-    uv run python benchmarks/pipeline_benchmark.py --entry-point candidate_trajectory --output-dir benchmark_results/candidate_trajectory
-    uv run python benchmarks/pipeline_benchmark.py --entry-point gradient_trajectory --output-dir benchmark_results/gradient_trajectory
+    uv run python benchmarks/pipeline_benchmark.py --resume results.csv   # skip already-done rows (single-algorithm presets.json only)
 
 Results are written to benchmark_results/ after each run (crash-safe).
 A summary + figure are generated once all runs complete.
@@ -53,9 +54,9 @@ A summary + figure are generated once all runs complete.
 
 import argparse
 import csv
-import itertools
 import math
 import json
+import re
 import subprocess
 import time
 from collections import Counter, defaultdict
@@ -75,14 +76,13 @@ from task.task_pose_sampler import (
 from task.task_pose_sampler_trajectory_ver import NUM_POSES
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_OUTPUT_DIR = PROJECT_DIR / "benchmark_results"
 
-# Each entry point pairs a main_*.py pipeline script with the optim module it
-# exercises and the sampler-param keys that can be swept for it.
+# Each entry point pairs a main_*.py pipeline script with the sampler-param
+# keys that can be swept for it. Keyed by the optim algorithm's module name,
+# which is also the value expected in config.json's "optim_algo" field.
 ENTRY_POINTS = {
-    "candidate_static": {
+    "nrm_alpha_random_selection": {
         "script": "main_candidate_selection_static.py",
-        "optim_module": "nrm_alpha_random_selection",
         "sampler_params": {
             "num_samples": {"default": NUM_SAMPLES, "abbrev": "nsp"},
             "num_line_samples": {"default": NUM_LINE_SAMPLES, "abbrev": "nls"},
@@ -90,24 +90,21 @@ ENTRY_POINTS = {
             "repeat_start_goal": {"default": REPEAT_START_GOAL, "abbrev": "rsg"},
         },
     },
-    "candidate_trajectory": {
+    "nrm_alpha_random_selection_trajectory": {
         "script": "main_candidate_selection_trajectory.py",
-        "optim_module": "nrm_alpha_random_selection_trajectory",
         "sampler_params": {
             "num_poses": {"default": NUM_POSES, "abbrev": "npo"},
         },
     },
-    "gradient_trajectory": {
+    "nrm_trajectory": {
         "script": "main_gradient_trajectory.py",
-        "optim_module": "nrm_trajectory",
         "sampler_params": {
             "num_poses": {"default": NUM_POSES, "abbrev": "npo"},
         },
     },
 }
-DEFAULT_ENTRY_POINT = "candidate_static"
 
-# Populated by _configure_entry_point() once --entry-point is known.
+# Populated by _configure_entry_point() once optim_algo is known.
 SAMPLER_PARAMS: dict[str, dict] = {}
 SAMPLER_KEYS: list[str] = []
 SAMPLER_DEFAULTS: dict[str, int] = {}
@@ -115,18 +112,18 @@ SAMPLER_ABBREV: dict[str, str] = {}
 RESULT_FIELDS: list[str] = []
 _ROW_PARSERS: dict[str, Callable[[str], Any]] = {}
 ENTRY_SCRIPT: str = ""
-OPTIM_MODULE: str = ""
+OPTIM_ALGO: str = ""
 
 
-def _configure_entry_point(entry_point: str) -> None:
-    """Set the ENTRY_SCRIPT/OPTIM_MODULE/SAMPLER_* globals (and the fields/parsers
-    derived from them) for the chosen --entry-point."""
+def _configure_entry_point(optim_algo: str) -> None:
+    """Set the ENTRY_SCRIPT/OPTIM_ALGO/SAMPLER_* globals (and the fields/parsers
+    derived from them) for the chosen optim_algo."""
     global SAMPLER_PARAMS, SAMPLER_KEYS, SAMPLER_DEFAULTS, SAMPLER_ABBREV
-    global RESULT_FIELDS, _ROW_PARSERS, ENTRY_SCRIPT, OPTIM_MODULE
+    global RESULT_FIELDS, _ROW_PARSERS, ENTRY_SCRIPT, OPTIM_ALGO
 
-    entry = ENTRY_POINTS[entry_point]
+    entry = ENTRY_POINTS[optim_algo]
     ENTRY_SCRIPT = entry["script"]
-    OPTIM_MODULE = entry["optim_module"]
+    OPTIM_ALGO = optim_algo
     SAMPLER_PARAMS = entry["sampler_params"]
     SAMPLER_KEYS = list(SAMPLER_PARAMS)
     SAMPLER_DEFAULTS = {k: v["default"] for k, v in SAMPLER_PARAMS.items()}
@@ -139,6 +136,7 @@ def _configure_entry_point(entry_point: str) -> None:
         "failure_reason",
         "duration_seconds",
         "optim_duration_seconds",
+        "validation_duration_seconds",
         "plan_duration_seconds",
         "returncode",
     ]
@@ -149,6 +147,7 @@ def _configure_entry_point(entry_point: str) -> None:
         "failure_reason": str,
         "duration_seconds": float,
         "optim_duration_seconds": lambda v: float(v) if v else None,
+        "validation_duration_seconds": lambda v: float(v) if v else None,
         "plan_duration_seconds": lambda v: float(v) if v else None,
         "returncode": int,
         **{k: int for k in SAMPLER_KEYS},
@@ -161,17 +160,22 @@ PRESETS_PATH = Path(__file__).resolve().parent / "presets.json"
 with open(PRESETS_PATH) as f:
     _presets_config = json.load(f)
 CONDITIONS = list(_presets_config["conditions"].items())
-# Each preset's "configs" is a list of (num_samples, num_line_samples,
-# num_extra_paths, repeat_start_goal) tuples; "output_dir" is resolved
-# relative to the project root.
-PRESETS = {
-    name: {
-        "configs": [tuple(c) for c in spec["configs"]],
-        "num_seeds": spec["num_seeds"],
-        "output_dir": PROJECT_DIR / spec["output_dir"],
+# Each entry in "algorithms" is pinned to an optim_algo (an ENTRY_POINTS key)
+# with its own sampler-param "configs" tuples and "output_dir" (resolved
+# relative to the project root). Algorithms run sequentially, one after
+# another, in a single invocation. Top-level "num_seeds" can be overridden
+# per-algorithm.
+DEFAULT_NUM_SEEDS = _presets_config.get("num_seeds")
+ALGORITHMS = [
+    {
+        "optim_algo": algo["optim_algo"],
+        "configs": [tuple(c) for c in algo["configs"]],
+        "output_dir": PROJECT_DIR
+        / algo.get("output_dir", f"benchmark_results/{algo['optim_algo']}"),
+        "num_seeds": algo.get("num_seeds"),
     }
-    for name, spec in _presets_config["presets"].items()
-}
+    for algo in _presets_config["algorithms"]
+]
 
 
 def _extract_error_detail(stderr: str, stdout: str) -> str:
@@ -243,14 +247,17 @@ def build_config(
     return cfg
 
 
-def _extract_phase_timings(stdout: str) -> tuple[float | None, float | None]:
-    optim, plan = None, None
+_BENCHMARK_LINE = re.compile(r"^\[Benchmark\] (\w+)=([\d.]+)$")
+
+
+def _extract_benchmark_metrics(stdout: str) -> dict[str, float]:
+    """Parse every `[Benchmark] name=value` line in stdout into {name: value}."""
+    metrics = {}
     for line in stdout.splitlines():
-        if line.startswith("[Benchmark] optim_seconds="):
-            optim = float(line.split("=")[1])
-        elif line.startswith("[Benchmark] plan_seconds="):
-            plan = float(line.split("=")[1])
-    return optim, plan
+        match = _BENCHMARK_LINE.match(line)
+        if match:
+            metrics[match.group(1)] = float(match.group(2))
+    return metrics
 
 
 def run_single(
@@ -287,15 +294,19 @@ def run_single(
         duration = time.time() - start
         success, reason = classify_output(proc.stdout, proc.returncode, proc.stderr)
         returncode = proc.returncode
-        optim_dur, plan_dur = _extract_phase_timings(proc.stdout)
+        metrics = _extract_benchmark_metrics(proc.stdout)
     except subprocess.TimeoutExpired:
         duration = time.time() - start
         success, reason, returncode = False, "timeout", -1
-        optim_dur, plan_dur = None, None
+        metrics = {}
     except Exception as e:
         duration = time.time() - start
         success, reason, returncode = False, f"runner_error: {e}", -2
-        optim_dur, plan_dur = None, None
+        metrics = {}
+
+    def _phase(name: str) -> float | str:
+        value = metrics.get(name)
+        return round(value, 1) if value is not None else ""
 
     return {
         "seed": seed,
@@ -304,8 +315,9 @@ def run_single(
         "success": success,
         "failure_reason": reason,
         "duration_seconds": round(duration, 1),
-        "optim_duration_seconds": round(optim_dur, 1) if optim_dur is not None else "",
-        "plan_duration_seconds": round(plan_dur, 1) if plan_dur is not None else "",
+        "optim_duration_seconds": _phase("optim_seconds"),
+        "validation_duration_seconds": _phase("validation_seconds"),
+        "plan_duration_seconds": _phase("plan_seconds"),
         "returncode": returncode,
     }
 
@@ -436,10 +448,10 @@ def _plot_outcome_breakdown(ax, rows: list[dict]) -> None:
 def _make_figure(results: list[dict], output_dir: Path) -> None:
     by_combo = group_by(results, combo_key)
     combos = sorted(by_combo.keys())
-    optim_module = OPTIM_MODULE
+    optim_algo = OPTIM_ALGO
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    fig_path = output_dir / f"benchmark_{optim_module}_{timestamp}.png"
-    title = f"Optimization + Planning Benchmark\nAlgorithm: {optim_module}"
+    fig_path = output_dir / f"benchmark_{optim_algo}_{timestamp}.png"
+    title = f"Optimization + Planning Benchmark\nAlgorithm: {optim_algo}"
 
     if len(combos) <= 1:
         fig, ax = plt.subplots(1, 1, figsize=(6, 5))
@@ -484,51 +496,16 @@ def _make_figure(results: list[dict], output_dir: Path) -> None:
     print(f"\nFigure saved: {fig_path}")
 
 
-def _parse_int_list(raw: str) -> list[int]:
-    return [int(part.strip()) for part in raw.split(",") if part.strip()]
-
-
-def _parse_entry_point(argv: list[str] | None = None) -> str:
-    """Pre-parse just --entry-point so SAMPLER_KEYS can be configured before the
-    per-sampler-param flags (e.g. --num-samples) are added to the real parser."""
-    pre = argparse.ArgumentParser(add_help=False)
-    pre.add_argument(
-        "--entry-point",
-        choices=sorted(ENTRY_POINTS.keys()),
-        default=DEFAULT_ENTRY_POINT,
-    )
-    known, _ = pre.parse_known_args(argv)
-    return known.entry_point
-
-
 def parse_args() -> argparse.Namespace:
-    _configure_entry_point(_parse_entry_point())
-
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-    parser.add_argument(
-        "--entry-point",
-        choices=sorted(ENTRY_POINTS.keys()),
-        default=DEFAULT_ENTRY_POINT,
-        help="Which main_*.py pipeline to benchmark: candidate_static (today's "
-        "heuristic over static poses), candidate_trajectory (our heuristic, "
-        "morphology+trajectory candidate selection), gradient_trajectory "
-        "(alternating gradient-based morphology+trajectory optimizer baseline).",
-    )
-    parser.add_argument(
-        "--preset",
-        choices=sorted(PRESETS.keys()),
-        default=None,
-        help="Use a named sampler-param sweep. Sets defaults for --num-seeds and "
-        "--output-dir; overrides the per-param list flags. Presets are defined in "
-        "presets.json next to this file.",
     )
     parser.add_argument(
         "--num-seeds",
         type=int,
         default=None,
-        help="Number of seeds to evaluate (default: 100, or preset's default)",
+        help="Number of seeds to evaluate (default: 100, or presets.json's/"
+        "algorithm's default)",
     )
     parser.add_argument(
         "--seeds-start", type=int, default=0, help="First seed value (default: 0)"
@@ -537,7 +514,9 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         type=Path,
         default=None,
-        help="Directory for results (default: benchmark_results, or preset's default)",
+        help="Parent dir under which each algorithm in presets.json gets its "
+        "own <output-dir>/<optim_algo> subdirectory (default: each "
+        "algorithm's own output_dir from presets.json).",
     )
     parser.add_argument(
         "--timeout",
@@ -550,38 +529,15 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help="Resume from an existing results CSV, skipping completed "
-        "(seed, condition, *sampler_values) tuples",
+        "(seed, condition, *sampler_values) tuples. Only supported when "
+        "presets.json has a single algorithm.",
     )
     parser.add_argument(
         "--replot",
         action="store_true",
         help="Load all CSVs from --output-dir and regenerate the figure without running benchmarks",
     )
-    for key in SAMPLER_KEYS:
-        parser.add_argument(
-            f"--{key.replace('_', '-')}",
-            type=_parse_int_list,
-            default=[None],
-            dest=key,
-            help=f"Comma-separated list of {key} values to sweep "
-            "(default: use config.json value)",
-        )
     return parser.parse_args()
-
-
-def _resolve_run_settings(args: argparse.Namespace) -> tuple[dict | None, Path]:
-    """Apply preset defaults to --num-seeds/--output-dir where the user didn't override them."""
-    preset = PRESETS[args.preset] if args.preset else None
-    if preset and any(len(c) != len(SAMPLER_KEYS) for c in preset["configs"]):
-        raise SystemExit(
-            f"--preset {args.preset!r} tuples don't match --entry-point "
-            f"{args.entry_point!r}'s sampler params {SAMPLER_KEYS}"
-        )
-    if args.num_seeds is None:
-        args.num_seeds = preset["num_seeds"] if preset else 100
-    if args.output_dir is None:
-        args.output_dir = preset["output_dir"] if preset else DEFAULT_OUTPUT_DIR
-    return preset, args.output_dir
 
 
 def _load_results_csvs(csv_paths: list[Path]) -> list[dict]:
@@ -607,15 +563,6 @@ def _run_replot(output_dir: Path) -> None:
         print("[Benchmark] No results to report.")
 
 
-def _build_sweep(args: argparse.Namespace, preset: dict | None) -> list[tuple]:
-    """Cartesian product of sampler-param values to sweep, from a preset's
-    fixed combos or from the per-param --num-samples/etc. list flags."""
-    if preset:
-        return list(preset["configs"])
-    sweep_lists = [getattr(args, k) for k in SAMPLER_KEYS]
-    return list(itertools.product(*sweep_lists))
-
-
 def _resolve_results_csv(
     args: argparse.Namespace, output_dir: Path, optim_module: str
 ) -> Path:
@@ -631,7 +578,7 @@ def _resolve_results_csv(
 
 def _run_sweep(
     args: argparse.Namespace,
-    preset: dict | None,
+    configs: list[tuple],
     base_config: dict,
     results_csv: Path,
     config_dir: Path,
@@ -641,8 +588,7 @@ def _run_sweep(
         print(f"[Benchmark] Skipping {len(completed)} already-completed runs")
 
     seeds = range(args.seeds_start, args.seeds_start + args.num_seeds)
-    sweep = _build_sweep(args, preset)
-    total = len(seeds) * len(sweep) * len(CONDITIONS)
+    total = len(seeds) * len(configs) * len(CONDITIONS)
     done = 0
 
     csv_exists = results_csv.exists()
@@ -652,7 +598,7 @@ def _run_sweep(
             writer.writeheader()
 
         for seed in seeds:
-            for combo in sweep:
+            for combo in configs:
                 overrides = dict(zip(SAMPLER_KEYS, combo))
                 effective = effective_sampler(overrides, base_config)
                 sweep_label = " ".join(
@@ -692,13 +638,33 @@ def _run_sweep(
                     f.flush()
 
 
-def main() -> None:
-    args = parse_args()
-    preset, output_dir = _resolve_run_settings(args)
+def _run_algorithm(
+    args: argparse.Namespace,
+    optim_algo: str,
+    configs: list[tuple],
+    num_seeds: int,
+    output_dir: Path,
+) -> None:
+    """Configure the entry point for one optim_algo and run its full
+    seed x condition x configs sweep, then report on its results."""
+    if optim_algo not in ENTRY_POINTS:
+        raise SystemExit(
+            f"presets.json algorithm optim_algo {optim_algo!r} is not one of "
+            f"{sorted(ENTRY_POINTS)}"
+        )
+    _configure_entry_point(optim_algo)
+
+    if any(len(c) != len(SAMPLER_KEYS) for c in configs):
+        raise SystemExit(
+            f"presets.json configs for optim_algo {optim_algo!r} don't match "
+            f"its sampler params {SAMPLER_KEYS}"
+        )
 
     config_dir = output_dir / "configs"
     output_dir.mkdir(parents=True, exist_ok=True)
     config_dir.mkdir(exist_ok=True)
+
+    print(f"\n{'#' * 60}\n[Benchmark] optim_algo={optim_algo}\n{'#' * 60}")
 
     if args.replot:
         _run_replot(output_dir)
@@ -707,14 +673,40 @@ def main() -> None:
     with open(PROJECT_DIR / "config.json") as f:
         base_config = json.load(f)
 
-    results_csv = _resolve_results_csv(args, output_dir, OPTIM_MODULE)
-    _run_sweep(args, preset, base_config, results_csv, config_dir)
+    sweep_args = argparse.Namespace(**vars(args))
+    sweep_args.num_seeds = num_seeds
+
+    results_csv = _resolve_results_csv(sweep_args, output_dir, optim_algo)
+    _run_sweep(sweep_args, configs, base_config, results_csv, config_dir)
 
     all_results = _load_results_csvs([results_csv])
     if all_results:
         generate_report(all_results, output_dir)
     else:
         print("[Benchmark] No results to report.")
+
+
+def main() -> None:
+    args = parse_args()
+
+    if args.resume and len(ALGORITHMS) > 1:
+        raise SystemExit(
+            "--resume isn't supported when presets.json has more than one "
+            "algorithm; rerun against a single algorithm's --output-dir instead"
+        )
+
+    for algo_entry in ALGORITHMS:
+        output_dir = (
+            args.output_dir / algo_entry["optim_algo"]
+            if args.output_dir
+            else algo_entry["output_dir"]
+        )
+        num_seeds = (
+            args.num_seeds or algo_entry["num_seeds"] or DEFAULT_NUM_SEEDS or 100
+        )
+        _run_algorithm(
+            args, algo_entry["optim_algo"], algo_entry["configs"], num_seeds, output_dir
+        )
 
 
 if __name__ == "__main__":

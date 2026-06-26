@@ -82,80 +82,55 @@ uv run python main_gradient_trajectory.py --config path/to/my_config.json
 
 ## Benchmark
 
-`benchmarks/pipeline_benchmark.py` sweeps one of the entry points above across N
-random seeds, running each seed with and without collision avoidance, and writes a
-crash-safe CSV plus a summary figure to `benchmark_results/`. Pick the entry point
-with `--entry-point` (default `candidate_static`):
+`benchmarks/pipeline_benchmark.py` sweeps the pipeline across N random seeds,
+running each seed with and without collision avoidance, and writes a
+crash-safe CSV plus a summary figure per algorithm to `benchmark_results/`.
 
-```bash
-uv run python benchmarks/pipeline_benchmark.py --entry-point candidate_static
-uv run python benchmarks/pipeline_benchmark.py --entry-point candidate_trajectory
-uv run python benchmarks/pipeline_benchmark.py --entry-point gradient_trajectory
-```
-
-To compare our heuristic against the gradient baseline, run the same
-seeds/conditions through both trajectory entry points into separate output
-directories so their CSVs/figures don't mix:
-
-```bash
-uv run python benchmarks/pipeline_benchmark.py --entry-point candidate_trajectory \
-    --output-dir benchmark_results/candidate_trajectory
-uv run python benchmarks/pipeline_benchmark.py --entry-point gradient_trajectory \
-    --output-dir benchmark_results/gradient_trajectory
-```
-
-Run the default sweep (100 seeds × 2 conditions):
+The algorithms to run, and the sampler-param tuples to sweep for each, are
+defined in [benchmarks/presets.json](benchmarks/presets.json) as a flat list
+of "algorithms" entries — each pinned to its own `optim_algo` (one of
+`nrm_alpha_random_selection`, `nrm_alpha_random_selection_trajectory`, or
+`nrm_trajectory`), its sampler-param tuples, and an `output_dir`. The script
+always runs every entry in that list, one after another, in a single
+invocation:
 
 ```bash
 uv run python benchmarks/pipeline_benchmark.py
 ```
 
-Common options:
+Each entry point exposes its own sweepable sampler params:
+`nrm_alpha_random_selection` has `(num_samples, num_line_samples,
+num_extra_paths, repeat_start_goal)`, while the two trajectory algorithms have
+just `num_poses`; a preset entry's config tuples must match its `optim_algo`'s
+params (the script raises an error otherwise). To customize the seeds, swept
+tuples, or output directories — or to compare the heuristic against the
+gradient baseline — edit `benchmarks/presets.json`; no code changes needed.
+
+Common options (apply to every algorithm in the list):
 
 ```bash
 uv run python benchmarks/pipeline_benchmark.py --num-seeds 5            # quick smoke test
 uv run python benchmarks/pipeline_benchmark.py --seeds-start 50         # start the seed range at 50
 uv run python benchmarks/pipeline_benchmark.py --timeout 1800           # per-run timeout in seconds
-uv run python benchmarks/pipeline_benchmark.py --output-dir my_results  # alternate output directory
+uv run python benchmarks/pipeline_benchmark.py --output-dir my_results  # parent dir; each algorithm gets its own <my_results>/<optim_algo> subdir
 ```
 
 Resume an interrupted sweep by pointing at the existing CSV — already-completed
-`(seed, condition, *sampler_values)` rows are skipped:
+`(seed, condition, *sampler_values)` rows are skipped. This only works when
+`presets.json` has a single algorithm:
 
 ```bash
-uv run python benchmarks/pipeline_benchmark.py --resume benchmark_results/benchmark_<timestamp>.csv
+uv run python benchmarks/pipeline_benchmark.py --resume benchmark_results/<optim_algo>/benchmark_<timestamp>.csv
 ```
 
-Outputs:
-
-- `benchmark_results/benchmark_<timestamp>.csv` — one row per `(seed, condition, *sampler_values)`
-- `benchmark_results/benchmark_results.png` — outcome breakdown and convergence plots
-- `benchmark_results/configs/` — the per-run config files
-
-### Sampler-param sweep
-
-Each entry point exposes its own sweepable sampler params: `candidate_static` has
-`(num_samples, num_line_samples, num_extra_paths, repeat_start_goal)`, while the two
-trajectory entry points have just `num_poses`. Named sweeps over a tuple of those
-values are defined in [benchmarks/presets.json](benchmarks/presets.json) and
-selected via `--preset`; a preset's tuples must match the current `--entry-point`'s
-params (the script raises an error otherwise):
+Or regenerate the figure for an algorithm's existing CSVs without rerunning:
 
 ```bash
-uv run python benchmarks/pipeline_benchmark.py --preset main   # 12-tuple production sweep, 20 seeds
+uv run python benchmarks/pipeline_benchmark.py --replot
 ```
 
-`--preset` sets defaults for `--num-seeds` and `--output-dir`; both can be
-overridden on the CLI. To customize the swept tuples or add a new preset,
-edit `benchmarks/presets.json` — no code changes needed.
+Outputs (per algorithm, under its `output_dir`):
 
-All tuples write to a single CSV (rows are keyed on the full sampler tuple),
-so resume works the same way as the basic sweep:
-
-```bash
-uv run python benchmarks/pipeline_benchmark.py --preset main \
-    --resume benchmark_results/benchmark_<timestamp>.csv
-```
-
-When the CSV holds more than one tuple, `benchmark_results.png` renders one
-subfigure row per tuple.
+- `benchmark_<optim_algo>_<timestamp>.csv` — one row per `(seed, condition, *sampler_values)`
+- `benchmark_<optim_algo>_<timestamp>.png` — outcome breakdown, one subfigure per sampler-param tuple when more than one was swept
+- `configs/` — the per-run config files

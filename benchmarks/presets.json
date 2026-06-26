@@ -3,15 +3,22 @@
     "obstacles_off_ground_off": {"ignore_obstacles": true, "ignore_ground": true},
     "obstacles_on_ground_off": {"ignore_obstacles": false, "ignore_ground": true}
   },
-  "presets": {
-    "main": {
+  "num_seeds": 100,
+  "algorithms": [
+    {
+      "optim_algo": "nrm_alpha_random_selection",
       "configs": [
         [50, 0, 0, 0],
-        [50, 25, 0, 0],
-        [50, 50, 0, 0]
+        [50, 25, 0, 0]
       ],
-      "num_seeds": 100,
-      "output_dir": "benchmark_results"
+      "output_dir": "benchmark_results/nrm_alpha_random_selection"
+    },
+    {
+      "optim_algo": "nrm_alpha_random_selection_trajectory",
+      "configs": [
+        [10]
+      ],
+      "output_dir": "benchmark_results/nrm_alpha_random_selection_trajectory"
     }
-  }
+  ]
 }
