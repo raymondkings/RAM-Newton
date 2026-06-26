@@ -34,6 +34,7 @@ from torch import Tensor
 from optim.model import MLP
 from interface import Morphology, Task
 from util.optimization_csv_logger import OptimizationCSVLogger
+from util.optimization_timing import OptimizationTimer
 from validation.optimization_validation import run_optimization_validation
 
 
@@ -145,7 +146,7 @@ def optimize_morphology(
     morph: Morphology,
     task: Task,
     optimization_parameters: dict,
-) -> tuple[Morphology, Path]:
+) -> tuple[Morphology, Path, list[float]]:
     """Optimize morphology with nearest-mapped alpha during NRM forward."""
     n_iter = optimization_parameters.get("num_iterations", 100)
     lr_fallback = optimization_parameters.get("learning_rate", 0.01)
@@ -158,6 +159,8 @@ def optimize_morphology(
     percentage_poses = optimization_parameters.get("percentage_poses", 1)
 
     device = morph.params.device
+    timer = OptimizationTimer(device)
+    timer.start()
 
     if logging:
         print(
@@ -218,16 +221,17 @@ def optimize_morphology(
 
             validation_data = None
             if logging and eval_interval > 0 and update_idx % eval_interval == 0:
-                validation_data = run_optimization_validation(
-                    processed_morphology=processed_morphology.detach(),
-                    morph=morph,
-                    task=task,
-                    scene=scene,
-                    device=device,
-                    percentage_poses=percentage_poses,
-                    number_random_seed=number_random_seed,
-                    pose_sampling_generator=pose_sampling_generator,
-                )
+                with timer.validation():
+                    validation_data = run_optimization_validation(
+                        processed_morphology=processed_morphology.detach(),
+                        morph=morph,
+                        task=task,
+                        scene=scene,
+                        device=device,
+                        percentage_poses=percentage_poses,
+                        number_random_seed=number_random_seed,
+                        pose_sampling_generator=pose_sampling_generator,
+                    )
 
                 best_se3 = validation_data["best_se3_dist_mean"].detach().cpu().item()
                 ik_success_rate = (
@@ -276,16 +280,17 @@ def optimize_morphology(
             )
 
         # ALWAYS do a validation for the final data!
-        final_validation_data = run_optimization_validation(
-            processed_morphology=final_processed_morphology.detach(),
-            morph=morph,
-            task=task,
-            scene=scene,
-            device=device,
-            percentage_poses=percentage_poses,
-            number_random_seed=number_random_seed,
-            pose_sampling_generator=pose_sampling_generator,
-        )
+        with timer.validation():
+            final_validation_data = run_optimization_validation(
+                processed_morphology=final_processed_morphology.detach(),
+                morph=morph,
+                task=task,
+                scene=scene,
+                device=device,
+                percentage_poses=percentage_poses,
+                number_random_seed=number_random_seed,
+                pose_sampling_generator=pose_sampling_generator,
+            )
 
         csv_logger.log_iteration(
             iteration=n_iter,
@@ -322,7 +327,7 @@ def optimize_morphology(
             params=final_processed_morphology.detach(),
             link_radius=morph.link_radius,
         )
-        return optimized_morph, csv_logger.csv_path
+        return optimized_morph, csv_logger.csv_path, timer.result()
 
     finally:
         csv_logger.close()

@@ -19,6 +19,7 @@ from torch import Tensor
 from optim.model import MLP
 from interface import Morphology, Task
 from util.optimization_csv_logger import OptimizationCSVLogger
+from util.optimization_timing import OptimizationTimer
 from validation.optimization_validation import run_optimization_validation
 
 
@@ -112,7 +113,7 @@ def optimize_morphology(
     morph: Morphology,
     task: Task,
     optimization_parameters: dict,
-) -> tuple[Morphology, Path]:
+) -> tuple[Morphology, Path, list[float]]:
     """Optimize morphology link lengths (a, d) for the given task.
 
     Returns:
@@ -120,6 +121,8 @@ def optimize_morphology(
             Final processed morphology.
         csv_path:
             Path to output/log_<time>.csv.
+        timing:
+            [optimizer/backprop time, cuRobo validation time] in seconds.
     """
     n_iter = optimization_parameters.get("num_iterations", 100)
     lr = optimization_parameters.get("learning_rate", 0.01)
@@ -137,6 +140,8 @@ def optimize_morphology(
     )
 
     device = morph.params.device
+    timer = OptimizationTimer(device)
+    timer.start()
 
     if logging:
         print(
@@ -210,16 +215,17 @@ def optimize_morphology(
             validation_data = None
 
             if eval_interval > 0 and update_idx % eval_interval == 0 and logging:
-                validation_data = run_optimization_validation(
-                    processed_morphology=processed_morphology.detach(),
-                    morph=morph,
-                    task=task,
-                    scene=scene,
-                    device=device,
-                    percentage_poses=percentage_poses,
-                    number_random_seed=number_random_seed,
-                    pose_sampling_generator=pose_sampling_generator,
-                )
+                with timer.validation():
+                    validation_data = run_optimization_validation(
+                        processed_morphology=processed_morphology.detach(),
+                        morph=morph,
+                        task=task,
+                        scene=scene,
+                        device=device,
+                        percentage_poses=percentage_poses,
+                        number_random_seed=number_random_seed,
+                        pose_sampling_generator=pose_sampling_generator,
+                    )
 
                 best_se3 = validation_data["best_se3_dist_mean"].detach().cpu().item()
                 ik_success_rate = (
@@ -295,16 +301,17 @@ def optimize_morphology(
             final_prob = torch.sigmoid(final_logit).mean()
 
         # you will always do a validation for the final result even if not in logging mode
-        final_validation_data = run_optimization_validation(
-            processed_morphology=final_processed_morphology,
-            morph=morph,
-            task=task,
-            scene=scene,
-            device=device,
-            percentage_poses=percentage_poses,
-            number_random_seed=number_random_seed,
-            pose_sampling_generator=pose_sampling_generator,
-        )
+        with timer.validation():
+            final_validation_data = run_optimization_validation(
+                processed_morphology=final_processed_morphology,
+                morph=morph,
+                task=task,
+                scene=scene,
+                device=device,
+                percentage_poses=percentage_poses,
+                number_random_seed=number_random_seed,
+                pose_sampling_generator=pose_sampling_generator,
+            )
 
         csv_logger.log_iteration(
             iteration=final_iteration,
@@ -336,7 +343,7 @@ def optimize_morphology(
             link_radius=morph.link_radius,
         )
 
-        return optimized_morph, csv_logger.csv_path
+        return optimized_morph, csv_logger.csv_path, timer.result()
 
     finally:
         csv_logger.close()

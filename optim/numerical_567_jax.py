@@ -23,6 +23,7 @@ from task.morphology_sampler import sample_morph
 from util.direct_ik_common import _collision_critical_distance, _preprocess_lengths
 from util.kinematics import forward_kinematics
 from util.optimization_csv_logger import OptimizationCSVLogger
+from util.optimization_timing import OptimizationTimer
 from validation.optimization_validation import run_optimization_validation
 
 _PROJECT_ROOT = Path(__file__).parent.parent
@@ -216,7 +217,7 @@ def optimize_morphology(
     morph: Morphology,
     task: Task,
     optimization_parameters: dict,
-) -> tuple[Morphology, Path]:
+) -> tuple[Morphology, Path, list[float]]:
     """NAGE baseline morphology optimiser (JAX + optax AdamW + IFT gradient)."""
     if not _JAX_AVAILABLE:
         raise ImportError(
@@ -238,6 +239,8 @@ def optimize_morphology(
     zero_link_weight = float(optimization_parameters.get("zero_link_weight", 1.0))
 
     device = morph.params.device
+    timer = OptimizationTimer(device, sync_jax=True)
+    timer.start()
 
     candidate_dofs_raw = optimization_parameters.get("candidate_dofs", None)
     morph_dof = morph.n_links - 1
@@ -406,16 +409,17 @@ def optimize_morphology(
                 raw_np = np.array(jnp.concatenate([alpha_jnp, lengths_jnp], axis=1))
                 proc_t = torch.tensor(proc_np, device=device)
                 raw_t = torch.tensor(raw_np, device=device)
-                validation_data = run_optimization_validation(
-                    processed_morphology=proc_t.detach(),
-                    morph=morph,
-                    task=task,
-                    scene=scene,
-                    device=device,
-                    percentage_poses=percentage_poses,
-                    number_random_seed=number_random_seed,
-                    pose_sampling_generator=val_generator,
-                )
+                with timer.validation():
+                    validation_data = run_optimization_validation(
+                        processed_morphology=proc_t.detach(),
+                        morph=morph,
+                        task=task,
+                        scene=scene,
+                        device=device,
+                        percentage_poses=percentage_poses,
+                        number_random_seed=number_random_seed,
+                        pose_sampling_generator=val_generator,
+                    )
                 best_se3 = validation_data["best_se3_dist_mean"].detach().cpu().item()
                 tqdm.write(
                     f"[Iter {update_idx:>4}/{n_iter}] "
@@ -441,16 +445,17 @@ def optimize_morphology(
         final_proc_t = torch.tensor(final_proc_np, device=device)
         final_raw_t = torch.tensor(final_raw_np, device=device)
 
-        final_val = run_optimization_validation(
-            processed_morphology=final_proc_t,
-            morph=morph,
-            task=task,
-            scene=scene,
-            device=device,
-            percentage_poses=percentage_poses,
-            number_random_seed=number_random_seed,
-            pose_sampling_generator=val_generator,
-        )
+        with timer.validation():
+            final_val = run_optimization_validation(
+                processed_morphology=final_proc_t,
+                morph=morph,
+                task=task,
+                scene=scene,
+                device=device,
+                percentage_poses=percentage_poses,
+                number_random_seed=number_random_seed,
+                pose_sampling_generator=val_generator,
+            )
         csv_logger.log_iteration(
             iteration=n_iter,
             loss=torch.tensor(total_loss),
@@ -467,6 +472,7 @@ def optimize_morphology(
         return (
             Morphology(params=final_proc_t.detach(), link_radius=link_radius),
             csv_logger.csv_path,
+            timer.result(),
         )
 
     except Exception:

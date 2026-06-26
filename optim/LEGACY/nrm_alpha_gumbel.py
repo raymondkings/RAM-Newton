@@ -28,6 +28,7 @@ from torch import Tensor
 from optim.model import MLP
 from interface import Morphology, Task
 from util.optimization_csv_logger import OptimizationCSVLogger
+from util.optimization_timing import OptimizationTimer
 from validation.optimization_validation import run_optimization_validation
 
 
@@ -145,7 +146,7 @@ def _optimize_morphology_impl(
     morph: Morphology,
     task: Task,
     optimization_parameters: dict,
-) -> tuple[Morphology, Path]:
+) -> tuple[Morphology, Path, list[float]]:
     """Core Gumbel-Softmax morphology optimisation — called by DOF-specific wrappers.
 
     Alpha is parameterised as logits over {0, π/2, -π/2} and soft-sampled
@@ -177,6 +178,8 @@ def _optimize_morphology_impl(
 
     device = morph.params.device
     dtype = morph.params.dtype
+    timer = OptimizationTimer(device)
+    timer.start()
 
     if logging:
         print(
@@ -273,16 +276,17 @@ def _optimize_morphology_impl(
 
             validation_data = None
             if logging and eval_interval > 0 and update_idx % eval_interval == 0:
-                validation_data = run_optimization_validation(
-                    processed_morphology=processed_morphology.detach(),
-                    morph=morph,
-                    task=task,
-                    scene=scene,
-                    device=device,
-                    percentage_poses=percentage_poses,
-                    number_random_seed=number_random_seed,
-                    pose_sampling_generator=pose_sampling_generator,
-                )
+                with timer.validation():
+                    validation_data = run_optimization_validation(
+                        processed_morphology=processed_morphology.detach(),
+                        morph=morph,
+                        task=task,
+                        scene=scene,
+                        device=device,
+                        percentage_poses=percentage_poses,
+                        number_random_seed=number_random_seed,
+                        pose_sampling_generator=pose_sampling_generator,
+                    )
 
                 best_se3 = validation_data["best_se3_dist_mean"].detach().cpu().item()
                 ik_success_rate = (
@@ -358,16 +362,17 @@ def _optimize_morphology_impl(
             )
 
         # ALWAYS do a validation for the final result!
-        final_validation_data = run_optimization_validation(
-            processed_morphology=final_processed_morphology.detach(),
-            morph=morph,
-            task=task,
-            scene=scene,
-            device=device,
-            percentage_poses=percentage_poses,
-            number_random_seed=number_random_seed,
-            pose_sampling_generator=pose_sampling_generator,
-        )
+        with timer.validation():
+            final_validation_data = run_optimization_validation(
+                processed_morphology=final_processed_morphology.detach(),
+                morph=morph,
+                task=task,
+                scene=scene,
+                device=device,
+                percentage_poses=percentage_poses,
+                number_random_seed=number_random_seed,
+                pose_sampling_generator=pose_sampling_generator,
+            )
 
         csv_logger.log_iteration(
             iteration=final_iteration,
@@ -401,7 +406,7 @@ def _optimize_morphology_impl(
             params=final_processed_morphology.detach(),
             link_radius=morph.link_radius,
         )
-        return optimized_morph, csv_logger.csv_path
+        return optimized_morph, csv_logger.csv_path, timer.result()
 
     finally:
         csv_logger.close()
@@ -447,7 +452,7 @@ def optimize_morphology_5dof(
     morph: Morphology,
     task: Task,
     optimization_parameters: dict,
-) -> tuple[Morphology, Path]:
+) -> tuple[Morphology, Path, list[float]]:
     """Gumbel-Softmax optimisation for 5-DOF morphologies."""
     return _optimize_morphology_impl(
         morph, task, _merge_params(5, optimization_parameters)
@@ -458,7 +463,7 @@ def optimize_morphology_6dof(
     morph: Morphology,
     task: Task,
     optimization_parameters: dict,
-) -> tuple[Morphology, Path]:
+) -> tuple[Morphology, Path, list[float]]:
     """Gumbel-Softmax optimisation for 6-DOF morphologies."""
     return _optimize_morphology_impl(
         morph, task, _merge_params(6, optimization_parameters)
@@ -469,7 +474,7 @@ def optimize_morphology_7dof(
     morph: Morphology,
     task: Task,
     optimization_parameters: dict,
-) -> tuple[Morphology, Path]:
+) -> tuple[Morphology, Path, list[float]]:
     """Gumbel-Softmax optimisation for 7-DOF morphologies."""
     return _optimize_morphology_impl(
         morph, task, _merge_params(7, optimization_parameters)
@@ -487,7 +492,7 @@ def optimize_morphology(
     morph: Morphology,
     task: Task,
     optimization_parameters: dict,
-) -> tuple[Morphology, Path]:
+) -> tuple[Morphology, Path, list[float]]:
     """Dispatcher: reads DOF from morph and calls the matching DOF-specific optimiser."""
     dof = morph.params.shape[0] - 1
     fn = _DOF_DISPATCH.get(dof)

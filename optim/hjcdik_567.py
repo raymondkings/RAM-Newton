@@ -23,6 +23,7 @@ from util.kinematics import forward_kinematics
 from util.self_collision import get_capsules
 from task.morphology_sampler import get_joint_limits, sample_morph
 from util.optimization_csv_logger import OptimizationCSVLogger
+from util.optimization_timing import OptimizationTimer
 from validation.optimization_validation import run_optimization_validation
 
 _PROJECT_ROOT = Path(__file__).parent.parent
@@ -243,19 +244,33 @@ def _run_validation(
     percentage_poses: float,
     number_random_seed: int,
     random_seed: int,
+    timer: OptimizationTimer | None = None,
 ) -> dict:
     gen = torch.Generator(device=device)
     gen.manual_seed(random_seed)
-    result = run_optimization_validation(
-        processed_morphology=processed_morphology.detach(),
-        morph=morph,
-        task=task,
-        scene=scene,
-        device=device,
-        percentage_poses=percentage_poses,
-        number_random_seed=number_random_seed,
-        pose_sampling_generator=gen,
-    )
+    if timer is None:
+        result = run_optimization_validation(
+            processed_morphology=processed_morphology.detach(),
+            morph=morph,
+            task=task,
+            scene=scene,
+            device=device,
+            percentage_poses=percentage_poses,
+            number_random_seed=number_random_seed,
+            pose_sampling_generator=gen,
+        )
+    else:
+        with timer.validation():
+            result = run_optimization_validation(
+                processed_morphology=processed_morphology.detach(),
+                morph=morph,
+                task=task,
+                scene=scene,
+                device=device,
+                percentage_poses=percentage_poses,
+                number_random_seed=number_random_seed,
+                pose_sampling_generator=gen,
+            )
     result["ik_success_pose_rate"] = (
         (result["best_se3_dist_per_pose"] <= EPS).float().mean()
     )
@@ -740,7 +755,7 @@ def optimize_morphology(
     morph: Morphology,
     task: Task,
     optimization_parameters: dict,
-) -> tuple[Morphology, Path]:
+) -> tuple[Morphology, Path, list[float]]:
     """HJCD-IK morphology optimisation baseline for 6-DOF arms.
 
     Uses HJCD-IK (PO-CCD + LM) as the IK oracle at each morphology step.
@@ -757,6 +772,8 @@ def optimize_morphology(
 
     device = morph.params.device
     dtype = morph.params.dtype
+    timer = OptimizationTimer(device)
+    timer.start()
 
     # ── DOF selection ────────────────────────────────────────────────────────
     candidate_dofs_raw = optimization_parameters.get("candidate_dofs", None)
@@ -874,6 +891,7 @@ def optimize_morphology(
                     percentage_poses=percentage_poses,
                     number_random_seed=number_random_seed,
                     random_seed=random_seed,
+                    timer=timer,
                 )
                 val_se3 = validation_data["best_se3_dist_mean"].detach().cpu().item()
                 val_ik = validation_data["ik_success_pose_rate"].detach().cpu().item()
@@ -922,6 +940,7 @@ def optimize_morphology(
             percentage_poses=percentage_poses,
             number_random_seed=number_random_seed,
             random_seed=random_seed,
+            timer=timer,
         )
 
         with torch.no_grad():
@@ -961,6 +980,7 @@ def optimize_morphology(
         return (
             Morphology(params=proc_f.detach(), link_radius=working_morph.link_radius),
             csv_logger.csv_path,
+            timer.result(),
         )
 
     finally:
