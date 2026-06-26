@@ -1,0 +1,26 @@
+{
+  "conditions": {
+    "obstacles_off_ground_off": {"ignore_obstacles": true, "ignore_ground": true},
+    "obstacles_on_ground_off": {"ignore_obstacles": false, "ignore_ground": true}
+  },
+  "presets": {
+    "main": {
+      "configs": [
+        [50, 0, 0, 0],
+        [50, 0, 2, 0],
+        [50, 0, 4, 0],
+        [25, 0, 0, 0],
+        [25, 0, 2, 0],
+        [25, 0, 4, 0],
+        [12, 0, 0, 0],
+        [12, 0, 2, 0],
+        [12, 0, 4, 0],
+        [6, 0, 0, 0],
+        [6, 0, 2, 0],
+        [6, 0, 4, 0]
+      ],
+      "num_seeds": 20,
+      "output_dir": "benchmark_results"
+    }
+  }
+}

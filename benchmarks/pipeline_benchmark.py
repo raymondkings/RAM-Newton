@@ -2,11 +2,37 @@
 Benchmark the optimization+planning pipeline across N random seeds,
 with and without collision avoidance.
 
+How it works:
+    The sweep is the cartesian product of seeds x sampler-param combos x
+    CONDITIONS (obstacle collision on/off; ground collision is always
+    ignored). For each combination, build_config() patches config.json with
+    the seed, condition flags, and sampler overrides, writes it to
+    <output_dir>/configs/, and run_single() shells out to
+    `uv run python main.py --config <that file>` as a fresh subprocess
+    (so a crash or hang in one run can't take down the sweep).
+
+    Each result row is appended to the results CSV immediately and the file
+    is flushed, so the run is crash-safe and resumable: pass --resume
+    <csv> (or rerun against the same --output-dir) to skip any
+    (seed, condition, *sampler_values) tuple already present via
+    load_completed().
+
+    Sampler params (num_samples, num_line_samples, num_extra_paths,
+    repeat_start_goal) can be swept directly with --num-samples 10,20,30
+    etc., or via a named --preset, loaded from presets.json next to this
+    file, that bundles a list of param tuples with its own
+    --num-seeds/--output-dir defaults.
+
+    Once all runs finish (or with --replot against an --output-dir of
+    existing CSVs), generate_report() prints a per-condition success/failure
+    breakdown and _make_figure() renders it to a PNG — one subfigure per
+    sampler-param combo when more than one was swept.
+
 Usage:
-    uv run python benchmark/benchmark.py                        # 100 seeds, both conditions
-    uv run python benchmark/benchmark.py --num-seeds 5          # quick smoke test
-    uv run python benchmark/benchmark.py --seeds-start 50       # resume from seed 50
-    uv run python benchmark/benchmark.py --resume results.csv   # skip already-done rows
+    uv run python benchmarks/pipeline_benchmark.py                        # 100 seeds, both conditions
+    uv run python benchmarks/pipeline_benchmark.py --num-seeds 5          # quick smoke test
+    uv run python benchmarks/pipeline_benchmark.py --seeds-start 50       # resume from seed 50
+    uv run python benchmarks/pipeline_benchmark.py --resume results.csv   # skip already-done rows
 
 Results are written to benchmark_results/ after each run (crash-safe).
 A summary + figure are generated once all runs complete.
@@ -15,6 +41,7 @@ A summary + figure are generated once all runs complete.
 import argparse
 import ast
 import csv
+import itertools
 import math
 import json
 import subprocess
@@ -37,51 +64,32 @@ from task.task_pose_sampler import (
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_OUTPUT_DIR = PROJECT_DIR / "benchmark_results"
 
-# Ground collisions are intentionally ignored in both conditions; only the
-# obstacle-collision check is toggled.
-CONDITIONS = [
-    ("obstacles_off_ground_off", dict(ignore_obstacles=True, ignore_ground=True)),
-    ("obstacles_on_ground_off", dict(ignore_obstacles=False, ignore_ground=True)),
-]
-
-SAMPLER_PARAMS = [
-    ("num_samples", NUM_SAMPLES),
-    ("num_line_samples", NUM_LINE_SAMPLES),
-    ("num_extra_paths", NUM_EXTRA_PATHS),
-    ("repeat_start_goal", REPEAT_START_GOAL),
-]
-SAMPLER_KEYS = [k for k, _ in SAMPLER_PARAMS]
-SAMPLER_DEFAULTS = dict(SAMPLER_PARAMS)
-SAMPLER_ABBREV = {
-    "num_samples": "nsp",
-    "num_line_samples": "nls",
-    "num_extra_paths": "nep",
-    "repeat_start_goal": "rsg",
+SAMPLER_PARAMS = {
+    "num_samples": {"default": NUM_SAMPLES, "abbrev": "nsp"},
+    "num_line_samples": {"default": NUM_LINE_SAMPLES, "abbrev": "nls"},
+    "num_extra_paths": {"default": NUM_EXTRA_PATHS, "abbrev": "nep"},
+    "repeat_start_goal": {"default": REPEAT_START_GOAL, "abbrev": "rsg"},
 }
+SAMPLER_KEYS = list(SAMPLER_PARAMS)
+SAMPLER_DEFAULTS = {k: v["default"] for k, v in SAMPLER_PARAMS.items()}
+SAMPLER_ABBREV = {k: v["abbrev"] for k, v in SAMPLER_PARAMS.items()}
 
-# Hardcoded sampler-param sweeps. Each entry is
-# (num_samples, num_line_samples, num_extra_paths, repeat_start_goal).
+PRESETS_PATH = Path(__file__).resolve().parent / "presets.json"
+
+
+with open(PRESETS_PATH) as f:
+    _presets_config = json.load(f)
+CONDITIONS = list(_presets_config["conditions"].items())
+# Each preset's "configs" is a list of (num_samples, num_line_samples,
+# num_extra_paths, repeat_start_goal) tuples; "output_dir" is resolved
+# relative to the project root.
 PRESETS = {
-    "main": {
-        # Halve num_samples each step from the default (50); line_samples fixed
-        # at 0; vary num_extra_paths; repeat_start_goal disabled.
-        "configs": [
-            (50, 0, 0, 0),
-            (50, 0, 2, 0),
-            (50, 0, 4, 0),
-            (25, 0, 0, 0),
-            (25, 0, 2, 0),
-            (25, 0, 4, 0),
-            (12, 0, 0, 0),
-            (12, 0, 2, 0),
-            (12, 0, 4, 0),
-            (6, 0, 0, 0),
-            (6, 0, 2, 0),
-            (6, 0, 4, 0),
-        ],
-        "num_seeds": 20,
-        "output_dir": PROJECT_DIR / "benchmark_results",
+    name: {
+        "configs": [tuple(c) for c in spec["configs"]],
+        "num_seeds": spec["num_seeds"],
+        "output_dir": PROJECT_DIR / spec["output_dir"],
     }
+    for name, spec in _presets_config["presets"].items()
 }
 
 RESULT_FIELDS = [
@@ -111,15 +119,10 @@ _ROW_PARSERS: dict[str, Callable[[str], Any]] = {
 
 
 def _extract_error_detail(stderr: str, stdout: str) -> str:
-    """Pull the last exception line out of stderr (or stdout fallback)."""
+    """Pull the last 'SomeError: ...' line out of stderr (or stdout fallback)."""
     for text in (stderr, stdout):
         lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
         for line in reversed(lines):
-            if any(
-                line.startswith(exc)
-                for exc in ("RuntimeError:", "ValueError:", "AssertionError:", "Error:")
-            ):
-                return line[:120]
             if "Error" in line and ":" in line:
                 return line[:120]
     lines = [ln.strip() for ln in stderr.splitlines() if ln.strip()]
@@ -165,10 +168,6 @@ def group_by(rows: list[dict], key_fn: Callable[[dict], Any]) -> dict[Any, list[
     return grouped
 
 
-def _slug(value: int | None) -> str:
-    return "default" if value is None else str(int(value))
-
-
 def build_config(
     seed: int,
     condition_flags: dict,
@@ -209,7 +208,13 @@ def run_single(
 ) -> dict:
     cfg = build_config(seed, condition_flags, sampler_overrides, base_config)
     suffix = "_".join(
-        f"{SAMPLER_ABBREV[k]}{_slug(sampler_overrides[k])}" for k in SAMPLER_KEYS
+        f"{SAMPLER_ABBREV[k]}"
+        + (
+            "default"
+            if sampler_overrides[k] is None
+            else str(int(sampler_overrides[k]))
+        )
+        for k in SAMPLER_KEYS
     )
     config_path = config_dir / f"seed{seed:04d}_{condition_name}_{suffix}.json"
     config_path.write_text(json.dumps(cfg, indent=2))
@@ -260,6 +265,13 @@ def load_completed(csv_path: Path) -> set[tuple]:
         }
 
 
+def _stats(rows: list[dict]) -> tuple[int, int, float, float]:
+    """Return (total, n_success, avg_duration_seconds, total_duration_seconds)."""
+    durations = [r["duration_seconds"] for r in rows]
+    n_success = sum(1 for r in rows if r["success"])
+    return len(rows), n_success, np.mean(durations), sum(durations)
+
+
 def generate_report(results: list[dict], output_dir: Path) -> None:
     by_condition = group_by(results, lambda r: r["condition"])
 
@@ -267,14 +279,12 @@ def generate_report(results: list[dict], output_dir: Path) -> None:
     print("BENCHMARK SUMMARY")
     print("=" * 50)
     for cond, rows in sorted(by_condition.items()):
-        total = len(rows)
-        n_success = sum(1 for r in rows if r["success"])
-        durations = [r["duration_seconds"] for r in rows]
+        total, n_success, avg_duration, total_duration = _stats(rows)
         print(
             f"\n{cond}:  {n_success}/{total} successful  ({100 * n_success / total:.1f}%)"
         )
         print(
-            f"  avg duration: {np.mean(durations):.0f}s  |  total: {sum(durations) / 3600:.1f}h"
+            f"  avg duration: {avg_duration:.0f}s  |  total: {total_duration / 3600:.1f}h"
         )
         failures = Counter(r["failure_reason"] for r in rows if not r["success"])
         for reason, count in failures.most_common():
@@ -293,27 +303,16 @@ def _print_sampler_sweep_summary(results: list[dict]) -> None:
     print("SAMPLER PARAM SWEEP (" + ", ".join(SAMPLER_KEYS) + ")")
     print("-" * 50)
     for key in sorted(by_sampler.keys()):
-        rows = by_sampler[key]
-        total = len(rows)
-        n_success = sum(1 for r in rows if r["success"])
-        durations = [r["duration_seconds"] for r in rows]
+        total, n_success, avg_duration, _ = _stats(by_sampler[key])
         params = "  ".join(
             f"{SAMPLER_ABBREV[k]}={v:<4}" for k, v in zip(SAMPLER_KEYS, key)
         )
         print(
             f"  {params}  {n_success}/{total} successful  "
-            f"({100 * n_success / total:.1f}%)  avg {np.mean(durations):.0f}s"
+            f"({100 * n_success / total:.1f}%)  avg {avg_duration:.0f}s"
         )
 
 
-CONDITION_COLORS = {
-    "no_collision": "#4C8DC9",
-    "with_collision": "#D94A4A",
-    "obstacles_off_ground_off": "#4C8DC9",
-    "obstacles_on_ground_off": "#D94A4A",
-    "obstacles_off_ground_on": "#2CA02C",
-    "obstacles_on_ground_on": "#FF7F0E",
-}
 FAILURE_COLORS = {
     "partial_plan": "#C44545",
     "optimization_error": "#D94A4A",
@@ -398,14 +397,11 @@ def _make_figure(results: list[dict], output_dir: Path) -> None:
     optim_module = _detect_optim_module()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     fig_path = output_dir / f"benchmark_{optim_module}_{timestamp}.png"
+    title = f"Optimization + Planning Benchmark\nAlgorithm: {optim_module}"
 
     if len(combos) <= 1:
         fig, ax = plt.subplots(1, 1, figsize=(6, 5))
-        fig.suptitle(
-            f"Optimization + Planning Benchmark\nAlgorithm: {optim_module}",
-            fontsize=14,
-            fontweight="bold",
-        )
+        fig.suptitle(title, fontsize=14, fontweight="bold")
         _plot_outcome_breakdown(ax, results)
         plt.tight_layout()
     else:
@@ -414,12 +410,7 @@ def _make_figure(results: list[dict], output_dir: Path) -> None:
         fig, axes_grid = plt.subplots(
             nrows, ncols, figsize=(5.5 * ncols, 4.5 * nrows + 1.2), squeeze=False
         )
-        fig.suptitle(
-            f"Optimization + Planning Benchmark\nAlgorithm: {optim_module}",
-            fontsize=14,
-            fontweight="bold",
-            y=1.0,
-        )
+        fig.suptitle(title, fontsize=14, fontweight="bold", y=1.0)
         abbrev_legend = "   |   ".join(
             f"{abbr} = {key}" for key, abbr in SAMPLER_ABBREV.items()
         )
@@ -463,9 +454,9 @@ def parse_args() -> argparse.Namespace:
         "--preset",
         choices=sorted(PRESETS.keys()),
         default=None,
-        help="Use a hardcoded sampler-param sweep. Sets defaults for --num-seeds and "
-        "--output-dir; overrides the per-param list flags. Configs are defined in "
-        "PRESETS at the top of this file.",
+        help="Use a named sampler-param sweep. Sets defaults for --num-seeds and "
+        "--output-dir; overrides the per-param list flags. Presets are defined in "
+        "presets.json next to this file.",
     )
     parser.add_argument(
         "--num-seeds",
@@ -512,67 +503,74 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
-
+def _resolve_run_settings(args: argparse.Namespace) -> tuple[dict | None, Path]:
+    """Apply preset defaults to --num-seeds/--output-dir where the user didn't override them."""
     preset = PRESETS[args.preset] if args.preset else None
     if args.num_seeds is None:
         args.num_seeds = preset["num_seeds"] if preset else 100
     if args.output_dir is None:
         args.output_dir = preset["output_dir"] if preset else DEFAULT_OUTPUT_DIR
+    return preset, args.output_dir
 
-    output_dir: Path = args.output_dir
-    config_dir = output_dir / "configs"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    config_dir.mkdir(exist_ok=True)
 
-    if args.replot:
-        csv_files = sorted(output_dir.glob("benchmark_*.csv"))
-        if not csv_files:
-            print(f"[Benchmark] No CSV files found in {output_dir}")
-            return
-        all_results = []
-        for csv_path in csv_files:
-            with open(csv_path, newline="") as f:
-                all_results.extend(
-                    {k: _ROW_PARSERS[k](v) for k, v in row.items()}
-                    for row in csv.DictReader(f)
-                )
-        if all_results:
-            generate_report(all_results, output_dir)
-        else:
-            print("[Benchmark] No results to report.")
+def _load_results_csvs(csv_paths: list[Path]) -> list[dict]:
+    results = []
+    for csv_path in csv_paths:
+        with open(csv_path, newline="") as f:
+            results.extend(
+                {k: _ROW_PARSERS[k](v) for k, v in row.items()}
+                for row in csv.DictReader(f)
+            )
+    return results
+
+
+def _run_replot(output_dir: Path) -> None:
+    csv_files = sorted(output_dir.glob("benchmark_*.csv"))
+    if not csv_files:
+        print(f"[Benchmark] No CSV files found in {output_dir}")
         return
-
-    with open(PROJECT_DIR / "config.json") as f:
-        base_config = json.load(f)
-
-    optim_module = _detect_optim_module()
-    if args.resume and args.resume.exists():
-        results_csv = args.resume
-        print(f"[Benchmark] Resuming from {results_csv}")
+    all_results = _load_results_csvs(csv_files)
+    if all_results:
+        generate_report(all_results, output_dir)
     else:
-        results_csv = (
-            output_dir / f"benchmark_{optim_module}_{datetime.now():%Y%m%d_%H%M%S}.csv"
-        )
-        print(f"[Benchmark] Writing results to {results_csv}")
+        print("[Benchmark] No results to report.")
 
+
+def _build_sweep(args: argparse.Namespace, preset: dict | None) -> list[tuple]:
+    """Cartesian product of sampler-param values to sweep, from a preset's
+    fixed combos or from the per-param --num-samples/etc. list flags."""
+    if preset:
+        return list(preset["configs"])
+    sweep_lists = [getattr(args, k) for k in SAMPLER_KEYS]
+    return list(itertools.product(*sweep_lists))
+
+
+def _resolve_results_csv(
+    args: argparse.Namespace, output_dir: Path, optim_module: str
+) -> Path:
+    if args.resume and args.resume.exists():
+        print(f"[Benchmark] Resuming from {args.resume}")
+        return args.resume
+    results_csv = (
+        output_dir / f"benchmark_{optim_module}_{datetime.now():%Y%m%d_%H%M%S}.csv"
+    )
+    print(f"[Benchmark] Writing results to {results_csv}")
+    return results_csv
+
+
+def _run_sweep(
+    args: argparse.Namespace,
+    preset: dict | None,
+    base_config: dict,
+    results_csv: Path,
+    config_dir: Path,
+) -> None:
     completed = load_completed(results_csv)
     if completed:
         print(f"[Benchmark] Skipping {len(completed)} already-completed runs")
 
     seeds = range(args.seeds_start, args.seeds_start + args.num_seeds)
-    if preset:
-        sweep = list(preset["configs"])
-    else:
-        sweep_lists = [getattr(args, k) for k in SAMPLER_KEYS]
-        sweep = [
-            (a, b, c, d)
-            for a in sweep_lists[0]
-            for b in sweep_lists[1]
-            for c in sweep_lists[2]
-            for d in sweep_lists[3]
-        ]
+    sweep = _build_sweep(args, preset)
     total = len(seeds) * len(sweep) * len(CONDITIONS)
     done = 0
 
@@ -622,11 +620,27 @@ def main() -> None:
                     writer.writerow(result)
                     f.flush()
 
-    with open(results_csv, newline="") as f:
-        all_results = [
-            {k: _ROW_PARSERS[k](v) for k, v in row.items()} for row in csv.DictReader(f)
-        ]
 
+def main() -> None:
+    args = parse_args()
+    preset, output_dir = _resolve_run_settings(args)
+
+    config_dir = output_dir / "configs"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    config_dir.mkdir(exist_ok=True)
+
+    if args.replot:
+        _run_replot(output_dir)
+        return
+
+    with open(PROJECT_DIR / "config.json") as f:
+        base_config = json.load(f)
+
+    optim_module = _detect_optim_module()
+    results_csv = _resolve_results_csv(args, output_dir, optim_module)
+    _run_sweep(args, preset, base_config, results_csv, config_dir)
+
+    all_results = _load_results_csvs([results_csv])
     if all_results:
         generate_report(all_results, output_dir)
     else:
