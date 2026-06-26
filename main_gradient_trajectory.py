@@ -70,9 +70,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def warn_ignored_config_keys(args: argparse.Namespace) -> None:
-    ignored_keys = [
-        key for key in IGNORED_TRAJECTORY_CONFIG_KEYS if hasattr(args, key)
-    ]
+    ignored_keys = [key for key in IGNORED_TRAJECTORY_CONFIG_KEYS if hasattr(args, key)]
     if ignored_keys:
         print(
             "[Info] Ignored config keys in trajectory pipeline: "
@@ -227,10 +225,7 @@ def main() -> None:
         reachable_region=None,
         start_q=None,
     )
-    print(
-        "[Info] Task trajectory poses: "
-        f"{task.goal_poses.shape[0]}"
-    )
+    print(f"[Info] Task trajectory poses: {task.goal_poses.shape[0]}")
 
     # NOTE: for the updated candidate selection algorithm, the initial morphology is only used to get the link radius and the device
     # possible TODO: update the structure to decude redundancy
