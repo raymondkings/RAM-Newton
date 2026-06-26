@@ -225,3 +225,6 @@ benchmark_results/
 
 # Timelapse results
 timelapse/
+
+initial_candidates/
+benchmark_results*/

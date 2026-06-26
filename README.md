@@ -68,34 +68,60 @@ uv run python main.py --config path/to/my_config.json
 
 ## Benchmark
 
-`benchmark.py` sweeps the full pipeline across N random seeds, running each
+`benchmark/benchmark.py` sweeps the full pipeline across N random seeds, running each
 seed with and without collision avoidance, and writes a crash-safe CSV plus a
 summary figure to `benchmark_results/`.
 
 Run the default sweep (100 seeds × 2 conditions):
 
 ```bash
-uv run python benchmark.py
+uv run python benchmark/benchmark.py
 ```
 
 Common options:
 
 ```bash
-uv run python benchmark.py --num-seeds 5            # quick smoke test
-uv run python benchmark.py --seeds-start 50         # start the seed range at 50
-uv run python benchmark.py --timeout 1800           # per-run timeout in seconds
-uv run python benchmark.py --output-dir my_results  # alternate output directory
+uv run python benchmark/benchmark.py --num-seeds 5            # quick smoke test
+uv run python benchmark/benchmark.py --seeds-start 50         # start the seed range at 50
+uv run python benchmark/benchmark.py --timeout 1800           # per-run timeout in seconds
+uv run python benchmark/benchmark.py --output-dir my_results  # alternate output directory
 ```
 
 Resume an interrupted sweep by pointing at the existing CSV — already-completed
-`(seed, condition)` pairs are skipped:
+`(seed, condition, *sampler_values)` rows are skipped:
 
 ```bash
-uv run python benchmark.py --resume benchmark_results/benchmark_<timestamp>.csv
+uv run python benchmark/benchmark.py --resume benchmark_results/benchmark_<timestamp>.csv
 ```
 
 Outputs:
 
-- `benchmark_results/benchmark_<timestamp>.csv` — one row per `(seed, condition)`
+- `benchmark_results/benchmark_<timestamp>.csv` — one row per `(seed, condition, *sampler_values)`
 - `benchmark_results/benchmark_results.png` — outcome breakdown and convergence plots
 - `benchmark_results/configs/` — the per-run config files
+
+### Sampler-param sweep
+
+Two hardcoded sweeps over
+`(num_samples, num_line_samples, num_extra_paths, repeat_start_goal)` tuples
+are baked into `benchmark.py` via `--preset`:
+
+```bash
+uv run python benchmark/benchmark.py --preset main   # 12-tuple production sweep, 5 seeds
+uv run python benchmark/benchmark.py --preset small  # 3-tuple smoke test, 3 seeds
+```
+
+`--preset` sets defaults for `--num-seeds` and `--output-dir`; both can be
+overridden on the CLI. To customize the swept tuples, edit the `PRESETS` dict
+near the top of [benchmark/benchmark.py](benchmark/benchmark.py).
+
+All tuples write to a single CSV (rows are keyed on the full sampler tuple),
+so resume works the same way as the basic sweep:
+
+```bash
+uv run python benchmark/benchmark.py --preset main \
+    --resume benchmark_results/benchmark_<timestamp>.csv
+```
+
+When the CSV holds more than one tuple, `benchmark_results.png` renders one
+subfigure row per tuple.

@@ -403,8 +403,8 @@ def task_sampler(
         raise ValueError("num_line_samples must be non-negative.")
     if num_extra_paths < 0:
         raise ValueError("num_extra_paths must be non-negative.")
-    if repeat <= 0:
-        raise ValueError("repeat must be positive.")
+    if repeat < 0:
+        raise ValueError("repeat must be non-negative.")
     if alpha_range_degrees[0] > alpha_range_degrees[1]:
         raise ValueError("alpha_range_degrees must be ordered as (min, max).")
     if beta_range_degrees[0] > beta_range_degrees[1]:
