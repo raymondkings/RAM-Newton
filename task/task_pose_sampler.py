@@ -9,6 +9,7 @@ import torch
 
 
 NUM_SAMPLES = 50
+NUM_LINE_SAMPLES = 50
 NUM_EXTRA_PATHS = 4
 ALPHA_RANGE_DEGREES = (0.0, 180.0)
 BETA_RANGE_DEGREES = (-30.0, 30.0)
@@ -200,6 +201,7 @@ def _signature(
     *,
     seed: int,
     num_samples: int,
+    num_line_samples: int,
     num_extra_paths: int,
     alpha_range_degrees: tuple[float, float],
     beta_range_degrees: tuple[float, float],
@@ -207,9 +209,10 @@ def _signature(
     repeat: int,
 ) -> dict[str, Any]:
     return {
-        "version": 5,
+        "version": 6,
         "seed": int(seed),
         "num_samples": int(num_samples),
+        "num_line_samples": int(num_line_samples),
         "num_extra_paths": int(num_extra_paths),
         "alpha_range_degrees": [
             float(alpha_range_degrees[0]),
@@ -226,7 +229,9 @@ def _signature(
         "repeat": int(repeat),
         "goal_alpha_degrees": float(alpha_range_degrees[1]),
         "path_order": ["main_alpha", "line_x", "extra_beta"],
-        "total_pose_count": int((num_extra_paths + 2) * num_samples + 2 * repeat),
+        "total_pose_count": int(
+            (num_extra_paths + 1) * num_samples + num_line_samples + 2 * repeat
+        ),
         "main_rotation": "R_start @ Ry(-alpha)",
         "extra_rotation": "R_start @ Rz(beta) @ Ry(-alpha)",
         "main_translation": "[0.45 - 0.25*cos(alpha), 0, 0.1 + 0.25*sin(alpha)]",
@@ -368,6 +373,7 @@ def task_sampler(
     seed: int | None = None,
     start_pose: torch.Tensor | None = None,
     num_samples: int = NUM_SAMPLES,
+    num_line_samples: int = NUM_LINE_SAMPLES,
     num_extra_paths: int = NUM_EXTRA_PATHS,
     alpha_range_degrees: tuple[float, float] = ALPHA_RANGE_DEGREES,
     beta_range_degrees: tuple[float, float] = BETA_RANGE_DEGREES,
@@ -393,6 +399,8 @@ def task_sampler(
         seed = int(torch.initial_seed() % (2**32))
     if num_samples <= 0:
         raise ValueError("num_samples must be positive.")
+    if num_line_samples < 0:
+        raise ValueError("num_line_samples must be non-negative.")
     if num_extra_paths < 0:
         raise ValueError("num_extra_paths must be non-negative.")
     if repeat <= 0:
@@ -415,6 +423,7 @@ def task_sampler(
     signature = _signature(
         seed=seed,
         num_samples=num_samples,
+        num_line_samples=num_line_samples,
         num_extra_paths=num_extra_paths,
         alpha_range_degrees=alpha_range_degrees,
         beta_range_degrees=beta_range_degrees,
@@ -450,11 +459,16 @@ def task_sampler(
     main_path_poses = _pose_from_alpha(alpha, dtype=dtype)
 
     line_p_values = _uniform_interior_values(
-        count=num_samples,
+        count=num_line_samples,
         value_range=line_p_range,
         dtype=dtype,
     )
-    line_path_poses = _line_pose_from_p(line_p_values.to(device=device), dtype=dtype)
+    if num_line_samples > 0:
+        line_path_poses = _line_pose_from_p(
+            line_p_values.to(device=device), dtype=dtype
+        )
+    else:
+        line_path_poses = torch.empty(0, 4, 4, dtype=dtype, device=device)
 
     extra_beta_degrees = _sample_sorted_uniform_random(
         generator=generator,
@@ -492,7 +506,7 @@ def task_sampler(
         ],
         dim=0,
     )
-    expected_count = (num_extra_paths + 2) * num_samples + 2 * repeat
+    expected_count = (num_extra_paths + 1) * num_samples + num_line_samples + 2 * repeat
     if goal_poses.shape[0] != expected_count:
         raise RuntimeError(
             f"task pose count mismatch: expected {expected_count}, got "
@@ -542,12 +556,20 @@ def create_task_pose_sets(
     seed: int | None = None,
     *,
     start_pose: torch.Tensor | None = None,
+    num_samples: int = NUM_SAMPLES,
+    num_line_samples: int = NUM_LINE_SAMPLES,
+    num_extra_paths: int = NUM_EXTRA_PATHS,
+    repeat: int = REPEAT_START_GOAL,
     device: torch.device | str | None = None,
     dtype: torch.dtype = torch.float32,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     optimizer_goal_poses, planner_goal_poses = task_sampler(
         seed=seed,
         start_pose=start_pose,
+        num_samples=num_samples,
+        num_line_samples=num_line_samples,
+        num_extra_paths=num_extra_paths,
+        repeat=repeat,
         device=device,
         dtype=dtype,
         return_planner_goal_poses=True,

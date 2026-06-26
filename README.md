@@ -66,3 +66,36 @@ To supply a different config file:
 uv run python main.py --config path/to/my_config.json
 ```
 
+## Benchmark
+
+`benchmark.py` sweeps the full pipeline across N random seeds, running each
+seed with and without collision avoidance, and writes a crash-safe CSV plus a
+summary figure to `benchmark_results/`.
+
+Run the default sweep (100 seeds × 2 conditions):
+
+```bash
+uv run python benchmark.py
+```
+
+Common options:
+
+```bash
+uv run python benchmark.py --num-seeds 5            # quick smoke test
+uv run python benchmark.py --seeds-start 50         # start the seed range at 50
+uv run python benchmark.py --timeout 1800           # per-run timeout in seconds
+uv run python benchmark.py --output-dir my_results  # alternate output directory
+```
+
+Resume an interrupted sweep by pointing at the existing CSV — already-completed
+`(seed, condition)` pairs are skipped:
+
+```bash
+uv run python benchmark.py --resume benchmark_results/benchmark_<timestamp>.csv
+```
+
+Outputs:
+
+- `benchmark_results/benchmark_<timestamp>.csv` — one row per `(seed, condition)`
+- `benchmark_results/benchmark_results.png` — outcome breakdown and convergence plots
+- `benchmark_results/configs/` — the per-run config files

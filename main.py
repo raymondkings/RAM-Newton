@@ -17,6 +17,10 @@ from util.csv_log_reader import load_latest_optimized_morphology
 # from task.target1 import create_task
 # from task.target1plus import create_task
 from task.task_pose_sampler import (
+    NUM_EXTRA_PATHS,
+    NUM_LINE_SAMPLES,
+    NUM_SAMPLES,
+    REPEAT_START_GOAL,
     START_POSE,
     create_start_goal_poses,
     create_task_pose_sets,
@@ -207,9 +211,18 @@ def main() -> None:
             "final planner uses only start pose and first-path max-alpha goal pose."
         )
 
+    num_samples = int(getattr(args, "num_samples", NUM_SAMPLES))
+    num_line_samples = int(getattr(args, "num_line_samples", NUM_LINE_SAMPLES))
+    num_extra_paths = int(getattr(args, "num_extra_paths", NUM_EXTRA_PATHS))
+    repeat_start_goal = int(getattr(args, "repeat_start_goal", REPEAT_START_GOAL))
+
     optimizer_goal_poses, planner_goal_poses = create_task_pose_sets(
         seed=args.seed,
         start_pose=START_POSE,
+        num_samples=num_samples,
+        num_line_samples=num_line_samples,
+        num_extra_paths=num_extra_paths,
+        repeat=repeat_start_goal,
         device=device,
     )
 
@@ -228,7 +241,10 @@ def main() -> None:
     print(
         "[Info] Task poses: "
         f"optimizer={task.goal_poses.shape[0]}, "
-        f"planner_main_path={planner_task.goal_poses.shape[0]}"
+        f"planner_main_path={planner_task.goal_poses.shape[0]} "
+        f"(num_samples={num_samples}, num_line_samples={num_line_samples}, "
+        f"num_extra_paths={num_extra_paths}, "
+        f"repeat_start_goal={repeat_start_goal})"
     )
 
     # NOTE: for the updated candidate selection algorithm, the initial morphology is only used to get the link radius and the device

@@ -221,6 +221,7 @@ __marimo__/
 curobo/
 
 output/
+benchmark_results/
 
 # Timelapse results
 timelapse/
