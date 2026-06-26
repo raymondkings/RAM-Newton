@@ -3,7 +3,7 @@ Benchmark the optimization+planning pipeline across N random seeds,
 with and without collision avoidance.
 
 How it works:
-    Each algorithm entry in presets.json names an optim_algo, which selects
+    Each algorithm entry in benchmarks/config.json names an optim_algo, which selects
     which main_*.py pipeline to benchmark: nrm_alpha_random_selection
     (today's heuristic over static poses), nrm_alpha_random_selection_trajectory
     (our heuristic, candidate-selection morphology+trajectory search), or
@@ -13,7 +13,8 @@ How it works:
 
     The sweep is the cartesian product of seeds x sampler-param combos x
     CONDITIONS (obstacle collision on/off; ground collision is always
-    ignored). For each combination, build_config() patches config.json with
+    ignored). For each combination, build_config() patches the project's
+    config.json with
     the seed, condition flags, and sampler overrides, writes it to
     <output_dir>/configs/, and run_single() shells out to
     `uv run python <optim_algo's script> --config <that file>` as a fresh
@@ -26,7 +27,7 @@ How it works:
     load_completed().
 
     The algorithms to benchmark, and the sampler-param tuples to sweep for
-    each, are loaded from presets.json next to this file: a list of
+    each, are loaded from benchmarks/config.json next to this file: a list of
     "algorithms" entries, each pinned to its own optim_algo, sampler param
     tuples ("configs"), and output_dir. The script always runs every entry
     in that list sequentially, one after another, in a single invocation.
@@ -39,14 +40,14 @@ How it works:
 
     To compare our heuristic against the alternating gradient baseline, bundle
     both trajectory optim_algo values as separate "algorithms" entries in
-    presets.json so they run back-to-back into their own output_dirs, then
+    benchmarks/config.json so they run back-to-back into their own output_dirs, then
     compare the resulting CSVs/figures.
 
 Usage:
-    uv run python benchmarks/pipeline_benchmark.py                        # run every algorithm in presets.json, one after another
-    uv run python benchmarks/pipeline_benchmark.py --num-seeds 5          # quick smoke test
-    uv run python benchmarks/pipeline_benchmark.py --seeds-start 50       # resume from seed 50
-    uv run python benchmarks/pipeline_benchmark.py --resume results.csv   # skip already-done rows (single-algorithm presets.json only)
+    uv run python benchmarks/benchmark.py                        # run every algorithm in benchmarks/config.json, one after another
+    uv run python benchmarks/benchmark.py --num-seeds 5          # quick smoke test
+    uv run python benchmarks/benchmark.py --seeds-start 50       # resume from seed 50
+    uv run python benchmarks/benchmark.py --resume results.csv   # skip already-done rows (single-algorithm benchmarks/config.json only)
 
 Results are written to benchmark_results/ after each run (crash-safe).
 A summary + figure are generated once all runs complete.
@@ -154,10 +155,10 @@ def _configure_entry_point(optim_algo: str) -> None:
     }
 
 
-PRESETS_PATH = Path(__file__).resolve().parent / "presets.json"
+CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
 
 
-with open(PRESETS_PATH) as f:
+with open(CONFIG_PATH) as f:
     _presets_config = json.load(f)
 CONDITIONS = list(_presets_config["conditions"].items())
 # Each entry in "algorithms" is pinned to an optim_algo (an ENTRY_POINTS key)
@@ -504,7 +505,7 @@ def parse_args() -> argparse.Namespace:
         "--num-seeds",
         type=int,
         default=None,
-        help="Number of seeds to evaluate (default: 100, or presets.json's/"
+        help="Number of seeds to evaluate (default: 100, or config.json's/"
         "algorithm's default)",
     )
     parser.add_argument(
@@ -514,9 +515,9 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         type=Path,
         default=None,
-        help="Parent dir under which each algorithm in presets.json gets its "
+        help="Parent dir under which each algorithm in config.json gets its "
         "own <output-dir>/<optim_algo> subdirectory (default: each "
-        "algorithm's own output_dir from presets.json).",
+        "algorithm's own output_dir from config.json).",
     )
     parser.add_argument(
         "--timeout",
@@ -530,7 +531,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Resume from an existing results CSV, skipping completed "
         "(seed, condition, *sampler_values) tuples. Only supported when "
-        "presets.json has a single algorithm.",
+        "config.json has a single algorithm.",
     )
     parser.add_argument(
         "--replot",
@@ -649,14 +650,14 @@ def _run_algorithm(
     seed x condition x configs sweep, then report on its results."""
     if optim_algo not in ENTRY_POINTS:
         raise SystemExit(
-            f"presets.json algorithm optim_algo {optim_algo!r} is not one of "
+            f"config.json algorithm optim_algo {optim_algo!r} is not one of "
             f"{sorted(ENTRY_POINTS)}"
         )
     _configure_entry_point(optim_algo)
 
     if any(len(c) != len(SAMPLER_KEYS) for c in configs):
         raise SystemExit(
-            f"presets.json configs for optim_algo {optim_algo!r} don't match "
+            f"config.json configs for optim_algo {optim_algo!r} don't match "
             f"its sampler params {SAMPLER_KEYS}"
         )
 
@@ -691,7 +692,7 @@ def main() -> None:
 
     if args.resume and len(ALGORITHMS) > 1:
         raise SystemExit(
-            "--resume isn't supported when presets.json has more than one "
+            "--resume isn't supported when config.json has more than one "
             "algorithm; rerun against a single algorithm's --output-dir instead"
         )
 

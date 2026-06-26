@@ -23,7 +23,7 @@ from validation.render import animate_plan, render_scene
 
 
 def emit_benchmark(**metrics: float) -> None:
-    """Print one `[Benchmark] name=value` line per metric, for benchmarks/pipeline_benchmark.py to scrape."""
+    """Print one `[Benchmark] name=value` line per metric, for benchmarks/benchmark.py to scrape."""
     for name, value in metrics.items():
         print(f"[Benchmark] {name}={value:.2f}")
 

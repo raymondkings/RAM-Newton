@@ -82,12 +82,12 @@ uv run python main_gradient_trajectory.py --config path/to/my_config.json
 
 ## Benchmark
 
-`benchmarks/pipeline_benchmark.py` sweeps the pipeline across N random seeds,
+`benchmarks/benchmark.py` sweeps the pipeline across N random seeds,
 running each seed with and without collision avoidance, and writes a
 crash-safe CSV plus a summary figure per algorithm to `benchmark_results/`.
 
 The algorithms to run, and the sampler-param tuples to sweep for each, are
-defined in [benchmarks/presets.json](benchmarks/presets.json) as a flat list
+defined in [benchmarks/config.json](benchmarks/config.json) as a flat list
 of "algorithms" entries — each pinned to its own `optim_algo` (one of
 `nrm_alpha_random_selection`, `nrm_alpha_random_selection_trajectory`, or
 `nrm_trajectory`), its sampler-param tuples, and an `output_dir`. The script
@@ -95,7 +95,7 @@ always runs every entry in that list, one after another, in a single
 invocation:
 
 ```bash
-uv run python benchmarks/pipeline_benchmark.py
+uv run python benchmarks/benchmark.py
 ```
 
 Each entry point exposes its own sweepable sampler params:
@@ -104,29 +104,29 @@ num_extra_paths, repeat_start_goal)`, while the two trajectory algorithms have
 just `num_poses`; a preset entry's config tuples must match its `optim_algo`'s
 params (the script raises an error otherwise). To customize the seeds, swept
 tuples, or output directories — or to compare the heuristic against the
-gradient baseline — edit `benchmarks/presets.json`; no code changes needed.
+gradient baseline — edit `benchmarks/config.json`; no code changes needed.
 
 Common options (apply to every algorithm in the list):
 
 ```bash
-uv run python benchmarks/pipeline_benchmark.py --num-seeds 5            # quick smoke test
-uv run python benchmarks/pipeline_benchmark.py --seeds-start 50         # start the seed range at 50
-uv run python benchmarks/pipeline_benchmark.py --timeout 1800           # per-run timeout in seconds
-uv run python benchmarks/pipeline_benchmark.py --output-dir my_results  # parent dir; each algorithm gets its own <my_results>/<optim_algo> subdir
+uv run python benchmarks/benchmark.py --num-seeds 5            # quick smoke test
+uv run python benchmarks/benchmark.py --seeds-start 50         # start the seed range at 50
+uv run python benchmarks/benchmark.py --timeout 1800           # per-run timeout in seconds
+uv run python benchmarks/benchmark.py --output-dir my_results  # parent dir; each algorithm gets its own <my_results>/<optim_algo> subdir
 ```
 
 Resume an interrupted sweep by pointing at the existing CSV — already-completed
 `(seed, condition, *sampler_values)` rows are skipped. This only works when
-`presets.json` has a single algorithm:
+`config.json` has a single algorithm:
 
 ```bash
-uv run python benchmarks/pipeline_benchmark.py --resume benchmark_results/<optim_algo>/benchmark_<timestamp>.csv
+uv run python benchmarks/benchmark.py --resume benchmark_results/<optim_algo>/benchmark_<timestamp>.csv
 ```
 
 Or regenerate the figure for an algorithm's existing CSVs without rerunning:
 
 ```bash
-uv run python benchmarks/pipeline_benchmark.py --replot
+uv run python benchmarks/benchmark.py --replot
 ```
 
 Outputs (per algorithm, under its `output_dir`):
