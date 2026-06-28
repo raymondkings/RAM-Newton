@@ -55,7 +55,11 @@ from util.fixed_alpha_morphology_candidates import (
     sample_fixed_alpha_morphology_candidates,
     sample_fixed_alpha_morphology_candidates_by_dof,
 )
-from util.optimization_csv_logger import OptimizationCSVLogger
+from util.optimization_csv_logger import (
+    InternalOptimizationCSVLogger,
+    OptimizationCSVLogger,
+)
+from util.optimization_timing import OptimizationTimer
 from validation.optimization_validation import (
     build_optimization_validation_context,
     run_optimization_validation,
@@ -99,6 +103,13 @@ EARLY_STOPPING_PATIENCE = 5
 # After post-optimization distribution filtering, only validate the top 10% by
 # final NRM probability.
 TOP_PROBABILITY_FRACTION = 0.025
+
+INTERNAL_LOG_FIELDNAMES = [
+    "dof",
+    "iteration",
+    "mean_loss",
+    "mean_nrm_prob",
+]
 
 # ------------------------------- model helpers ------------------------------
 
@@ -328,6 +339,8 @@ def _optimize_all_candidates_single_round(
     learning_rate: float,
     candidate_batch_size: int,
     logging: bool,
+    internal_logger: InternalOptimizationCSVLogger | None = None,
+    dof: int | None = None,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
     """Optimize all candidates in one batched round with per-candidate early stopping.
 
@@ -408,6 +421,7 @@ def _optimize_all_candidates_single_round(
         active_indices = torch.nonzero(active_mask, as_tuple=False).squeeze(1)
         num_active = int(active_indices.numel())
         current_probs = torch.full_like(previous_probs, float("nan"))
+        current_loss_sum = 0.0
 
         for start in range(0, num_active, candidate_batch_size):
             local = active_indices[start : start + candidate_batch_size]
@@ -422,6 +436,7 @@ def _optimize_all_candidates_single_round(
             # Mean over active candidates, accumulated over chunks.
             (loss_per_candidate.sum() / num_active).backward()
             current_probs[local] = prob_per_candidate.detach()
+            current_loss_sum += float(loss_per_candidate.detach().sum().item())
 
         optimizer.step()
 
@@ -456,8 +471,17 @@ def _optimize_all_candidates_single_round(
                 torch.isfinite(current_probs)
             ]
 
+        mean_loss = current_loss_sum / max(num_active, 1)
+        mean_prob = torch.nanmean(current_probs).item()
+        if internal_logger is not None:
+            internal_logger.log_row(
+                dof=dof,
+                iteration=update_idx,
+                mean_loss=mean_loss,
+                mean_nrm_prob=mean_prob,
+            )
+
         if logging:
-            mean_prob = torch.nanmean(current_probs).item()
             num_stopped = int((~active_mask).sum().item())
             num_active_after = int(active_mask.sum().item())
             num_batches = int(math.ceil(max(num_active, 1) / candidate_batch_size))
@@ -563,6 +587,7 @@ def _optimize_one_dof_group(
     candidate_batch_size: int,
     distribution_batch_size: int,
     logging: bool,
+    internal_logger: InternalOptimizationCSVLogger | None = None,
 ) -> list[dict[str, Any]]:
     """Optimize and post-filter one fixed-length DOF candidate group."""
     alpha_candidates = initial_candidate_morphologies[..., 0:1].detach()
@@ -580,6 +605,8 @@ def _optimize_one_dof_group(
             learning_rate=learning_rate,
             candidate_batch_size=candidate_batch_size,
             logging=logging,
+            internal_logger=internal_logger,
+            dof=dof,
         )
     )
 
@@ -644,18 +671,32 @@ def _validate_candidate(
     percentage_poses: float,
     number_random_seed: int,
     random_seed: int,
+    timer: OptimizationTimer | None = None,
 ) -> dict:
     """Validate one candidate using IK/FK with a deterministic pose subset."""
-    return run_optimization_validation(
-        processed_morphology=processed_morphology.detach(),
-        morph=morph,
-        task=task,
-        scene=scene,
-        device=device,
-        percentage_poses=percentage_poses,
-        number_random_seed=number_random_seed,
-        pose_sampling_generator=_validation_generator(device, random_seed),
-    )
+    pose_sampling_generator = _validation_generator(device, random_seed)
+    if timer is None:
+        return run_optimization_validation(
+            processed_morphology=processed_morphology.detach(),
+            morph=morph,
+            task=task,
+            scene=scene,
+            device=device,
+            percentage_poses=percentage_poses,
+            number_random_seed=number_random_seed,
+            pose_sampling_generator=pose_sampling_generator,
+        )
+    with timer.validation():
+        return run_optimization_validation(
+            processed_morphology=processed_morphology.detach(),
+            morph=morph,
+            task=task,
+            scene=scene,
+            device=device,
+            percentage_poses=percentage_poses,
+            number_random_seed=number_random_seed,
+            pose_sampling_generator=pose_sampling_generator,
+        )
 
 
 def _validate_top_records(
@@ -669,6 +710,7 @@ def _validate_top_records(
     number_random_seed: int,
     random_seed: int,
     logging: bool,
+    timer: OptimizationTimer | None = None,
 ) -> tuple[Tensor, Tensor, list[dict]]:
     """Run validation on selected candidate records and return scores plus data."""
     se3_scores = torch.empty(len(records), device=device)
@@ -690,6 +732,7 @@ def _validate_top_records(
             percentage_poses=percentage_poses,
             number_random_seed=number_random_seed,
             random_seed=random_seed,
+            timer=timer,
         )
         validation_data_list.append(validation_data)
         se3_scores[idx] = validation_data["best_se3_dist_mean"].detach().to(device)
@@ -764,7 +807,7 @@ def optimize_morphology(
     morph: Morphology,
     task: Task,
     optimization_parameters: dict,
-) -> tuple[Morphology, Path]:
+) -> tuple[Morphology, Path, list[float]]:
     """Single-round discrete-alpha candidate search over selected DOF groups.
 
     Set CANDIDATE_DOF at the top of this file to "all", "5,6", "5,7",
@@ -803,6 +846,8 @@ def optimize_morphology(
         raise ValueError("distribution_batch_size must be positive.")
 
     device = morph.params.device
+    timer = OptimizationTimer(device)
+    timer.start()
     selected_label = ",".join(str(dof) for dof in candidate_dofs)
 
     if logging:
@@ -835,11 +880,17 @@ def optimize_morphology(
     task_vec = _se3_to_vector(task.goal_poses.to(device))
     model = _load_model(device)
     csv_logger = OptimizationCSVLogger(root_dir=_PROJECT_ROOT)
+    internal_logger: InternalOptimizationCSVLogger | None = None
 
     alpha_generator = torch.Generator(device=device)
     alpha_generator.manual_seed(random_seed)
 
     try:
+        internal_logger = InternalOptimizationCSVLogger(
+            csv_logger.csv_path,
+            fieldnames=INTERNAL_LOG_FIELDNAMES,
+        )
+
         alpha_candidates_by_dof = _generate_alpha_candidates_by_dof(
             dofs=candidate_dofs,
             requested_num_candidates=num_alpha_candidates,
@@ -860,6 +911,7 @@ def optimize_morphology(
 
         if logging:
             print(f"[Info] Writing CSV log to: {csv_logger.csv_path}")
+            print(f"[Info] Writing internal CSV log to: {internal_logger.csv_path}")
             for dof in candidate_dofs:
                 original_count = alpha_candidates_by_dof[dof].shape[0]
                 accepted_count = initial_candidate_morphologies_by_dof[dof].shape[0]
@@ -885,6 +937,7 @@ def optimize_morphology(
                     candidate_batch_size=candidate_batch_size,
                     distribution_batch_size=distribution_batch_size,
                     logging=logging,
+                    internal_logger=internal_logger,
                 )
             )
 
@@ -949,6 +1002,7 @@ def optimize_morphology(
             number_random_seed=number_random_seed,
             random_seed=random_seed,
             logging=logging,
+            timer=timer,
         )
 
         # change here for the final selection before tie break score
@@ -1029,7 +1083,9 @@ def optimize_morphology(
             params=final_processed_morphology.detach(),
             link_radius=morph.link_radius,
         )
-        return optimized_morph, csv_logger.csv_path
+        return optimized_morph, csv_logger.csv_path, timer.result()
 
     finally:
+        if internal_logger is not None:
+            internal_logger.close()
         csv_logger.close()

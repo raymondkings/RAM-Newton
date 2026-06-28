@@ -220,7 +220,11 @@ __marimo__/
 # curobo
 curobo/
 
+# Output directories
 output/
+initial_candidates/
+benchmark_results/
+benchmark_results*/
 
 # Timelapse results
 timelapse/
