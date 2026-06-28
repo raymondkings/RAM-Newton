@@ -217,10 +217,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# curobo
-curobo/
-
+# Output directories
 output/
-
-# Timelapse results
-timelapse/
+initial_candidates/
+benchmark_results/
