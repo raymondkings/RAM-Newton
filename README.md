@@ -79,12 +79,36 @@ or loads a cached one, and finally validates the result with collision-free
 motion planning via cuRobo.
 
 ```mermaid
-flowchart LR
-    A[config + task poses] --> B{cached?}
-    B -->|no| C[optimize morphology<br/>to maximize NRM reachability]
-    B -->|yes| D[load cached morphology]
-    C --> E[cuRobo plan + render]
-    D --> E
+flowchart TD
+    subgraph S1["1. Kinematic Structure Sampling (5-7 DoF)"]
+        A{Used cached<br/>robot arms}
+        A -->|Yes| B[load cached<br/>kinematic structure]
+        A -->|No| C[Sample kinematic<br/>structure]
+    end
+
+    subgraph S2["2. Alternating Optimization"]
+        D[Kinematic Structure<br/>Optim. Step]
+        E[Trajectory Step]
+        D --> E
+        E --> D
+    end
+
+    subgraph S3["3. Filtering & Selection"]
+        F{any candidates<br/>survived?}
+        F -->|Yes| G["Select top 2.5%<br/>by NRM Prob."]
+        F -->|No| H[No candidate found]
+    end
+
+    subgraph S4["4. Final Selection"]
+        I[Final selection step]
+        J[Plan task<br/>using cuRobo]
+        I --> J
+    end
+
+    B --> D
+    C --> D
+    D --> F
+    G --> I
 ```
 
 ## Documentation
@@ -101,6 +125,4 @@ Deep reference lives in [`docs/`](docs/) — start at the
   planning, and the viser visualization.
 - [docs/configuration.md](docs/configuration.md) — every `config.json` key plus
   the hard-coded knobs that live in source.
-- [docs/troubleshooting.md](docs/troubleshooting.md) — common failure points and
-  known issues.
 
