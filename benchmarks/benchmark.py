@@ -279,10 +279,6 @@ def build_config(
     cfg["debug"] = False
     cfg["plot"] = {"enabled": False, "output_dir": "output/figures"}
     cfg["timelapse"] = {"enabled": False}
-    # Per-run optimization CSVs are write-only here (the sweep only reads
-    # stdout/[Benchmark] lines and the results CSV), and writing+flushing one
-    # row per iteration across hundreds of subprocess runs is a real cost.
-    cfg["csv_logging"] = False
     cfg.update(condition_flags)
     for key, value in sampler_overrides.items():
         if value is not None:
