@@ -38,15 +38,18 @@ How it works:
     subfigure per sampler-param combo when more than one was swept. This
     report+figure step repeats once per algorithm.
 
-    For nrm_alpha_random_selection_trajectory, num_plan_candidates (abbrev
-    "k") is itself a swept sampler param. With num_plan_candidates=1 (the
-    default), "success" is single-candidate success as before. With
-    num_plan_candidates=k>1, main_candidate_selection_trajectory.py runs full
-    planning for each of the optimizer's top-k validated candidates and the
-    process succeeds if any of them plans successfully — i.e. the reported
-    rate is success@k, not single-candidate success. Sweep both a k=1 row and
-    a k>1 row in benchmarks/config.json to compare them side by side; don't
-    read a k>1 row as if it were the single-candidate rate.
+    For nrm_alpha_random_selection and nrm_alpha_random_selection_trajectory,
+    num_plan_candidates (abbrev "k") is itself a swept sampler param. With
+    num_plan_candidates=1 (the default), "success" is single-candidate
+    success as before. With num_plan_candidates=k>1, the corresponding
+    main_*.py script runs full planning for each of the optimizer's top-k
+    validated candidates and the process succeeds if any of them plans
+    successfully — i.e. the reported rate is success@k, not single-candidate
+    success. Sweep both a k=1 row and a k>1 row in benchmarks/config.json to
+    compare them side by side; don't read a k>1 row as if it were the
+    single-candidate rate. nrm_trajectory (the gradient-descent baseline) has
+    no discrete candidate pool to rank, so it has no num_plan_candidates
+    param and always reports single-candidate success.
 
     To compare our heuristic against the alternating gradient baseline, bundle
     both trajectory optim_algo values as separate "algorithms" entries in
@@ -99,6 +102,7 @@ ENTRY_POINTS = {
             "num_line_samples": {"default": NUM_LINE_SAMPLES, "abbrev": "nls"},
             "num_extra_paths": {"default": NUM_EXTRA_PATHS, "abbrev": "nep"},
             "repeat_start_goal": {"default": REPEAT_START_GOAL, "abbrev": "rsg"},
+            "num_plan_candidates": {"default": 1, "abbrev": "k"},
         },
     },
     "nrm_alpha_random_selection_trajectory": {
@@ -178,10 +182,31 @@ CONDITIONS = list(_presets_config["conditions"].items())
 # another, in a single invocation. Top-level "num_seeds" can be overridden
 # per-algorithm.
 DEFAULT_NUM_SEEDS = _presets_config.get("num_seeds")
+
+
+def _expand_configs(
+    configs: list[tuple], num_plan_candidates: list[int] | None
+) -> list[tuple]:
+    """Cross "configs" with a separate "num_plan_candidates" sweep list, if given.
+
+    Lets benchmarks/config.json sweep top-k candidate planning independently
+    of an algorithm's other sampler params, instead of having to repeat every
+    base config tuple once per k value. The algorithm's sampler_params (see
+    ENTRY_POINTS) must list num_plan_candidates last for the appended value to
+    land in the right position.
+    """
+    if not num_plan_candidates:
+        return configs
+    return [c + (k,) for c in configs for k in num_plan_candidates]
+
+
 ALGORITHMS = [
     {
         "optim_algo": algo["optim_algo"],
-        "configs": [tuple(c) for c in algo["configs"]],
+        "configs": _expand_configs(
+            [tuple(c) for c in algo["configs"]],
+            algo.get("num_plan_candidates"),
+        ),
         "output_dir": PROJECT_DIR
         / algo.get("output_dir", f"benchmark_results/{algo['optim_algo']}"),
         "num_seeds": algo.get("num_seeds"),

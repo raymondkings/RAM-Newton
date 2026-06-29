@@ -807,12 +807,15 @@ def optimize_morphology(
     morph: Morphology,
     task: Task,
     optimization_parameters: dict,
-) -> tuple[Morphology, Path, list[float]]:
+) -> tuple[Morphology, Path, list[float], list[tuple[Morphology, float]]]:
     """Single-round discrete-alpha candidate search over selected DOF groups.
 
     Set CANDIDATE_DOF at the top of this file to "all", "5,6", "5,7",
     "6,7", "5", "6", or "7".
     """
+    num_plan_candidates = max(
+        1, int(optimization_parameters.get("num_plan_candidates", 1))
+    )
     total_iterations = int(optimization_parameters.get("num_iterations", 100))
     lr = float(optimization_parameters.get("learning_rate", 0.01))
     logging = bool(optimization_parameters.get("logging", True))
@@ -1026,6 +1029,17 @@ def optimize_morphology(
         final_local_in_tied = torch.argmin(tie_scores_tensor[tied_indices])
         final_idx = int(tied_indices[final_local_in_tied].item())
 
+        # Full ranking by the same key as the winner above: best ik_success_rate
+        # first, ties broken by min tie_score. Rank 0 is exactly `final_idx`.
+        ranking = sorted(
+            range(len(top_records)),
+            key=lambda idx: (
+                -ik_success_rates[idx].item(),
+                tie_scores_tensor[idx].item(),
+            ),
+        )
+        selected_indices = ranking[: min(num_plan_candidates, len(ranking))]
+
         if logging:
             print(
                 "[Info] Validation selection: "
@@ -1083,7 +1097,24 @@ def optimize_morphology(
             params=final_processed_morphology.detach(),
             link_radius=morph.link_radius,
         )
-        return optimized_morph, csv_logger.csv_path, timer.result()
+
+        candidates: list[tuple[Morphology, float]] = []
+        for idx in selected_indices:
+            record = top_records[idx]
+            candidates.append(
+                (
+                    Morphology(
+                        params=record["processed_morphology"].detach(),
+                        link_radius=morph.link_radius,
+                    ),
+                    validation_data_list[idx]["ik_success_pose_rate"]
+                    .detach()
+                    .cpu()
+                    .item(),
+                )
+            )
+
+        return optimized_morph, csv_logger.csv_path, timer.result(), candidates
 
     finally:
         if internal_logger is not None:

@@ -11,13 +11,15 @@
         [50, 0, 0, 0],
         [50, 25, 0, 0]
       ],
+      "num_plan_candidates": [1, 5],
       "output_dir": "benchmark_results/nrm_alpha_random_selection"
     },
     {
       "optim_algo": "nrm_alpha_random_selection_trajectory",
       "configs": [
-        [10, 1]
+        [10]
       ],
+      "num_plan_candidates": [1, 5],
       "output_dir": "benchmark_results/nrm_alpha_random_selection_trajectory"
     }
   ]
