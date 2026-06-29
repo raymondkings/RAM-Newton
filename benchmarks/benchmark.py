@@ -4,12 +4,13 @@ with and without collision avoidance.
 
 How it works:
     Each algorithm entry in benchmarks/config.json names an optim_algo, which selects
-    which main_*.py pipeline to benchmark: nrm_alpha_random_selection
-    (today's heuristic over static poses), nrm_alpha_random_selection_trajectory
-    (our heuristic, candidate-selection morphology+trajectory search), or
-    nrm_trajectory (the alternating gradient-based morphology+trajectory
-    optimizer baseline). Each optim_algo has its own sweepable sampler params
-    (see ENTRY_POINTS).
+    which main_*.py pipeline to benchmark: candidate_selection_static
+    (today's heuristic over static poses, main_candidate_selection_static.py),
+    candidate_selection_trajectory (our heuristic, candidate-selection
+    morphology+trajectory search, main_candidate_selection_trajectory.py), or
+    gradient_trajectory (the alternating gradient-based morphology+trajectory
+    optimizer baseline, main_gradient_trajectory.py). Each optim_algo has its
+    own sweepable sampler params (see ENTRY_POINTS).
 
     The sweep is the cartesian product of seeds x sampler-param combos x
     CONDITIONS (obstacle collision on/off; ground collision is always
@@ -38,7 +39,7 @@ How it works:
     subfigure per sampler-param combo when more than one was swept. This
     report+figure step repeats once per algorithm.
 
-    For nrm_alpha_random_selection and nrm_alpha_random_selection_trajectory,
+    For candidate_selection_static and candidate_selection_trajectory,
     num_plan_candidates (abbrev "k") is itself a swept sampler param. With
     num_plan_candidates=1 (the default), "success" is single-candidate
     success as before. With num_plan_candidates=k>1, the corresponding
@@ -47,9 +48,9 @@ How it works:
     successfully — i.e. the reported rate is success@k, not single-candidate
     success. Sweep both a k=1 row and a k>1 row in benchmarks/config.json to
     compare them side by side; don't read a k>1 row as if it were the
-    single-candidate rate. nrm_trajectory (the gradient-descent baseline) has
-    no discrete candidate pool to rank, so it has no num_plan_candidates
-    param and always reports single-candidate success.
+    single-candidate rate. gradient_trajectory (the gradient-descent
+    baseline) has no discrete candidate pool to rank, so it has no
+    num_plan_candidates param and always reports single-candidate success.
 
     To compare our heuristic against the alternating gradient baseline, bundle
     both trajectory optim_algo values as separate "algorithms" entries in
@@ -92,10 +93,11 @@ from task.task_pose_sampler_trajectory_ver import NUM_POSES
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 
 # Each entry point pairs a main_*.py pipeline script with the sampler-param
-# keys that can be swept for it. Keyed by the optim algorithm's module name,
-# which is also the value expected in config.json's "optim_algo" field.
+# keys that can be swept for it. Keyed by a short name for the optim
+# algorithm, which is also the value expected in config.json's "optim_algo"
+# field.
 ENTRY_POINTS = {
-    "nrm_alpha_random_selection": {
+    "candidate_selection_static": {
         "script": "main_candidate_selection_static.py",
         "sampler_params": {
             "num_samples": {"default": NUM_SAMPLES, "abbrev": "nsp"},
@@ -105,14 +107,14 @@ ENTRY_POINTS = {
             "num_plan_candidates": {"default": 1, "abbrev": "k"},
         },
     },
-    "nrm_alpha_random_selection_trajectory": {
+    "candidate_selection_trajectory": {
         "script": "main_candidate_selection_trajectory.py",
         "sampler_params": {
             "num_poses": {"default": NUM_POSES, "abbrev": "npo"},
             "num_plan_candidates": {"default": 1, "abbrev": "k"},
         },
     },
-    "nrm_trajectory": {
+    "gradient_trajectory": {
         "script": "main_gradient_trajectory.py",
         "sampler_params": {
             "num_poses": {"default": NUM_POSES, "abbrev": "npo"},
