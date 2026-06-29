@@ -26,11 +26,8 @@ from util.csv_log_reader import read_optimization_csv
 
 
 def _csv_time_suffix(csv_path: str | Path) -> str:
-    """Return the run suffix from output/log_<suffix>.csv."""
-    stem = Path(csv_path).stem
-    if stem.startswith("log_"):
-        return stem[len("log_") :]
-    return stem
+    """Return the run timestamp from output/<run_time>/morphology_history.csv."""
+    return Path(csv_path).parent.name
 
 
 def _load_validated_candidate_rows(csv_path: str | Path) -> list[dict]:

@@ -157,7 +157,7 @@ def create_plots_from_csv(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     rows = read_optimization_csv(csv_path)
-    stem = csv_path.stem
+    stem = csv_path.parent.name
 
     created: list[Path] = []
 

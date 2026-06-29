@@ -281,7 +281,7 @@ def create_timelapse_from_csv(
     recorder = TimeLapseRecorder(
         cfg=cfg,
         task=task,
-        timestamp_label=csv_path.stem,
+        timestamp_label=csv_path.parent.name,
     )
 
     n_iter = max(row["iteration"] for row in rows)
