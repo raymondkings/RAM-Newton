@@ -61,6 +61,7 @@ def main() -> None:
 
     print("[Info] Config:", json.dumps(vars(args), indent=2))
 
+    num_plan_candidates = int(getattr(args, "num_plan_candidates", 1))
     plan_goal_start = bool(getattr(args, "plan_goal_start", False))
     if plan_goal_start:
         print(
@@ -97,6 +98,7 @@ def main() -> None:
             OptimizationTiming(0.0, 0.0),
         )
         optimized_trajectory = task.goal_poses
+        candidates = [(optimized_morph, optimized_trajectory, None)]
     else:
         optimization_parameters = {
             "learning_rate": learning_rate_length,
@@ -109,6 +111,7 @@ def main() -> None:
             "distribution_batch_size": getattr(args, "distribution_batch_size", 128),
             "ignore_ground": ignore_ground,
             "ignore_obstacles": ignore_obstacles,
+            "num_plan_candidates": num_plan_candidates,
         }
         if hasattr(args, "num_alpha_candidates"):
             optimization_parameters["num_alpha_candidates"] = getattr(
@@ -116,12 +119,16 @@ def main() -> None:
                 "num_alpha_candidates",
             )
 
-        optimized_morph, optimized_trajectory, csv_path, optimization_timing = (
-            optimize_morphology_and_trajectory(
-                morph=morph,
-                task=task,
-                optimization_parameters=optimization_parameters,
-            )
+        (
+            optimized_morph,
+            optimized_trajectory,
+            csv_path,
+            optimization_timing,
+            candidates,
+        ) = optimize_morphology_and_trajectory(
+            morph=morph,
+            task=task,
+            optimization_parameters=optimization_parameters,
         )
 
     print(
@@ -134,32 +141,42 @@ def main() -> None:
 
     run_postprocess(Path(csv_path), args)
 
-    if plan_goal_start:
-        plan_task = Task(
+    def build_plan_task(trajectory: torch.Tensor) -> Task:
+        if plan_goal_start:
+            goal_poses = torch.stack([trajectory[0], trajectory[-1]], dim=0)
+        else:
+            goal_poses = trajectory
+        return Task(
             environment=task.environment,
-            goal_poses=torch.stack(
-                [optimized_trajectory[0], optimized_trajectory[-1]],
-                dim=0,
-            ),
-            reachable_region=task.reachable_region,
-            start_q=task.start_q,
-        )
-    else:
-        plan_task = Task(
-            environment=task.environment,
-            goal_poses=optimized_trajectory,
+            goal_poses=goal_poses,
             reachable_region=task.reachable_region,
             start_q=task.start_q,
         )
 
-    run_plan(
-        optimized_morph,
-        plan_task,
-        ignore_ground=ignore_ground,
-        ignore_obstacles=ignore_obstacles,
-        debug=debug,
-        visualize=visualize,
-    )
+    successes = []
+    for idx, (candidate_morph, candidate_trajectory, ik_success_rate) in enumerate(
+        candidates
+    ):
+        if len(candidates) > 1:
+            print(
+                f"[Info] Planning candidate {idx + 1}/{len(candidates)} "
+                f"(ik_success_pose_rate={ik_success_rate})"
+            )
+        success = run_plan(
+            candidate_morph,
+            build_plan_task(candidate_trajectory),
+            ignore_ground=ignore_ground,
+            ignore_obstacles=ignore_obstacles,
+            debug=debug,
+            visualize=visualize and idx == 0,
+        )
+        successes.append(success)
+
+    if len(candidates) > 1:
+        print(
+            f"[Info] success@{num_plan_candidates}: "
+            f"tried={len(candidates)} any_success={any(successes)}"
+        )
 
 
 if __name__ == "__main__":

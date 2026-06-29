@@ -38,6 +38,16 @@ How it works:
     subfigure per sampler-param combo when more than one was swept. This
     report+figure step repeats once per algorithm.
 
+    For nrm_alpha_random_selection_trajectory, num_plan_candidates (abbrev
+    "k") is itself a swept sampler param. With num_plan_candidates=1 (the
+    default), "success" is single-candidate success as before. With
+    num_plan_candidates=k>1, main_candidate_selection_trajectory.py runs full
+    planning for each of the optimizer's top-k validated candidates and the
+    process succeeds if any of them plans successfully — i.e. the reported
+    rate is success@k, not single-candidate success. Sweep both a k=1 row and
+    a k>1 row in benchmarks/config.json to compare them side by side; don't
+    read a k>1 row as if it were the single-candidate rate.
+
     To compare our heuristic against the alternating gradient baseline, bundle
     both trajectory optim_algo values as separate "algorithms" entries in
     benchmarks/config.json so they run back-to-back into their own output_dirs, then
@@ -95,6 +105,7 @@ ENTRY_POINTS = {
         "script": "main_candidate_selection_trajectory.py",
         "sampler_params": {
             "num_poses": {"default": NUM_POSES, "abbrev": "npo"},
+            "num_plan_candidates": {"default": 1, "abbrev": "k"},
         },
     },
     "nrm_trajectory": {
@@ -252,12 +263,18 @@ _BENCHMARK_LINE = re.compile(r"^\[Benchmark\] (\w+)=([\d.]+)$")
 
 
 def _extract_benchmark_metrics(stdout: str) -> dict[str, float]:
-    """Parse every `[Benchmark] name=value` line in stdout into {name: value}."""
-    metrics = {}
+    """Parse every `[Benchmark] name=value` line in stdout into {name: value}.
+
+    A name can appear more than once (e.g. `plan_seconds` is emitted once per
+    planning attempt when num_plan_candidates > 1), in which case the values
+    are summed so the metric reflects the total cost across all attempts.
+    """
+    metrics: dict[str, float] = {}
     for line in stdout.splitlines():
         match = _BENCHMARK_LINE.match(line)
         if match:
-            metrics[match.group(1)] = float(match.group(2))
+            name, value = match.group(1), float(match.group(2))
+            metrics[name] = metrics.get(name, 0.0) + value
     return metrics
 
 

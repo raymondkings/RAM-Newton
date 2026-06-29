@@ -16,7 +16,7 @@
     {
       "optim_algo": "nrm_alpha_random_selection_trajectory",
       "configs": [
-        [10]
+        [10, 1]
       ],
       "output_dir": "benchmark_results/nrm_alpha_random_selection_trajectory"
     }

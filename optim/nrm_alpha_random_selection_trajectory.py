@@ -1111,8 +1111,13 @@ def optimize_morphology_and_trajectory(
     morph: Morphology,
     task: Task,
     optimization_parameters: dict,
-) -> tuple[Morphology, Tensor, Path, list[float]]:
+) -> tuple[
+    Morphology, Tensor, Path, list[float], list[tuple[Morphology, Tensor, float]]
+]:
     """Discrete-alpha candidate search with per-candidate trajectory optimization."""
+    num_plan_candidates = max(
+        1, int(optimization_parameters.get("num_plan_candidates", 1))
+    )
     lr = float(optimization_parameters.get("learning_rate", 0.01))
     lr_pose = float(
         optimization_parameters.get(
@@ -1354,6 +1359,17 @@ def optimize_morphology_and_trajectory(
         final_local_in_tied = torch.argmin(tie_scores_tensor[tied_indices])
         final_idx = int(tied_indices[final_local_in_tied].item())
 
+        # Full ranking by the same key as the winner above: best ik_success_rate
+        # first, ties broken by min tie_score. Rank 0 is exactly `final_idx`.
+        ranking = sorted(
+            range(len(top_records)),
+            key=lambda idx: (
+                -ik_success_rates[idx].item(),
+                tie_scores_tensor[idx].item(),
+            ),
+        )
+        selected_indices = ranking[: min(num_plan_candidates, len(ranking))]
+
         if logging:
             print(
                 "[Info] Validation selection: "
@@ -1414,11 +1430,30 @@ def optimize_morphology_and_trajectory(
             params=final_processed_morphology.detach(),
             link_radius=morph.link_radius,
         )
+
+        candidates: list[tuple[Morphology, Tensor, float]] = []
+        for idx in selected_indices:
+            record = top_records[idx]
+            candidates.append(
+                (
+                    Morphology(
+                        params=record["processed_morphology"].detach(),
+                        link_radius=morph.link_radius,
+                    ),
+                    record["trajectory"].detach(),
+                    validation_data_list[idx]["ik_success_pose_rate"]
+                    .detach()
+                    .cpu()
+                    .item(),
+                )
+            )
+
         return (
             optimized_morph,
             final_trajectory.detach(),
             csv_logger.csv_path,
             timer.result(),
+            candidates,
         )
 
     finally:
