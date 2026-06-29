@@ -279,6 +279,10 @@ def build_config(
     cfg["debug"] = False
     cfg["plot"] = {"enabled": False, "output_dir": "output/figures"}
     cfg["timelapse"] = {"enabled": False}
+    # Per-run optimization CSVs are write-only here (the sweep only reads
+    # stdout/[Benchmark] lines and the results CSV), and writing+flushing one
+    # row per iteration across hundreds of subprocess runs is a real cost.
+    cfg["csv_logging"] = False
     cfg.update(condition_flags)
     for key, value in sampler_overrides.items():
         if value is not None:
@@ -315,6 +319,11 @@ def run_single(
     timeout: int,
 ) -> dict:
     cfg = build_config(seed, condition_flags, sampler_overrides, base_config)
+    # Route this run's optimization CSV logs (output/<run_time>/morphology_history.csv
+    # and its siblings) under the benchmark's own output_dir instead of the
+    # project root, so log_root_dir/<run_time>/ lands next to this run's
+    # results/figure/configs.
+    cfg["log_root_dir"] = str(config_dir.parent)
     suffix = "_".join(
         f"{SAMPLER_ABBREV[k]}"
         + (
@@ -582,6 +591,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Load all CSVs from --output-dir and regenerate the figure without running benchmarks",
     )
+    parser.add_argument(
+        "--no-results-csv",
+        action="store_true",
+        help="Run the sweep without writing benchmark_<optim_algo>_<timestamp>.csv "
+        "or the report/figure. Disables --resume and crash-safety for this run; "
+        "use only for a quick/disposable sweep.",
+    )
     return parser.parse_args()
 
 
@@ -625,10 +641,16 @@ def _run_sweep(
     args: argparse.Namespace,
     configs: list[tuple],
     base_config: dict,
-    results_csv: Path,
+    results_csv: Path | None,
     config_dir: Path,
 ) -> None:
-    completed = load_completed(results_csv)
+    """Run the seed x condition x configs sweep.
+
+    When results_csv is None (--no-results-csv), nothing is written to disk:
+    no resume-tracking of completed runs, no crash-safety. Use only for a
+    quick/disposable sweep.
+    """
+    completed = load_completed(results_csv) if results_csv is not None else {}
     if completed:
         print(f"[Benchmark] Skipping {len(completed)} already-completed runs")
 
@@ -636,12 +658,8 @@ def _run_sweep(
     total = len(seeds) * len(configs) * len(CONDITIONS)
     done = 0
 
-    csv_exists = results_csv.exists()
-    with open(results_csv, "a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=RESULT_FIELDS)
-        if not csv_exists:
-            writer.writeheader()
-
+    def _run_combos(writer, f) -> None:
+        nonlocal done
         for seed in seeds:
             for combo in configs:
                 overrides = dict(zip(SAMPLER_KEYS, combo))
@@ -679,8 +697,20 @@ def _run_sweep(
                     )
                     print(f"  -> {status}  ({result['duration_seconds']:.0f}s)")
 
-                    writer.writerow(result)
-                    f.flush()
+                    if writer is not None:
+                        writer.writerow(result)
+                        f.flush()
+
+    if results_csv is None:
+        _run_combos(writer=None, f=None)
+        return
+
+    csv_exists = results_csv.exists()
+    with open(results_csv, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=RESULT_FIELDS)
+        if not csv_exists:
+            writer.writeheader()
+        _run_combos(writer, f)
 
 
 def _run_algorithm(
@@ -721,8 +751,15 @@ def _run_algorithm(
     sweep_args = argparse.Namespace(**vars(args))
     sweep_args.num_seeds = num_seeds
 
-    results_csv = _resolve_results_csv(sweep_args, output_dir, optim_algo)
+    if args.no_results_csv:
+        print("[Benchmark] --no-results-csv: not writing results CSV or report")
+        results_csv = None
+    else:
+        results_csv = _resolve_results_csv(sweep_args, output_dir, optim_algo)
     _run_sweep(sweep_args, configs, base_config, results_csv, config_dir)
+
+    if results_csv is None:
+        return
 
     all_results = _load_results_csvs([results_csv])
     if all_results:
