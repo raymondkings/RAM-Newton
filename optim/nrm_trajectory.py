@@ -486,7 +486,7 @@ def optimize_morphology_and_trajectory(
         optimized_trajectory:
             Final trajectory, including fixed start and goal poses.
         csv_path:
-            Path to output/log_<time>.csv.
+            Path to output/<time>/morphology_history.csv.
         timing:
             [optimizer/backprop time, cuRobo validation time] in seconds.
     """
@@ -498,6 +498,7 @@ def optimize_morphology_and_trajectory(
         )
     )
     logging = bool(optimization_parameters.get("logging", True))
+    csv_logging = bool(optimization_parameters.get("csv_logging", True))
     eval_interval = int(optimization_parameters.get("eval_interval", 1))
     random_seed = int(optimization_parameters.get("random_seed", 42))
     number_random_seed = int(optimization_parameters.get("number_random_seed", 32))
@@ -564,7 +565,7 @@ def optimize_morphology_and_trajectory(
     )
     model = _load_model(device)
 
-    csv_logger = OptimizationCSVLogger(root_dir=_PROJECT_ROOT)
+    csv_logger = OptimizationCSVLogger(root_dir=_PROJECT_ROOT, enabled=csv_logging)
 
     pose_sampling_generator = torch.Generator(device=device)
     pose_sampling_generator.manual_seed(random_seed)

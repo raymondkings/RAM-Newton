@@ -6,7 +6,7 @@
 # -----------------------------------------------------------------------------
 # This version keeps the original optimization structure, but removes plotting
 # and recorder/timelapse creation. All data needed for later plotting/video
-# reconstruction is written to output/log_<time>.csv.
+# reconstruction is written to output/<time>/morphology_history.csv.
 # -----------------------------------------------------------------------------
 
 import json
@@ -120,13 +120,14 @@ def optimize_morphology(
         optimized_morphology:
             Final processed morphology.
         csv_path:
-            Path to output/log_<time>.csv.
+            Path to output/<time>/morphology_history.csv.
         timing:
             [optimizer/backprop time, cuRobo validation time] in seconds.
     """
     n_iter = optimization_parameters.get("num_iterations", 100)
     lr = optimization_parameters.get("learning_rate", 0.01)
     logging = optimization_parameters.get("logging", True)
+    csv_logging = bool(optimization_parameters.get("csv_logging", True))
     eval_interval = optimization_parameters.get("eval_interval", 1)
     eval_interval = int(eval_interval)
     random_seed = optimization_parameters.get("random_seed", 42)
@@ -168,7 +169,7 @@ def optimize_morphology(
     optimizer = torch.optim.AdamW([lengths], lr=lr)
     model = _load_model(device)
 
-    csv_logger = OptimizationCSVLogger(root_dir=_PROJECT_ROOT)
+    csv_logger = OptimizationCSVLogger(root_dir=_PROJECT_ROOT, enabled=csv_logging)
 
     # for pose sampling (each validation sample different poses if not full pose validation)
     pose_sampling_generator = torch.Generator(device=device)
