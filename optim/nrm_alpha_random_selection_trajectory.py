@@ -97,6 +97,8 @@ TRAJECTORY_INTERNAL_LOG_FIELDNAMES = [
     "mean_loss",
     "mean_nrm_prob",
     "mean_morphology_loss",
+    "mean_bce_loss",
+    "mean_final_d_penalty",
     "mean_trajectory_loss",
     "mean_reachability_loss",
     "mean_smoothness_loss",
@@ -109,6 +111,11 @@ TRAJECTORY_INTERNAL_LOG_FIELDNAMES = [
     "mean_wall_repulsion_loss",
 ]
 
+_MORPHOLOGY_LOSS_STAT_KEYS = [
+    "bce_loss",
+    "final_d_penalty",
+]
+
 _TRAJECTORY_LOSS_STAT_KEYS = [
     "reachability_loss",
     "smoothness_loss",
@@ -119,6 +126,17 @@ _TRAJECTORY_LOSS_STAT_KEYS = [
     "endpoint_side_loss",
     "wall_loss",
     "wall_repulsion_loss",
+]
+
+# Per-candidate final loss log, written once for every candidate that survives
+# post-optimization distribution + final-d filtering (not just the top-k).
+ALL_CANDIDATES_LOG_FIELDNAMES = [
+    "dof",
+    "loss",
+    "nrm_prob",
+    "morphology_loss",
+    *_MORPHOLOGY_LOSS_STAT_KEYS,
+    *_TRAJECTORY_LOSS_STAT_KEYS,
 ]
 
 
@@ -327,8 +345,9 @@ def _morphology_loss_and_prob_batched(
     length_candidates: Tensor,
     task_vec: Tensor,
     link_radius: float,
-) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-    """Return morphology-phase loss/prob for each candidate."""
+) -> tuple[Tensor, Tensor, Tensor, Tensor, dict[str, Tensor]]:
+    """Return morphology-phase loss/prob for each candidate, plus a breakdown
+    of loss into its individual terms (see _MORPHOLOGY_LOSS_STAT_KEYS)."""
     num_candidates = alpha_candidates.shape[0]
     _, processed_morphologies = _build_morphology_tensors(
         alpha_candidates,
@@ -365,7 +384,11 @@ def _morphology_loss_and_prob_batched(
     prob = torch.sigmoid(logit).mean(dim=1)
 
     raw_morphologies = torch.cat([alpha_candidates, length_candidates], dim=-1)
-    return loss, prob, raw_morphologies, processed_morphologies
+    stats = {
+        "bce_loss": bce.detach(),
+        "final_d_penalty": final_d_penalty.detach(),
+    }
+    return loss, prob, raw_morphologies, processed_morphologies, stats
 
 
 def _trajectory_reachability_loss_and_prob(
@@ -655,7 +678,7 @@ def _optimize_all_candidates_iterative(
     logging: bool,
     internal_logger: InternalOptimizationCSVLogger | None = None,
     dof: int | None = None,
-) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, dict[str, Tensor]]:
     """Optimize all candidates with alternating morphology/trajectory steps.
 
     Returns:
@@ -671,6 +694,9 @@ def _optimize_all_candidates_iterative(
             Final raw morphology tensors.
         final_processed_morphologies:
             Final processed morphology tensors.
+        final_loss_components:
+            Per-candidate breakdown of the final loss, keyed by "morphology_loss"
+            plus every key in _TRAJECTORY_LOSS_STAT_KEYS, each shape [N].
     """
     num_candidates = alpha_candidates.shape[0]
     if num_candidates == 0:
@@ -749,10 +775,11 @@ def _optimize_all_candidates_iterative(
 
             current_probs = torch.empty(num_candidates, device=alpha_candidates.device)
             current_loss_sum = 0.0
+            current_stat_sums = {key: 0.0 for key in _MORPHOLOGY_LOSS_STAT_KEYS}
 
             for start in range(0, num_candidates, candidate_batch_size):
                 end = min(start + candidate_batch_size, num_candidates)
-                loss_per_candidate, prob_per_candidate, _, _ = (
+                loss_per_candidate, prob_per_candidate, _, _, stats = (
                     _morphology_loss_and_prob_batched(
                         model=model,
                         alpha_candidates=alpha_candidates[start:end],
@@ -764,10 +791,16 @@ def _optimize_all_candidates_iterative(
                 (loss_per_candidate.sum() / num_candidates).backward()
                 current_probs[start:end] = prob_per_candidate.detach()
                 current_loss_sum += float(loss_per_candidate.detach().sum().item())
+                for key in _MORPHOLOGY_LOSS_STAT_KEYS:
+                    current_stat_sums[key] += float(stats[key].sum().item())
 
             length_optimizer.step()
             mean_loss = current_loss_sum / num_candidates
             mean_prob = current_probs.mean().item()
+            mean_stats = {
+                f"mean_{key}": value / num_candidates
+                for key, value in current_stat_sums.items()
+            }
             if internal_logger is not None:
                 internal_logger.log_row(
                     dof=dof,
@@ -778,6 +811,7 @@ def _optimize_all_candidates_iterative(
                     mean_loss=mean_loss,
                     mean_nrm_prob=mean_prob,
                     mean_morphology_loss=mean_loss,
+                    **mean_stats,
                 )
             if logging:
                 progress.set_postfix(
@@ -880,28 +914,46 @@ def _optimize_all_candidates_iterative(
 
         final_losses = []
         final_probs = []
+        final_morphology_losses = []
+        final_stats: dict[str, list[Tensor]] = {
+            key: []
+            for key in (*_MORPHOLOGY_LOSS_STAT_KEYS, *_TRAJECTORY_LOSS_STAT_KEYS)
+        }
         for start in range(0, num_candidates, candidate_batch_size):
             end = min(start + candidate_batch_size, num_candidates)
-            morph_loss, _, _, _ = _morphology_loss_and_prob_batched(
+            morph_loss, _, _, _, morph_stats = _morphology_loss_and_prob_batched(
                 model=model,
                 alpha_candidates=alpha_candidates[start:end],
                 length_candidates=length_candidates.detach()[start:end],
                 task_vec=final_task_vec[start:end],
                 link_radius=link_radius,
             )
-            trajectory_loss, trajectory_prob, _ = _trajectory_loss_and_stats_batched(
-                model=model,
-                processed_morphologies=final_processed_morphologies[start:end],
-                task=task,
-                task_vec=final_task_vec[start:end],
-                poses=final_trajectories[start:end],
-                reference_poses=reference_poses,
+            trajectory_loss, trajectory_prob, stats = (
+                _trajectory_loss_and_stats_batched(
+                    model=model,
+                    processed_morphologies=final_processed_morphologies[start:end],
+                    task=task,
+                    task_vec=final_task_vec[start:end],
+                    poses=final_trajectories[start:end],
+                    reference_poses=reference_poses,
+                )
             )
             final_losses.append((morph_loss + trajectory_loss).detach())
             final_probs.append(trajectory_prob.detach())
+            final_morphology_losses.append(morph_loss.detach())
+            for key in _MORPHOLOGY_LOSS_STAT_KEYS:
+                final_stats[key].append(morph_stats[key])
+            for key in _TRAJECTORY_LOSS_STAT_KEYS:
+                final_stats[key].append(stats[key])
 
         final_losses = torch.cat(final_losses, dim=0)
         final_probs = torch.cat(final_probs, dim=0)
+        final_loss_components: dict[str, Tensor] = {
+            "morphology_loss": torch.cat(final_morphology_losses, dim=0),
+        }
+        final_loss_components.update(
+            {key: torch.cat(values, dim=0) for key, values in final_stats.items()}
+        )
 
     return (
         length_candidates.detach(),
@@ -910,6 +962,7 @@ def _optimize_all_candidates_iterative(
         final_probs,
         final_raw_morphologies.detach(),
         final_processed_morphologies.detach(),
+        final_loss_components,
     )
 
 
@@ -939,6 +992,7 @@ def _optimize_one_dof_group(
         probs,
         _,
         processed_morphologies,
+        loss_components,
     ) = _optimize_all_candidates_iterative(
         model=model,
         task=task,
@@ -979,6 +1033,9 @@ def _optimize_one_dof_group(
                 "raw_morphology": initial_morphologies_for_log[idx],
                 "processed_morphology": processed_morphologies[idx],
                 "trajectory": trajectories[idx],
+                "loss_components": {
+                    key: values[idx] for key, values in loss_components.items()
+                },
             }
         )
 
@@ -1126,6 +1183,7 @@ def optimize_morphology_and_trajectory(
         )
     )
     logging = bool(optimization_parameters.get("logging", True))
+    csv_logging = bool(optimization_parameters.get("csv_logging", True))
     random_seed = int(optimization_parameters.get("random_seed", 42))
     number_random_seed = int(optimization_parameters.get("number_random_seed", 32))
     percentage_poses = float(optimization_parameters.get("percentage_poses", 1))
@@ -1209,7 +1267,14 @@ def optimize_morphology_and_trajectory(
     )
 
     model = _load_model(device)
-    csv_logger = OptimizationCSVLogger(root_dir=_PROJECT_ROOT)
+    log_root_dir = optimization_parameters.get("log_root_dir")
+    csv_logger = (
+        OptimizationCSVLogger(
+            root_dir=Path(log_root_dir), output_subdir=None, enabled=csv_logging
+        )
+        if log_root_dir
+        else OptimizationCSVLogger(root_dir=_PROJECT_ROOT, enabled=csv_logging)
+    )
     internal_logger: InternalOptimizationCSVLogger | None = None
 
     alpha_generator = torch.Generator(device=device)
@@ -1219,6 +1284,7 @@ def optimize_morphology_and_trajectory(
         internal_logger = InternalOptimizationCSVLogger(
             csv_logger.csv_path,
             fieldnames=TRAJECTORY_INTERNAL_LOG_FIELDNAMES,
+            enabled=csv_logging,
         )
 
         alpha_candidates_by_dof = _generate_alpha_candidates_by_dof(
@@ -1300,6 +1366,28 @@ def optimize_morphology_and_trajectory(
                 f"kept {len(records)}/{before_last_d_filter} candidates "
                 "with processed params[-1, 2] >= 0."
             )
+
+        all_candidates_logger = InternalOptimizationCSVLogger(
+            csv_logger.csv_path,
+            fieldnames=ALL_CANDIDATES_LOG_FIELDNAMES,
+            suffix="final_candidates",
+            enabled=csv_logging,
+        )
+        if logging:
+            print(
+                "[Info] Writing all-candidates CSV log to: "
+                f"{all_candidates_logger.csv_path}"
+            )
+        try:
+            for record in records:
+                all_candidates_logger.log_row(
+                    dof=record["dof"],
+                    loss=record["loss"],
+                    nrm_prob=record["prob"],
+                    **record.get("loss_components", {}),
+                )
+        finally:
+            all_candidates_logger.close()
 
         probs_valid = torch.stack(
             [record["prob"].detach().to(device) for record in records]

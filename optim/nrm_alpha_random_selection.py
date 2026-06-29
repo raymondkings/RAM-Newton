@@ -111,6 +111,14 @@ INTERNAL_LOG_FIELDNAMES = [
     "mean_nrm_prob",
 ]
 
+# Per-candidate final loss log, written once for every candidate that survives
+# post-optimization distribution + final-d filtering (not just the top-k).
+ALL_CANDIDATES_LOG_FIELDNAMES = [
+    "dof",
+    "loss",
+    "nrm_prob",
+]
+
 # ------------------------------- model helpers ------------------------------
 
 
@@ -819,6 +827,7 @@ def optimize_morphology(
     total_iterations = int(optimization_parameters.get("num_iterations", 100))
     lr = float(optimization_parameters.get("learning_rate", 0.01))
     logging = bool(optimization_parameters.get("logging", True))
+    csv_logging = bool(optimization_parameters.get("csv_logging", True))
     random_seed = int(optimization_parameters.get("random_seed", 42))
     number_random_seed = int(optimization_parameters.get("number_random_seed", 32))
     percentage_poses = float(optimization_parameters.get("percentage_poses", 1))
@@ -882,7 +891,14 @@ def optimize_morphology(
 
     task_vec = _se3_to_vector(task.goal_poses.to(device))
     model = _load_model(device)
-    csv_logger = OptimizationCSVLogger(root_dir=_PROJECT_ROOT)
+    log_root_dir = optimization_parameters.get("log_root_dir")
+    csv_logger = (
+        OptimizationCSVLogger(
+            root_dir=Path(log_root_dir), output_subdir=None, enabled=csv_logging
+        )
+        if log_root_dir
+        else OptimizationCSVLogger(root_dir=_PROJECT_ROOT, enabled=csv_logging)
+    )
     internal_logger: InternalOptimizationCSVLogger | None = None
 
     alpha_generator = torch.Generator(device=device)
@@ -892,6 +908,7 @@ def optimize_morphology(
         internal_logger = InternalOptimizationCSVLogger(
             csv_logger.csv_path,
             fieldnames=INTERNAL_LOG_FIELDNAMES,
+            enabled=csv_logging,
         )
 
         alpha_candidates_by_dof = _generate_alpha_candidates_by_dof(
@@ -969,6 +986,27 @@ def optimize_morphology(
                 f"kept {len(records)}/{before_last_d_filter} candidates "
                 "with processed params[-1, 2] >= 0."
             )
+
+        all_candidates_logger = InternalOptimizationCSVLogger(
+            csv_logger.csv_path,
+            fieldnames=ALL_CANDIDATES_LOG_FIELDNAMES,
+            suffix="final_candidates",
+            enabled=csv_logging,
+        )
+        if logging:
+            print(
+                "[Info] Writing all-candidates CSV log to: "
+                f"{all_candidates_logger.csv_path}"
+            )
+        try:
+            for record in records:
+                all_candidates_logger.log_row(
+                    dof=record["dof"],
+                    loss=record["loss"],
+                    nrm_prob=record["prob"],
+                )
+        finally:
+            all_candidates_logger.close()
 
         probs_valid = torch.stack(
             [record["prob"].detach().to(device) for record in records]
