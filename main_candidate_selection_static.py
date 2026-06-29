@@ -89,26 +89,29 @@ def main() -> None:
         )
         candidates = [(optimized_morph, None)]
     else:
+        optimization_parameters = {
+            "num_iterations": args.num_iterations,
+            "learning_rate": args.learning_rate_length,
+            "logging": args.debug,
+            "csv_logging": bool(getattr(args, "csv_logging", True)),
+            "eval_interval": args.eval_interval,
+            "random_seed": args.seed,
+            "number_random_seed": args.number_random_seed,
+            "percentage_poses": args.percentage_poses,
+            "candidate_batch_size": getattr(args, "candidate_batch_size", 64),
+            "distribution_batch_size": getattr(args, "distribution_batch_size", 128),
+            "ignore_ground": args.ignore_ground,
+            "ignore_obstacles": args.ignore_obstacles,
+            "num_plan_candidates": num_plan_candidates,
+        }
+        if hasattr(args, "log_root_dir"):
+            optimization_parameters["log_root_dir"] = getattr(args, "log_root_dir")
+
         optimized_morph, csv_path, optimization_timing, candidates = (
             optimize_morphology(
                 morph=morph,
                 task=task,
-                optimization_parameters={
-                    "num_iterations": args.num_iterations,
-                    "learning_rate": args.learning_rate_length,
-                    "logging": args.debug,
-                    "eval_interval": args.eval_interval,
-                    "random_seed": args.seed,
-                    "number_random_seed": args.number_random_seed,
-                    "percentage_poses": args.percentage_poses,
-                    "candidate_batch_size": getattr(args, "candidate_batch_size", 64),
-                    "distribution_batch_size": getattr(
-                        args, "distribution_batch_size", 128
-                    ),
-                    "ignore_ground": args.ignore_ground,
-                    "ignore_obstacles": args.ignore_obstacles,
-                    "num_plan_candidates": num_plan_candidates,
-                },
+                optimization_parameters=optimization_parameters,
             )
         )
 
@@ -118,7 +121,10 @@ def main() -> None:
     print(f"[Info] Optimization CSV: {csv_path}")
     report_optimization_timing(optimization_timing)
 
-    run_postprocess(Path(csv_path), args)
+    if used_cache or bool(getattr(args, "csv_logging", True)):
+        run_postprocess(Path(csv_path), args)
+    else:
+        print("[Info] csv_logging disabled: skipping CSV-based postprocessing.")
 
     if plan_goal_start:
         plan_task = Task(

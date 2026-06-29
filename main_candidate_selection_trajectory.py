@@ -53,6 +53,7 @@ def main() -> None:
     ignore_obstacles = bool(getattr(args, "ignore_obstacles", False))
     visualize = bool(getattr(args, "visualize", True))
     debug = bool(getattr(args, "debug", True))
+    csv_logging = bool(getattr(args, "csv_logging", True))
 
     set_global_seed(seed)
     initial_morphology_dof = int(getattr(args, "dof", 6))
@@ -104,6 +105,7 @@ def main() -> None:
             "learning_rate": learning_rate_length,
             "learning_rate_pose": learning_rate_pose,
             "logging": debug,
+            "csv_logging": csv_logging,
             "random_seed": seed,
             "number_random_seed": number_random_seed,
             "percentage_poses": percentage_poses,
@@ -118,6 +120,8 @@ def main() -> None:
                 args,
                 "num_alpha_candidates",
             )
+        if hasattr(args, "log_root_dir"):
+            optimization_parameters["log_root_dir"] = getattr(args, "log_root_dir")
 
         (
             optimized_morph,
@@ -139,7 +143,10 @@ def main() -> None:
     print(f"[Info] Optimization CSV: {csv_path}")
     report_optimization_timing(optimization_timing)
 
-    run_postprocess(Path(csv_path), args)
+    if used_cache or csv_logging:
+        run_postprocess(Path(csv_path), args)
+    else:
+        print("[Info] csv_logging disabled: skipping CSV-based postprocessing.")
 
     def build_plan_task(trajectory: torch.Tensor) -> Task:
         if plan_goal_start:
