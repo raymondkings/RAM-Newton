@@ -152,8 +152,6 @@ def run_plan(
         else planner.default_start_q().to(dtype)
     )
 
-    task.start_q = start_q
-
     print(f"[Info] Start configuration: {start_q.tolist()}")
 
     if not planner.is_q_feasible(start_q):
