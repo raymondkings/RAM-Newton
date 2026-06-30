@@ -4,12 +4,13 @@ with and without collision avoidance.
 
 How it works:
     Each algorithm entry in benchmarks/config.json names an optim_algo, which selects
-    which main_*.py pipeline to benchmark: nrm_alpha_random_selection
-    (today's heuristic over static poses), nrm_alpha_random_selection_trajectory
-    (our heuristic, candidate-selection morphology+trajectory search), or
-    nrm_trajectory (the alternating gradient-based morphology+trajectory
-    optimizer baseline). Each optim_algo has its own sweepable sampler params
-    (see ENTRY_POINTS).
+    which main_*.py pipeline to benchmark: candidate_selection_static
+    (today's heuristic over static poses, main_candidate_selection_static.py),
+    candidate_selection_trajectory (our heuristic, candidate-selection
+    morphology+trajectory search, main_candidate_selection_trajectory.py), or
+    gradient_trajectory (the alternating gradient-based morphology+trajectory
+    optimizer baseline, main_gradient_trajectory.py). Each optim_algo has its
+    own sweepable sampler params (see ENTRY_POINTS).
 
     The sweep is the cartesian product of seeds x sampler-param combos x
     CONDITIONS (obstacle collision on/off; ground collision is always
@@ -37,6 +38,19 @@ How it works:
     success/failure breakdown and _make_figure() renders it to a PNG — one
     subfigure per sampler-param combo when more than one was swept. This
     report+figure step repeats once per algorithm.
+
+    For candidate_selection_static and candidate_selection_trajectory,
+    num_plan_candidates (abbrev "k") is itself a swept sampler param. With
+    num_plan_candidates=1 (the default), "success" is single-candidate
+    success as before. With num_plan_candidates=k>1, the corresponding
+    main_*.py script runs full planning for each of the optimizer's top-k
+    validated candidates and the process succeeds if any of them plans
+    successfully — i.e. the reported rate is success@k, not single-candidate
+    success. Sweep both a k=1 row and a k>1 row in benchmarks/config.json to
+    compare them side by side; don't read a k>1 row as if it were the
+    single-candidate rate. gradient_trajectory (the gradient-descent
+    baseline) has no discrete candidate pool to rank, so it has no
+    num_plan_candidates param and always reports single-candidate success.
 
     To compare our heuristic against the alternating gradient baseline, bundle
     both trajectory optim_algo values as separate "algorithms" entries in
@@ -79,25 +93,28 @@ from task.task_pose_sampler_trajectory_ver import NUM_POSES
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 
 # Each entry point pairs a main_*.py pipeline script with the sampler-param
-# keys that can be swept for it. Keyed by the optim algorithm's module name,
-# which is also the value expected in config.json's "optim_algo" field.
+# keys that can be swept for it. Keyed by a short name for the optim
+# algorithm, which is also the value expected in config.json's "optim_algo"
+# field.
 ENTRY_POINTS = {
-    "nrm_alpha_random_selection": {
+    "candidate_selection_static": {
         "script": "main_candidate_selection_static.py",
         "sampler_params": {
             "num_samples": {"default": NUM_SAMPLES, "abbrev": "nsp"},
             "num_line_samples": {"default": NUM_LINE_SAMPLES, "abbrev": "nls"},
             "num_extra_paths": {"default": NUM_EXTRA_PATHS, "abbrev": "nep"},
             "repeat_start_goal": {"default": REPEAT_START_GOAL, "abbrev": "rsg"},
+            "num_plan_candidates": {"default": 1, "abbrev": "k"},
         },
     },
-    "nrm_alpha_random_selection_trajectory": {
+    "candidate_selection_trajectory": {
         "script": "main_candidate_selection_trajectory.py",
         "sampler_params": {
             "num_poses": {"default": NUM_POSES, "abbrev": "npo"},
+            "num_plan_candidates": {"default": 1, "abbrev": "k"},
         },
     },
-    "nrm_trajectory": {
+    "gradient_trajectory": {
         "script": "main_gradient_trajectory.py",
         "sampler_params": {
             "num_poses": {"default": NUM_POSES, "abbrev": "npo"},
@@ -167,10 +184,31 @@ CONDITIONS = list(_presets_config["conditions"].items())
 # another, in a single invocation. Top-level "num_seeds" can be overridden
 # per-algorithm.
 DEFAULT_NUM_SEEDS = _presets_config.get("num_seeds")
+
+
+def _expand_configs(
+    configs: list[tuple], num_plan_candidates: list[int] | None
+) -> list[tuple]:
+    """Cross "configs" with a separate "num_plan_candidates" sweep list, if given.
+
+    Lets benchmarks/config.json sweep top-k candidate planning independently
+    of an algorithm's other sampler params, instead of having to repeat every
+    base config tuple once per k value. The algorithm's sampler_params (see
+    ENTRY_POINTS) must list num_plan_candidates last for the appended value to
+    land in the right position.
+    """
+    if not num_plan_candidates:
+        return configs
+    return [c + (k,) for c in configs for k in num_plan_candidates]
+
+
 ALGORITHMS = [
     {
         "optim_algo": algo["optim_algo"],
-        "configs": [tuple(c) for c in algo["configs"]],
+        "configs": _expand_configs(
+            [tuple(c) for c in algo["configs"]],
+            algo.get("num_plan_candidates"),
+        ),
         "output_dir": PROJECT_DIR
         / algo.get("output_dir", f"benchmark_results/{algo['optim_algo']}"),
         "num_seeds": algo.get("num_seeds"),
@@ -252,12 +290,18 @@ _BENCHMARK_LINE = re.compile(r"^\[Benchmark\] (\w+)=([\d.]+)$")
 
 
 def _extract_benchmark_metrics(stdout: str) -> dict[str, float]:
-    """Parse every `[Benchmark] name=value` line in stdout into {name: value}."""
-    metrics = {}
+    """Parse every `[Benchmark] name=value` line in stdout into {name: value}.
+
+    A name can appear more than once (e.g. `plan_seconds` is emitted once per
+    planning attempt when num_plan_candidates > 1), in which case the values
+    are summed so the metric reflects the total cost across all attempts.
+    """
+    metrics: dict[str, float] = {}
     for line in stdout.splitlines():
         match = _BENCHMARK_LINE.match(line)
         if match:
-            metrics[match.group(1)] = float(match.group(2))
+            name, value = match.group(1), float(match.group(2))
+            metrics[name] = metrics.get(name, 0.0) + value
     return metrics
 
 
@@ -271,6 +315,11 @@ def run_single(
     timeout: int,
 ) -> dict:
     cfg = build_config(seed, condition_flags, sampler_overrides, base_config)
+    # Route this run's optimization CSV logs (output/<run_time>/morphology_history.csv
+    # and its siblings) under the benchmark's own output_dir instead of the
+    # project root, so log_root_dir/<run_time>/ lands next to this run's
+    # results/figure/configs.
+    cfg["log_root_dir"] = str(config_dir.parent)
     suffix = "_".join(
         f"{SAMPLER_ABBREV[k]}"
         + (
@@ -538,6 +587,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Load all CSVs from --output-dir and regenerate the figure without running benchmarks",
     )
+    parser.add_argument(
+        "--no-results-csv",
+        action="store_true",
+        help="Run the sweep without writing benchmark_<optim_algo>_<timestamp>.csv "
+        "or the report/figure. Disables --resume and crash-safety for this run; "
+        "use only for a quick/disposable sweep.",
+    )
     return parser.parse_args()
 
 
@@ -581,10 +637,16 @@ def _run_sweep(
     args: argparse.Namespace,
     configs: list[tuple],
     base_config: dict,
-    results_csv: Path,
+    results_csv: Path | None,
     config_dir: Path,
 ) -> None:
-    completed = load_completed(results_csv)
+    """Run the seed x condition x configs sweep.
+
+    When results_csv is None (--no-results-csv), nothing is written to disk:
+    no resume-tracking of completed runs, no crash-safety. Use only for a
+    quick/disposable sweep.
+    """
+    completed = load_completed(results_csv) if results_csv is not None else {}
     if completed:
         print(f"[Benchmark] Skipping {len(completed)} already-completed runs")
 
@@ -592,12 +654,8 @@ def _run_sweep(
     total = len(seeds) * len(configs) * len(CONDITIONS)
     done = 0
 
-    csv_exists = results_csv.exists()
-    with open(results_csv, "a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=RESULT_FIELDS)
-        if not csv_exists:
-            writer.writeheader()
-
+    def _run_combos(writer, f) -> None:
+        nonlocal done
         for seed in seeds:
             for combo in configs:
                 overrides = dict(zip(SAMPLER_KEYS, combo))
@@ -635,8 +693,20 @@ def _run_sweep(
                     )
                     print(f"  -> {status}  ({result['duration_seconds']:.0f}s)")
 
-                    writer.writerow(result)
-                    f.flush()
+                    if writer is not None:
+                        writer.writerow(result)
+                        f.flush()
+
+    if results_csv is None:
+        _run_combos(writer=None, f=None)
+        return
+
+    csv_exists = results_csv.exists()
+    with open(results_csv, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=RESULT_FIELDS)
+        if not csv_exists:
+            writer.writeheader()
+        _run_combos(writer, f)
 
 
 def _run_algorithm(
@@ -677,8 +747,15 @@ def _run_algorithm(
     sweep_args = argparse.Namespace(**vars(args))
     sweep_args.num_seeds = num_seeds
 
-    results_csv = _resolve_results_csv(sweep_args, output_dir, optim_algo)
+    if args.no_results_csv:
+        print("[Benchmark] --no-results-csv: not writing results CSV or report")
+        results_csv = None
+    else:
+        results_csv = _resolve_results_csv(sweep_args, output_dir, optim_algo)
     _run_sweep(sweep_args, configs, base_config, results_csv, config_dir)
+
+    if results_csv is None:
+        return
 
     all_results = _load_results_csvs([results_csv])
     if all_results:

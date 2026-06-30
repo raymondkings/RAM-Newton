@@ -135,7 +135,7 @@ def run_plan(
     ignore_obstacles: bool = False,
     debug: bool = False,
     visualize: bool = True,
-) -> None:
+) -> bool:
     plan_start = time.perf_counter()
     dtype = morph.params.dtype
     device = morph.params.device
@@ -152,8 +152,6 @@ def run_plan(
         else planner.default_start_q().to(dtype)
     )
 
-    task.start_q = start_q
-
     print(f"[Info] Start configuration: {start_q.tolist()}")
 
     if not planner.is_q_feasible(start_q):
@@ -164,7 +162,7 @@ def run_plan(
             "--ignore-ground / --ignore-obstacles to diagnose."
         )
         emit_benchmark(plan_seconds=time.perf_counter() - plan_start)
-        return
+        return False
 
     n_goals = task.goal_poses.shape[0]
     result, _ = planner.plan_sequence(task.goal_poses, start_q)
@@ -195,7 +193,7 @@ def run_plan(
                 start_q=start_q,
             )
         emit_benchmark(plan_seconds=time.perf_counter() - plan_start)
-        return
+        return False
 
     print(f"\nSequence complete: {len(result.path)} waypoints through {n_goals} goals.")
     emit_benchmark(plan_seconds=time.perf_counter() - plan_start)
@@ -209,6 +207,7 @@ def run_plan(
             failed_at_goal=None,
             best_ik_q=None,
         )
+    return True
 
 
 def run_postprocess(csv_path: Path, args: argparse.Namespace) -> None:

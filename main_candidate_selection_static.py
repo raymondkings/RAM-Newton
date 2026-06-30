@@ -40,6 +40,7 @@ def main() -> None:
 
     print("[Info] Config:", json.dumps(vars(args), indent=2))
 
+    num_plan_candidates = int(getattr(args, "num_plan_candidates", 1))
     plan_goal_start = bool(getattr(args, "plan_goal_start", False))
     if plan_goal_start:
         print(
@@ -86,25 +87,32 @@ def main() -> None:
             cached_csv_path,
             OptimizationTiming(0.0, 0.0),
         )
+        candidates = [(optimized_morph, None)]
     else:
-        optimized_morph, csv_path, optimization_timing = optimize_morphology(
-            morph=morph,
-            task=task,
-            optimization_parameters={
-                "num_iterations": args.num_iterations,
-                "learning_rate": args.learning_rate_length,
-                "logging": args.debug,
-                "eval_interval": args.eval_interval,
-                "random_seed": args.seed,
-                "number_random_seed": args.number_random_seed,
-                "percentage_poses": args.percentage_poses,
-                "candidate_batch_size": getattr(args, "candidate_batch_size", 64),
-                "distribution_batch_size": getattr(
-                    args, "distribution_batch_size", 128
-                ),
-                "ignore_ground": args.ignore_ground,
-                "ignore_obstacles": args.ignore_obstacles,
-            },
+        optimization_parameters = {
+            "num_iterations": args.num_iterations,
+            "learning_rate": args.learning_rate_length,
+            "logging": args.debug,
+            "csv_logging": bool(getattr(args, "csv_logging", True)),
+            "eval_interval": args.eval_interval,
+            "random_seed": args.seed,
+            "number_random_seed": args.number_random_seed,
+            "percentage_poses": args.percentage_poses,
+            "candidate_batch_size": getattr(args, "candidate_batch_size", 64),
+            "distribution_batch_size": getattr(args, "distribution_batch_size", 128),
+            "ignore_ground": args.ignore_ground,
+            "ignore_obstacles": args.ignore_obstacles,
+            "num_plan_candidates": num_plan_candidates,
+        }
+        if hasattr(args, "log_root_dir"):
+            optimization_parameters["log_root_dir"] = getattr(args, "log_root_dir")
+
+        optimized_morph, csv_path, optimization_timing, candidates = (
+            optimize_morphology(
+                morph=morph,
+                task=task,
+                optimization_parameters=optimization_parameters,
+            )
         )
 
     print(
@@ -113,7 +121,10 @@ def main() -> None:
     print(f"[Info] Optimization CSV: {csv_path}")
     report_optimization_timing(optimization_timing)
 
-    run_postprocess(Path(csv_path), args)
+    if used_cache or bool(getattr(args, "csv_logging", True)):
+        run_postprocess(Path(csv_path), args)
+    else:
+        print("[Info] csv_logging disabled: skipping CSV-based postprocessing.")
 
     if plan_goal_start:
         plan_task = Task(
@@ -128,14 +139,28 @@ def main() -> None:
     else:
         plan_task = planner_task
 
-    run_plan(
-        optimized_morph,
-        plan_task,
-        ignore_ground=args.ignore_ground,
-        ignore_obstacles=args.ignore_obstacles,
-        debug=args.debug,
-        visualize=args.visualize,
-    )
+    successes = []
+    for idx, (candidate_morph, ik_success_rate) in enumerate(candidates):
+        if len(candidates) > 1:
+            print(
+                f"[Info] Planning candidate {idx + 1}/{len(candidates)} "
+                f"(ik_success_pose_rate={ik_success_rate})"
+            )
+        success = run_plan(
+            candidate_morph,
+            plan_task,
+            ignore_ground=args.ignore_ground,
+            ignore_obstacles=args.ignore_obstacles,
+            debug=args.debug,
+            visualize=args.visualize and idx == 0,
+        )
+        successes.append(success)
+
+    if len(candidates) > 1:
+        print(
+            f"[Info] success@{num_plan_candidates}: "
+            f"tried={len(candidates)} any_success={any(successes)}"
+        )
 
 
 if __name__ == "__main__":

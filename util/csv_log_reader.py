@@ -107,13 +107,13 @@ def load_latest_optimized_morphology(
 ) -> tuple[Morphology, Path]:
     """Load the latest optimized Morphology from a CSV file or output directory.
 
-    If csv_source is a directory, log_*.csv files are searched newest-first until a
-    file with processed_morphology_json is found.
+    If csv_source is a directory, each run's <run_time>/morphology_history.csv is
+    searched newest-first until a file with processed_morphology_json is found.
     """
     csv_source = Path(csv_source)
     if csv_source.is_dir():
         candidates = sorted(
-            csv_source.glob("log_*.csv"), key=lambda p: p.stat().st_mtime
+            csv_source.glob("*/morphology_history.csv"), key=lambda p: p.stat().st_mtime
         )
         if not candidates:
             raise FileNotFoundError(

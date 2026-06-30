@@ -35,27 +35,53 @@ class OptimizationCSVLogger:
         "best_se3_dist_per_pose_json",
     ]
 
-    def __init__(self, root_dir: str | Path, run_time: str | None = None) -> None:
-        """Create output/log_<run_time>.csv.
+    def __init__(
+        self,
+        root_dir: str | Path,
+        run_time: str | None = None,
+        output_subdir: str | None = "output",
+        enabled: bool = True,
+    ) -> None:
+        """Create <output_dir>/<run_time>/morphology_history.csv.
 
         Args:
             root_dir:
-                Project root. The output directory will be root_dir/output.
+                Project root (or other base directory). The output directory
+                will be root_dir/output_subdir, or root_dir itself when
+                output_subdir is None.
             run_time:
                 Optional timestamp string. If None, a new timestamp is created.
-                This value is useful later as an identifier for plotting/video scripts.
+                This value is useful later as an identifier for plotting/video scripts,
+                and names the per-run subfolder holding this run's CSVs.
+            output_subdir:
+                Subdirectory under root_dir to write into. Pass None to write
+                directly into root_dir (e.g. when root_dir is already a
+                dedicated per-run output directory, as in the benchmark harness).
+            enabled:
+                When False, skip creating the output directory/file entirely
+                and make log_iteration() a no-op. Lets callers turn off the
+                per-iteration disk writes (a real cost over many iterations
+                or many benchmark subprocesses) while keeping csv_path
+                pointing at the path that would have been used.
         """
+        self.enabled = enabled
         self.root_dir = Path(root_dir)
-        self.output_dir = self.root_dir / "output"
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.output_dir = (
+            self.root_dir / output_subdir if output_subdir else self.root_dir
+        )
 
         self.run_time = run_time or datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.csv_path = self.output_dir / f"log_{self.run_time}.csv"
+        self.run_dir = self.output_dir / self.run_time
+        self.csv_path = self.run_dir / "morphology_history.csv"
 
-        self._file = open(self.csv_path, "w", newline="", encoding="utf-8")
-        self._writer = csv.DictWriter(self._file, fieldnames=self.FIELDNAMES)
-        self._writer.writeheader()
-        self._file.flush()
+        self._file = None
+        self._writer = None
+        if self.enabled:
+            self.run_dir.mkdir(parents=True, exist_ok=True)
+            self._file = open(self.csv_path, "w", newline="", encoding="utf-8")
+            self._writer = csv.DictWriter(self._file, fieldnames=self.FIELDNAMES)
+            self._writer.writeheader()
+            self._file.flush()
 
     @staticmethod
     def _to_json(value) -> str:
@@ -105,6 +131,9 @@ class OptimizationCSVLogger:
                 Optional dictionary produced by nrm._run_validation(...).
                 Missing validation fields are written as empty strings.
         """
+        if not self.enabled:
+            return
+
         validation_data = validation_data or {}
 
         row = {
@@ -151,7 +180,8 @@ class OptimizationCSVLogger:
 
     def close(self) -> None:
         """Close the CSV file."""
-        self._file.close()
+        if self._file is not None:
+            self._file.close()
 
     def __enter__(self) -> "OptimizationCSVLogger":
         return self
@@ -161,19 +191,31 @@ class OptimizationCSVLogger:
 
 
 class InternalOptimizationCSVLogger:
-    """Small CSV logger for optimizer-internal aggregate metrics."""
+    """Small CSV logger for optimizer-internal aggregate metrics.
 
-    def __init__(self, parent_csv_path: str | Path, fieldnames: list[str]) -> None:
+    Writes <suffix>.csv next to parent_csv_path, i.e. into the same per-run
+    subfolder as the main OptimizationCSVLogger CSV.
+    """
+
+    def __init__(
+        self,
+        parent_csv_path: str | Path,
+        fieldnames: list[str],
+        suffix: str = "convergence_metrics",
+        enabled: bool = True,
+    ) -> None:
+        self.enabled = enabled
         parent_csv_path = Path(parent_csv_path)
-        self.csv_path = parent_csv_path.with_name(
-            f"{parent_csv_path.stem}_internal_log.csv"
-        )
+        self.csv_path = parent_csv_path.parent / f"{suffix}.csv"
         self.fieldnames = fieldnames
 
-        self._file = open(self.csv_path, "w", newline="", encoding="utf-8")
-        self._writer = csv.DictWriter(self._file, fieldnames=self.fieldnames)
-        self._writer.writeheader()
-        self._file.flush()
+        self._file = None
+        self._writer = None
+        if self.enabled:
+            self._file = open(self.csv_path, "w", newline="", encoding="utf-8")
+            self._writer = csv.DictWriter(self._file, fieldnames=self.fieldnames)
+            self._writer.writeheader()
+            self._file.flush()
 
     @staticmethod
     def _to_cell(value) -> float | int | str:
@@ -191,12 +233,16 @@ class InternalOptimizationCSVLogger:
         return json.dumps(value)
 
     def log_row(self, **values) -> None:
+        if not self.enabled:
+            return
+
         row = {field: self._to_cell(values.get(field)) for field in self.fieldnames}
         self._writer.writerow(row)
         self._file.flush()
 
     def close(self) -> None:
-        self._file.close()
+        if self._file is not None:
+            self._file.close()
 
     def __enter__(self) -> "InternalOptimizationCSVLogger":
         return self
