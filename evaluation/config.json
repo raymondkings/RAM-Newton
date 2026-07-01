@@ -3,24 +3,24 @@
     "obstacles_off_ground_off": {"ignore_obstacles": true, "ignore_ground": true},
     "obstacles_on_ground_off": {"ignore_obstacles": false, "ignore_ground": true}
   },
-  "num_seeds": 5,
+  "num_seeds": 15,
   "algorithms": [
     {
       "optim_algo": "candidate_selection_static",
       "configs": [
         [50, 0, 0, 0],   
-        [25, 25, 0, 0],  
-        [0, 50, 0, 0] 
+        [50, 25, 0, 0]
       ],
-      "num_plan_candidates": [1, 3, 5, 10],
+      "num_plan_candidates": [1, 10],
       "output_dir": "benchmark_results/candidate_selection_static"
     },
     {
       "optim_algo": "candidate_selection_trajectory",
       "configs": [
-        [5, 10 , 20]
+        [25],
+        [50]
       ],
-      "num_plan_candidates": [1, 3, 5, 10],
+      "num_plan_candidates": [1, 10],
       "output_dir": "benchmark_results/candidate_selection_trajectory"
     }
   ]
