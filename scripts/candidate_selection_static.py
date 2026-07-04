@@ -168,11 +168,15 @@ def main() -> None:
             visualize=args.visualize and idx == 0,
         )
         successes.append(success)
+        if success:
+            # success@k is satisfied by the first candidate that plans; the
+            # remaining candidates can't change the outcome, so stop here.
+            break
 
     if len(candidates) > 1:
         print(
             f"[Info] success@{num_plan_candidates}: "
-            f"tried={len(candidates)} any_success={any(successes)}"
+            f"tried={len(successes)}/{len(candidates)} any_success={any(successes)}"
         )
 
 
