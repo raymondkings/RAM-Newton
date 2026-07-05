@@ -18,9 +18,9 @@ pyglet.options["headless"] = True
 import newton
 from pyglet.math import Vec3 as PyVec3
 
-from interface import Morphology, Task
-from validation.render import build_scene_builder
-from util.csv_log_reader import read_optimization_csv, tensor_from_json_cell
+from core import Morphology, Task
+from visualization.render import build_scene_builder
+from logutils.csv_reader import read_optimization_csv, tensor_from_json_cell
 
 
 _BG = "#1a1a2e"
