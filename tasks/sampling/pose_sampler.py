@@ -535,21 +535,6 @@ def task_sampler(
     return goal_poses
 
 
-def create_task(
-    seed: int | None = None,
-    *,
-    start_pose: torch.Tensor | None = None,
-    device: torch.device | str | None = None,
-    dtype: torch.dtype = torch.float32,
-) -> torch.Tensor:
-    return task_sampler(
-        seed=seed,
-        start_pose=start_pose,
-        device=device,
-        dtype=dtype,
-    )
-
-
 def create_task_pose_sets(
     seed: int | None = None,
     *,

@@ -1,7 +1,6 @@
 from .environment import Box, Capsule, Environment, Obstacle, Sphere
 from .morphology import Morphology
-from .task import ReachableRegion, Task
-from .validation_result import ValidationResult
+from .task import Task
 
 __all__ = [
     "Morphology",
@@ -11,6 +10,4 @@ __all__ = [
     "Capsule",
     "Obstacle",
     "Task",
-    "ReachableRegion",
-    "ValidationResult",
 ]

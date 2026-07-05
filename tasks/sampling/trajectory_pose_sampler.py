@@ -92,15 +92,3 @@ def create_task(
         device=device,
         dtype=dtype,
     )
-
-
-def create_start_goal_poses(
-    *,
-    device: torch.device | str | None = None,
-    dtype: torch.dtype = torch.float32,
-) -> torch.Tensor:
-    return task_sampler(
-        num_poses=2,
-        device=device,
-        dtype=dtype,
-    )

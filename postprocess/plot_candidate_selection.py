@@ -217,30 +217,6 @@ def create_candidate_morphology_3d_mp4s(
     return paths
 
 
-def create_candidate_morphology_3d_mp4(
-    csv_path: str | Path,
-    output_dir: str | Path = "output/candidate_plots",
-    filename: str | None = None,
-    fps: int = 24,
-    num_frames: int = 180,
-    dpi: int = 160,
-) -> Path:
-    """Create one rotating 3D scatter MP4.
-
-    This preserves the historical single-path API. For mixed-DOF CSVs, prefer
-    create_candidate_morphology_3d_mp4s(), which returns every per-DOF MP4.
-    """
-    paths = create_candidate_morphology_3d_mp4s(
-        csv_path=csv_path,
-        output_dir=output_dir,
-        filename=filename,
-        fps=fps,
-        num_frames=num_frames,
-        dpi=dpi,
-    )
-    return paths[0]
-
-
 def create_probability_vs_se3_scatter(
     csv_path: str | Path,
     output_dir: str | Path = "output/candidate_plots",

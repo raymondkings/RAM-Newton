@@ -233,7 +233,6 @@ _GOAL_COLOR_UNREACHED = (210, 40, 40)  # 🔴 red — never attempted
 _GOAL_COLOR_DEFAULT = (190, 190, 190)  # ⚪ light grey — unknown status
 _GOAL_FRAME_AXIS_LENGTH = 0.08
 _EEF_FRAME_AXIS_LENGTH = 0.08
-_POSE_FRAME_LINE_WIDTH = 0.035
 
 
 def _goal_color(i: int, failed_at_goal: int | None, n_goals: int) -> tuple:
@@ -285,26 +284,6 @@ def _add_ghost_toggle(server, ghost_handles: list):
 def build_scene_builder(morph: Morphology, task: Task, q=None) -> newton.ModelBuilder:
     """Construct a ModelBuilder for the robot and static scene markers."""
     builder = newton.ModelBuilder()
-
-    region = task.reachable_region
-    if region is not None:
-        builder.add_shape_box(
-            body=-1,
-            xform=wp.transform(
-                p=wp.vec3(
-                    (region.x_min + region.x_max) / 2,
-                    (region.y_min + region.y_max) / 2,
-                    (region.z_min + region.z_max) / 2,
-                ),
-                q=wp.quat_identity(),
-            ),
-            hx=(region.x_max - region.x_min) / 2,
-            hy=(region.y_max - region.y_min) / 2,
-            hz=(region.z_max - region.z_min) / 2,
-            as_site=True,
-            color=wp.vec3(0.0, 0.8, 0.2),
-            label="reachable_region",
-        )
 
     poses = compute_link_world_poses(morph, q=q)
     poses = poses.cpu()

@@ -1068,7 +1068,6 @@ def _validate_candidate(
     candidate_task = Task(
         environment=base_task.environment,
         goal_poses=trajectory.detach(),
-        reachable_region=base_task.reachable_region,
         start_q=base_task.start_q,
     )
     pose_sampling_generator = _validation_generator(device, random_seed)

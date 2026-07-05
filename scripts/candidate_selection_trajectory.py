@@ -76,7 +76,6 @@ def main() -> None:
     task = Task(
         environment=l_environment(),
         goal_poses=trajectory_poses,
-        reachable_region=None,
         start_q=None,
     )
     print(f"[Info] Task trajectory poses: {task.goal_poses.shape[0]}")
@@ -151,7 +150,6 @@ def main() -> None:
         return Task(
             environment=task.environment,
             goal_poses=goal_poses,
-            reachable_region=task.reachable_region,
             start_q=task.start_q,
         )
 

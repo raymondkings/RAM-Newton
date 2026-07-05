@@ -441,7 +441,6 @@ def _validation_for_current_state(
     current_task = Task(
         environment=base_task.environment,
         goal_poses=trajectory.detach(),
-        reachable_region=base_task.reachable_region,
         start_q=base_task.start_q,
     )
     validation_morph = Morphology(

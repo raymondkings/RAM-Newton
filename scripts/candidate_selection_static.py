@@ -70,13 +70,11 @@ def main() -> None:
     task = Task(
         environment=l_environment(),
         goal_poses=optimizer_goal_poses,
-        reachable_region=None,
         start_q=None,
     )
     planner_task = Task(
         environment=task.environment,
         goal_poses=planner_goal_poses,
-        reachable_region=task.reachable_region,
         start_q=task.start_q,
     )
     print(
@@ -146,7 +144,6 @@ def main() -> None:
                 start_pose=START_POSE,
                 device=device,
             ),
-            reachable_region=task.reachable_region,
             start_q=task.start_q,
         )
     else:
