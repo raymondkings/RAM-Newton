@@ -466,8 +466,14 @@ def render_scene(
     failed_at_goal: int | None = "unknown",
     best_ik_q=None,
     start_q=None,
+    show_ghost: bool = True,
+    show_frames: bool = True,
 ) -> None:
-    """Render morphology + task environment in the Newton viewer (static)."""
+    """Render morphology + task environment in the Newton viewer (static).
+
+    show_ghost:  draw the translucent best-IK ghost robot (default True).
+    show_frames: draw the origin / goal / EEF coordinate-axis triads (default True).
+    """
     builder = build_scene_builder(morph, task, q=q)
     model = builder.finalize()
     state = model.state()
@@ -480,8 +486,10 @@ def render_scene(
 
     viewer = _setup_viewer(model, port, share, curobo_planner)
     add_goals_to_viser(viewer._server, task, failed_at_goal)
-    ghost_handles = _add_ghost_robot_to_viser(
-        viewer._server, curobo_planner, best_ik_q, n_joints
+    ghost_handles = (
+        _add_ghost_robot_to_viser(viewer._server, curobo_planner, best_ik_q, n_joints)
+        if show_ghost
+        else []
     )
     _add_ghost_toggle(viewer._server, ghost_handles)
     axes_begins, axes_ends, axes_colors = make_origin_axes(axis_length=0.1)
@@ -530,7 +538,8 @@ def render_scene(
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
         viewer.begin_frame(0.0)
         viewer.log_state(state)
-        viewer.log_lines("/origin_frame", axes_begins, axes_ends, axes_colors)
+        if show_frames:
+            viewer.log_lines("/origin_frame", axes_begins, axes_ends, axes_colors)
         viewer.end_frame()
 
     def _apply_to_ghost(q: np.ndarray) -> None:
@@ -581,9 +590,12 @@ def render_scene(
 
     viewer.begin_frame(0.0)
     viewer.log_state(state)
-    viewer.log_lines("/origin_frame", axes_begins, axes_ends, axes_colors)
-    viewer.log_lines("/goals/frames", goal_axes_b, goal_axes_e, goal_axes_c, width=0.04)
-    viewer.log_lines("/eef_frame", eef_b, eef_e, eef_c, width=0.04)
+    if show_frames:
+        viewer.log_lines("/origin_frame", axes_begins, axes_ends, axes_colors)
+        viewer.log_lines(
+            "/goals/frames", goal_axes_b, goal_axes_e, goal_axes_c, width=0.04
+        )
+        viewer.log_lines("/eef_frame", eef_b, eef_e, eef_c, width=0.04)
     viewer.end_frame()
 
     try:
