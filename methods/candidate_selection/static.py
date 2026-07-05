@@ -48,30 +48,20 @@ from tqdm import tqdm
 from core import Morphology, Task
 from logutils.csv_logger import (
     InternalOptimizationCSVLogger,
-    OptimizationCSVLogger,
 )
 from logutils.timing import OptimizationTimer
 from methods.candidate_selection._common import (
     _CHECKPOINT_PATH,
-    DEFAULT_CANDIDATE_BATCH_SIZE,
-    DEFAULT_DISTRIBUTION_BATCH_SIZE,
-    DEFAULT_NUM_ALPHA_CANDIDATES,
     TOP_PROBABILITY_FRACTION,
     _build_morphology_tensors,
-    _distribution_valid_mask,
-    _generate_alpha_candidates_by_dof,
-    _last_d_nonnegative_mask,
-    _load_model,
-    _log_candidate,
-    _resolve_candidate_dofs,
-    _sample_initial_candidate_morphologies_by_dof,
+    _generate_initial_candidates,
+    _parse_candidate_search_params,
+    _postfilter_dof_group,
     _se3_to_vector,
-    _tie_score,
-    _validate_top_records,
+    _select_and_log_final_candidates,
+    _setup_search_runtime,
 )
 from methods.nrm_model import MLP
-from paths import PROJECT_ROOT as _PROJECT_ROOT
-from validation.optimization_validation import build_optimization_validation_context
 
 # ----------------------------- hard-coded knobs -----------------------------
 # Shared knobs (candidate DOFs, alpha-candidate count, batch sizes, zero-alpha
@@ -389,35 +379,16 @@ def _optimize_one_dof_group(
         length_candidates,
         link_radius,
     )
-    processed_morphologies = processed_morphologies.detach()
 
-    post_valid_mask, _ = _distribution_valid_mask(
-        processed_morphologies,
-        batch_size=distribution_batch_size,
+    return _postfilter_dof_group(
+        dof=dof,
+        losses=losses,
+        probs=probs,
+        initial_morphologies_for_log=initial_morphologies_for_log,
+        processed_morphologies=processed_morphologies.detach(),
+        distribution_batch_size=distribution_batch_size,
         logging=logging,
-        desc=f"post-checking DOF{dof} candidate distribution",
     )
-
-    if logging:
-        print(
-            f"[Info] DOF{dof} post-optimization distribution filter: "
-            f"kept {int(post_valid_mask.sum().item())}/{processed_morphologies.shape[0]} candidates."
-        )
-
-    records: list[dict[str, Any]] = []
-    valid_indices = torch.nonzero(post_valid_mask, as_tuple=False).squeeze(1)
-    for idx in valid_indices.tolist():
-        records.append(
-            {
-                "dof": dof,
-                "loss": losses[idx],
-                "prob": probs[idx],
-                "raw_morphology": initial_morphologies_for_log[idx],
-                "processed_morphology": processed_morphologies[idx],
-            }
-        )
-
-    return records
 
 
 # --------------------------------- main API ----------------------------------
@@ -433,127 +404,61 @@ def optimize_morphology(
     Set CANDIDATE_DOF at the top of this file to "all", "5,6", "5,7",
     "6,7", "5", "6", or "7".
     """
-    num_plan_candidates = max(
-        1, int(optimization_parameters.get("num_plan_candidates", 1))
-    )
     total_iterations = int(optimization_parameters.get("num_iterations", 100))
-    lr = float(optimization_parameters.get("learning_rate", 0.01))
-    logging = bool(optimization_parameters.get("logging", True))
-    csv_logging = bool(optimization_parameters.get("csv_logging", True))
-    random_seed = int(optimization_parameters.get("random_seed", 42))
-    number_random_seed = int(optimization_parameters.get("number_random_seed", 32))
-    percentage_poses = float(optimization_parameters.get("percentage_poses", 1))
-    ignore_ground = bool(optimization_parameters.get("ignore_ground", False))
-    ignore_obstacles = bool(optimization_parameters.get("ignore_obstacles", False))
     dof_selector = CANDIDATE_DOF
-    candidate_dofs = _resolve_candidate_dofs(dof_selector)
-
-    num_alpha_candidates = optimization_parameters.get(
-        "num_alpha_candidates",
-        DEFAULT_NUM_ALPHA_CANDIDATES,
-    )
-    candidate_batch_size = int(
-        optimization_parameters.get(
-            "candidate_batch_size", DEFAULT_CANDIDATE_BATCH_SIZE
-        )
-    )
-    distribution_batch_size = int(
-        optimization_parameters.get(
-            "distribution_batch_size",
-            DEFAULT_DISTRIBUTION_BATCH_SIZE,
-        )
-    )
-
-    if candidate_batch_size <= 0:
-        raise ValueError("candidate_batch_size must be positive.")
-    if distribution_batch_size <= 0:
-        raise ValueError("distribution_batch_size must be positive.")
+    params = _parse_candidate_search_params(optimization_parameters, dof_selector)
 
     device = morph.params.device
     timer = OptimizationTimer(device)
     timer.start()
-    selected_label = ",".join(str(dof) for dof in candidate_dofs)
 
-    if logging:
+    if params.logging:
         print(f"[Info] Starting DOF candidate optimization on device {device}.")
         print(
             "[Info] "
             f"dof={dof_selector!r}, "
-            f"candidate_dofs={candidate_dofs}, "
+            f"candidate_dofs={params.candidate_dofs}, "
             f"num_iterations={total_iterations}, "
-            f"learning_rate={lr}, "
-            f"num_alpha_candidates={num_alpha_candidates}, "
-            f"candidate_batch_size={candidate_batch_size}, "
-            f"distribution_batch_size={distribution_batch_size}, "
+            f"learning_rate={params.learning_rate}, "
+            f"num_alpha_candidates={params.num_alpha_candidates}, "
+            f"candidate_batch_size={params.candidate_batch_size}, "
+            f"distribution_batch_size={params.distribution_batch_size}, "
             f"top_probability_fraction={TOP_PROBABILITY_FRACTION}, "
             f"early_stopping_patience={EARLY_STOPPING_PATIENCE}, "
             f"delta_early_stopping={DELTA_EARLY_STOPPING}, "
-            f"random_seed={random_seed}, "
-            f"number_random_seed={number_random_seed}, "
-            f"percentage_poses={percentage_poses}"
+            f"random_seed={params.random_seed}, "
+            f"number_random_seed={params.number_random_seed}, "
+            f"percentage_poses={params.percentage_poses}"
         )
         print(f"[Info] Loading NRM checkpoint: {_CHECKPOINT_PATH}")
 
-    scene = build_optimization_validation_context(
+    scene, model, csv_logger, alpha_generator = _setup_search_runtime(
         task=task,
-        ignore_ground=ignore_ground,
-        ignore_obstacles=ignore_obstacles,
+        device=device,
+        optimization_parameters=optimization_parameters,
+        params=params,
     )
-
     task_vec = _se3_to_vector(task.goal_poses.to(device))
-    model = _load_model(device)
-    log_root_dir = optimization_parameters.get("log_root_dir")
-    csv_logger = (
-        OptimizationCSVLogger(
-            root_dir=Path(log_root_dir), output_subdir=None, enabled=csv_logging
-        )
-        if log_root_dir
-        else OptimizationCSVLogger(root_dir=_PROJECT_ROOT, enabled=csv_logging)
-    )
     internal_logger: InternalOptimizationCSVLogger | None = None
-
-    alpha_generator = torch.Generator(device=device)
-    alpha_generator.manual_seed(random_seed)
 
     try:
         internal_logger = InternalOptimizationCSVLogger(
             csv_logger.csv_path,
             fieldnames=INTERNAL_LOG_FIELDNAMES,
-            enabled=csv_logging,
+            enabled=params.csv_logging,
         )
 
-        alpha_candidates_by_dof = _generate_alpha_candidates_by_dof(
-            dofs=candidate_dofs,
-            requested_num_candidates=num_alpha_candidates,
+        initial_candidate_morphologies_by_dof = _generate_initial_candidates(
+            params=params,
             device=device,
-            generator=alpha_generator,
-            logging=logging,
+            link_radius=morph.link_radius,
+            alpha_generator=alpha_generator,
+            csv_logger=csv_logger,
+            internal_logger=internal_logger,
         )
-
-        initial_candidate_morphologies_by_dof = (
-            _sample_initial_candidate_morphologies_by_dof(
-                alpha_candidates_by_dof=alpha_candidates_by_dof,
-                seed=random_seed,
-                link_radius=morph.link_radius,
-                batch_size=distribution_batch_size,
-                logging=logging,
-            )
-        )
-
-        if logging:
-            print(f"[Info] Writing CSV log to: {csv_logger.csv_path}")
-            print(f"[Info] Writing internal CSV log to: {internal_logger.csv_path}")
-            for dof in candidate_dofs:
-                original_count = alpha_candidates_by_dof[dof].shape[0]
-                accepted_count = initial_candidate_morphologies_by_dof[dof].shape[0]
-                print(
-                    f"[Info] DOF{dof} fixed-alpha sampler accepted "
-                    f"{accepted_count}/{original_count} alpha candidates "
-                    f"and dropped {original_count - accepted_count}."
-                )
 
         records: list[dict[str, Any]] = []
-        for dof in candidate_dofs:
+        for dof in params.candidate_dofs:
             records.extend(
                 _optimize_one_dof_group(
                     dof=dof,
@@ -564,204 +469,32 @@ def optimize_morphology(
                     task_vec=task_vec,
                     link_radius=morph.link_radius,
                     total_iterations=total_iterations,
-                    learning_rate=lr,
-                    candidate_batch_size=candidate_batch_size,
-                    distribution_batch_size=distribution_batch_size,
-                    logging=logging,
+                    learning_rate=params.learning_rate,
+                    candidate_batch_size=params.candidate_batch_size,
+                    distribution_batch_size=params.distribution_batch_size,
+                    logging=params.logging,
                     internal_logger=internal_logger,
                 )
             )
 
-        if not records:
-            raise RuntimeError(
-                f"All optimized DOF {selected_label} candidates were rejected by "
-                "the post-optimization distribution checker."
-            )
-
-        before_last_d_filter = len(records)
-        records = [
-            record
-            for record in records
-            if bool(_last_d_nonnegative_mask(record["processed_morphology"]).item())
-        ]
-
-        if not records:
-            raise RuntimeError(
-                f"All optimized DOF {selected_label} candidates were rejected by "
-                "the final-link d filter (requires processed params[-1, 2] >= 0)."
-            )
-
-        if logging:
-            print(
-                "[Info] Final-link d filter: "
-                f"kept {len(records)}/{before_last_d_filter} candidates "
-                "with processed params[-1, 2] >= 0."
-            )
-
-        all_candidates_logger = InternalOptimizationCSVLogger(
-            csv_logger.csv_path,
-            fieldnames=ALL_CANDIDATES_LOG_FIELDNAMES,
-            suffix="final_candidates",
-            enabled=csv_logging,
-        )
-        if logging:
-            print(
-                "[Info] Writing all-candidates CSV log to: "
-                f"{all_candidates_logger.csv_path}"
-            )
-        try:
-            for record in records:
-                all_candidates_logger.log_row(
-                    dof=record["dof"],
-                    loss=record["loss"],
-                    nrm_prob=record["prob"],
-                )
-        finally:
-            all_candidates_logger.close()
-
-        probs_valid = torch.stack(
-            [record["prob"].detach().to(device) for record in records]
-        )
-        num_valid = len(records)
-        top_k = max(1, int(math.ceil(num_valid * TOP_PROBABILITY_FRACTION)))
-        top_indices = torch.argsort(probs_valid, descending=True)[:top_k]
-        top_records = [records[int(idx.item())] for idx in top_indices]
-
-        if logging:
-            dof_counts = {
-                dof: sum(1 for record in records if record["dof"] == dof)
-                for dof in candidate_dofs
-            }
-            top_dof_counts = {
-                dof: sum(1 for record in top_records if record["dof"] == dof)
-                for dof in candidate_dofs
-            }
-            print(
-                "[Info] Top-probability selection: "
-                f"valid_candidates={num_valid}, top_k={top_k}, "
-                f"valid_by_dof={dof_counts}, top_by_dof={top_dof_counts}, "
-                f"best_prob={probs_valid[top_indices[0]].item():.6f}, "
-                f"worst_top_prob={probs_valid[top_indices[-1]].item():.6f}"
-            )
-
-        _, ik_success_rates, validation_data_list = _validate_top_records(
-            records=top_records,
+        _, optimized_morph, candidates = _select_and_log_final_candidates(
+            records=records,
+            params=params,
             morph=morph,
             task=task,
             scene=scene,
             device=device,
-            percentage_poses=percentage_poses,
-            number_random_seed=number_random_seed,
-            random_seed=random_seed,
-            logging=logging,
+            csv_logger=csv_logger,
             timer=timer,
-        )
-
-        # change here for the final selection before tie break score
-        best_ik_success_rate = ik_success_rates.max()
-        best_rate_mask = (ik_success_rates - best_ik_success_rate).abs() <= 1e-12
-        final_tier_mask = best_rate_mask
-        tied_indices = torch.nonzero(final_tier_mask, as_tuple=False).squeeze(1)
-
-        tie_scores = []
-        length_sums = []
-        for record in top_records:
-            tie_score, length_sum = _tie_score(
-                record["processed_morphology"],
-                morph.link_radius,
-            )
-            tie_scores.append(tie_score)
-            length_sums.append(length_sum)
-
-        tie_scores_tensor = torch.stack(tie_scores).to(device)
-        length_sums_tensor = torch.stack(length_sums).to(device)
-        final_local_in_tied = torch.argmin(tie_scores_tensor[tied_indices])
-        final_idx = int(tied_indices[final_local_in_tied].item())
-
-        # Full ranking by the same key as the winner above: best ik_success_rate
-        # first, ties broken by min tie_score. Rank 0 is exactly `final_idx`.
-        ranking = sorted(
-            range(len(top_records)),
-            key=lambda idx: (
-                -ik_success_rates[idx].item(),
-                tie_scores_tensor[idx].item(),
+            all_candidates_fieldnames=ALL_CANDIDATES_LOG_FIELDNAMES,
+            build_candidate=lambda record, ik_success_pose_rate: (
+                Morphology(
+                    params=record["processed_morphology"].detach(),
+                    link_radius=morph.link_radius,
+                ),
+                ik_success_pose_rate,
             ),
         )
-        selected_indices = ranking[: min(num_plan_candidates, len(ranking))]
-
-        if logging:
-            print(
-                "[Info] Validation selection: "
-                f"best_ik_success_pose_rate={best_ik_success_rate.item() * 100.0:.2f}%, "
-                f"num_best_rate_candidates={int(best_rate_mask.sum().item())}, "
-                f"num_tie_break_candidates={int(final_tier_mask.sum().item())}, "
-                f"final_idx={final_idx}, "
-                f"final_dof={top_records[final_idx]['dof']}, "
-                f"final_length_sum={length_sums_tensor[final_idx].item():.6f}"
-            )
-
-        for idx, record in enumerate(top_records):
-            if idx == final_idx:
-                marker = 2
-            elif bool(final_tier_mask[idx]):
-                marker = 1
-            else:
-                marker = 0
-
-            _log_candidate(
-                csv_logger=csv_logger,
-                iteration_marker=marker,
-                loss=record["loss"],
-                prob=record["prob"],
-                raw_morphology=record["raw_morphology"],
-                processed_morphology=record["processed_morphology"],
-                validation_data=validation_data_list[idx],
-            )
-
-        final_record = top_records[final_idx]
-        final_processed_morphology = final_record["processed_morphology"]
-        final_validation_data = validation_data_list[final_idx]
-        final_se3 = final_validation_data["best_se3_dist_mean"].detach().cpu().item()
-        final_ik_success_rate = (
-            final_validation_data["ik_success_pose_rate"].detach().cpu().item()
-        )
-
-        print(
-            "[Final candidate] "
-            f"dof={final_record['dof']}, "
-            f"loss={final_record['loss'].item():.6f}, "
-            f"nrm_prob={final_record['prob'].item():.6f}, "
-            f"final_se3_err={final_se3:.6f}, "
-            f"ik_success_pose_rate={final_ik_success_rate * 100.0:.2f}%, "
-            f"length_sum={length_sums_tensor[final_idx].item():.6f}"
-        )
-
-        if logging:
-            print("Final alpha [deg]:")
-            print(final_processed_morphology[:, 0].detach().cpu() * 180.0 / math.pi)
-            print("Final optimized morphology params:")
-            print(final_processed_morphology.detach().cpu())
-
-        optimized_morph = Morphology(
-            params=final_processed_morphology.detach(),
-            link_radius=morph.link_radius,
-        )
-
-        candidates: list[tuple[Morphology, float]] = []
-        for idx in selected_indices:
-            record = top_records[idx]
-            candidates.append(
-                (
-                    Morphology(
-                        params=record["processed_morphology"].detach(),
-                        link_radius=morph.link_radius,
-                    ),
-                    validation_data_list[idx]["ik_success_pose_rate"]
-                    .detach()
-                    .cpu()
-                    .item(),
-                )
-            )
 
         return optimized_morph, csv_logger.csv_path, timer.result(), candidates
 
