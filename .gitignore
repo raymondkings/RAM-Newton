@@ -223,8 +223,9 @@ curobo/
 # Output directories
 output/
 initial_candidates/
-benchmark_results/
-benchmark_results*/
+data/initial_candidates/
+evaluation_results/
+evaluation_results*/
 
 # Timelapse results
 timelapse/
