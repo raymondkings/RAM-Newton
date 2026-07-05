@@ -230,7 +230,7 @@ _GOAL_FRAME_AXIS_LENGTH = 0.08
 _EEF_FRAME_AXIS_LENGTH = 0.08
 
 
-def _goal_color(i: int, failed_at_goal: int | None, n_goals: int) -> tuple:
+def _goal_color(i: int, failed_at_goal: int | None) -> tuple:
     if failed_at_goal is None:
         return _GOAL_COLOR_SUCCESS
     if i < failed_at_goal:
@@ -276,8 +276,8 @@ def _add_ghost_toggle(server, ghost_handles: list):
     return toggle
 
 
-def build_scene_builder(morph: Morphology, task: Task, q=None) -> newton.ModelBuilder:
-    """Construct a ModelBuilder for the robot and static scene markers."""
+def build_scene_builder(morph: Morphology, q=None) -> newton.ModelBuilder:
+    """Construct a ModelBuilder for the robot."""
     builder = newton.ModelBuilder()
 
     poses = compute_link_world_poses(morph, q=q)
@@ -294,7 +294,7 @@ def add_goals_to_viser(server, task, failed_at_goal) -> None:
         color = (
             _GOAL_COLOR_DEFAULT
             if failed_at_goal == "unknown"
-            else _goal_color(i, failed_at_goal, n_goals)
+            else _goal_color(i, failed_at_goal)
         )
         server.scene.add_icosphere(
             f"/goals/sphere_{i}",
@@ -446,7 +446,7 @@ def render_scene(
     start_q=None,
 ) -> None:
     """Render morphology + task environment in the Newton viewer (static)."""
-    builder = build_scene_builder(morph, task, q=q)
+    builder = build_scene_builder(morph, q=q)
     model = builder.finalize()
     state = model.state()
 
@@ -580,7 +580,6 @@ def animate_plan(
     fps: int = 30,
     hold_seconds: float = 2.0,
     loop: bool = True,
-    sim_substeps: int = 4,
     startup_delay: float = 5.0,
     max_joint_speed: float = math.pi / 4,
     curobo_planner=None,
@@ -589,15 +588,10 @@ def animate_plan(
 ) -> None:
     """Execute a planned joint-space trajectory in Newton physics and stream it to the viewer.
 
-    Each animation frame sets the next position target and advances the Newton
-    simulation by `sim_substeps` steps using PD position control, so contact
-    forces with obstacles are fully resolved.
-
     Args:
         path: list of joint-config tensors (n_joints,), expected to already be
             dense (e.g. cuRobo's interpolated plan) for smooth target tracking.
         fps: rendered frames per second — lower values mean slower playback.
-        sim_substeps: physics substeps per rendered frame.
         startup_delay: seconds to hold the initial pose before playback starts,
             giving time to open the browser tab.
         max_joint_speed: joint-space playback speed in rad/s. The cuRobo path
@@ -607,7 +601,7 @@ def animate_plan(
     """
     n_joints = morph.n_links - 1
 
-    builder = build_scene_builder(morph, task)
+    builder = build_scene_builder(morph)
     model = builder.finalize()
     state = model.state()
 

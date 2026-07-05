@@ -1006,7 +1006,6 @@ def optimize_morphology_and_trajectory(
 
     scene = build_optimization_validation_context(
         task=task,
-        device=device,
         ignore_ground=ignore_ground,
         ignore_obstacles=ignore_obstacles,
     )

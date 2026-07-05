@@ -15,7 +15,6 @@ from kinematics.kinematics import (
 
 def build_optimization_validation_context(
     task: Task,
-    device: torch.device,
     ignore_ground: bool = False,
     ignore_obstacles: bool = False,
 ):

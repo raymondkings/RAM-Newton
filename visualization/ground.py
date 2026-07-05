@@ -1,30 +1,7 @@
-"""Ground plane helpers: collision geometry, visual grid, and origin frame."""
+"""Ground plane helpers: visual grid and origin frame."""
 
-import newton
 import numpy as np
 import warp as wp
-
-
-def add_ground_collision(
-    builder: newton.ModelBuilder,
-    half_extent: float = 50.0,
-    depth: float = 1.0,
-) -> None:
-    """Add a static ground box whose top face sits exactly at z=0.
-    Uses an explicit box instead of add_ground_plane() so Newton's GJK solver
-    reliably detects penetrations at any depth during discrete FK collision checks.
-    Args:
-        half_extent: Half-size of the ground in X and Y (metres).
-        depth:       Full thickness of the box below z=0 (metres).
-    """
-    builder.add_shape_box(
-        body=-1,
-        xform=wp.transform(p=wp.vec3(0.0, 0.0, -depth / 2.0), q=wp.quat_identity()),
-        hx=half_extent,
-        hy=half_extent,
-        hz=depth / 2.0,
-        label="ground",
-    )
 
 
 def make_origin_axes(axis_length: float = 0.1):
