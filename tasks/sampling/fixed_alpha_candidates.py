@@ -17,7 +17,7 @@ import torch
 from torch import Tensor
 from tqdm import tqdm
 
-from task.morphology_sampler import (
+from tasks.sampling.morphology_sampler import (
     LINK_RADIUS,
     _sample_link_type,
     _reject_link_type,
@@ -34,8 +34,8 @@ DEFAULT_FIXED_ALPHA_RANDOM_TRIES = 5000
 # direct sampling requires high GPU memory... (1000 is the max for 5090 with 32GB)
 DEFAULT_DIRECT_PRESAMPLING_BATCH_SIZE = 500
 DEFAULT_DYNAMIC_REJECTION_BATCH_SIZE = 128
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-_INITIAL_CANDIDATE_CACHE_ROOT = _PROJECT_ROOT / "initial_candidates"
+from paths import INITIAL_CANDIDATES_DIR as _INITIAL_CANDIDATE_CACHE_ROOT
+
 _INITIAL_CANDIDATE_CACHE_FILENAME = "candidates.json"
 
 # Alpha candidate generation constants.  ALPHA_VALUES index 1 is the actual

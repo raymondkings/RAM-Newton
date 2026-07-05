@@ -30,8 +30,8 @@ import torch
 # Same as original _reject_morph: test each candidate morphology on 1000 random joint configurations.
 REJECTION_TEST_CONFIGS = 1000
 from torch import Tensor
-from util.kinematics import forward_kinematics, transformation_matrix
-from util.self_collision import get_capsules
+from kinematics.kinematics import forward_kinematics, transformation_matrix
+from kinematics.self_collision import get_capsules
 
 
 # Same constants as the original self_collision.py

@@ -1,5 +1,5 @@
 import torch
-from interface import Environment, Box
+from core import Environment, Box
 
 
 def l_environment() -> Environment:

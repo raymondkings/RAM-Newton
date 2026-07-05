@@ -16,8 +16,7 @@ BETA_RANGE_DEGREES = (-30.0, 30.0)
 LINE_P_RANGE = (0.0, 1.0)
 REPEAT_START_GOAL = 80
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CACHE_DIR = PROJECT_ROOT / "initial_candidates"
+from paths import INITIAL_CANDIDATES_DIR as CACHE_DIR
 
 # Interprets the handwritten START_POSE as the alpha=0 orientation with the
 # missing +x tool-axis entry restored in the first row.
