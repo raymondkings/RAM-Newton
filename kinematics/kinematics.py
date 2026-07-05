@@ -211,7 +211,7 @@ def build_robot_dict(morph) -> tuple[dict, str]:
     Returns:
         (robot_dict, urdf_path) — caller must delete urdf_path when done.
     """
-    from util.mdh import to_urdf  # local to avoid circular import
+    from kinematics.mdh import to_urdf  # local to avoid circular import
 
     ee_link = f"link_{morph.n_links - 1}"
     urdf_str = to_urdf(morph)

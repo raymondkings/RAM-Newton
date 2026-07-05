@@ -4,8 +4,8 @@ import newton
 from scipy.spatial.transform import Rotation
 import warp as wp
 import xml.etree.ElementTree as ET
-from interface.morphology import Morphology
-from util.self_collision import get_joint_limits
+from core.morphology import Morphology
+from kinematics.self_collision import get_joint_limits
 
 
 _LINK_COLORS = [

@@ -53,7 +53,10 @@ def get_joint_limits(morph: torch.Tensor) -> torch.Tensor:
         interval is [offset, offset + range]. The final row corresponds to the
         fixed end-effector frame and is zero.
     """
-    from util.kinematics import forward_kinematics, transformation_matrix
+    from kinematics.kinematics import (
+        forward_kinematics,
+        transformation_matrix,
+    )
 
     joint_limits = torch.zeros(
         *morph.shape[:-1], 2, device=morph.device, dtype=morph.dtype
