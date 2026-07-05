@@ -1,15 +1,15 @@
 """
-Benchmark the optimization+planning pipeline across N random seeds,
+Evaluation the optimization+planning pipeline across N random seeds,
 with and without collision avoidance.
 
 How it works:
-    Each algorithm entry in benchmarks/config.json names an optim_algo, which selects
-    which main_*.py pipeline to benchmark: candidate_selection_static
-    (today's heuristic over static poses, main_candidate_selection_static.py),
+    Each algorithm entry in evaluation/config.json names an optim_algo, which selects
+    which main_*.py pipeline to evaluation: candidate_selection_static
+    (today's heuristic over static poses, scripts/candidate_selection_static.py),
     candidate_selection_trajectory (our heuristic, candidate-selection
-    morphology+trajectory search, main_candidate_selection_trajectory.py), or
+    morphology+trajectory search, scripts/candidate_selection_trajectory.py), or
     gradient_trajectory (the alternating gradient-based morphology+trajectory
-    optimizer baseline, main_gradient_trajectory.py). Each optim_algo has its
+    optimizer baseline, scripts/gradient_trajectory.py). Each optim_algo has its
     own sweepable sampler params (see ENTRY_POINTS).
 
     The sweep is the cartesian product of seeds x sampler-param combos x
@@ -27,8 +27,8 @@ How it works:
     (seed, condition, *sampler_values) tuple already present via
     load_completed().
 
-    The algorithms to benchmark, and the sampler-param tuples to sweep for
-    each, are loaded from benchmarks/config.json next to this file: a list of
+    The algorithms to evaluation, and the sampler-param tuples to sweep for
+    each, are loaded from evaluation/config.json next to this file: a list of
     "algorithms" entries, each pinned to its own optim_algo, sampler param
     tuples ("configs"), and output_dir. The script always runs every entry
     in that list sequentially, one after another, in a single invocation.
@@ -46,7 +46,7 @@ How it works:
     main_*.py script runs full planning for each of the optimizer's top-k
     validated candidates and the process succeeds if any of them plans
     successfully — i.e. the reported rate is success@k, not single-candidate
-    success. Sweep both a k=1 row and a k>1 row in benchmarks/config.json to
+    success. Sweep both a k=1 row and a k>1 row in evaluation/config.json to
     compare them side by side; don't read a k>1 row as if it were the
     single-candidate rate. gradient_trajectory (the gradient-descent
     baseline) has no discrete candidate pool to rank, so it has no
@@ -54,16 +54,16 @@ How it works:
 
     To compare our heuristic against the alternating gradient baseline, bundle
     both trajectory optim_algo values as separate "algorithms" entries in
-    benchmarks/config.json so they run back-to-back into their own output_dirs, then
+    evaluation/config.json so they run back-to-back into their own output_dirs, then
     compare the resulting CSVs/figures.
 
 Usage:
-    uv run python benchmarks/benchmark.py                        # run every algorithm in benchmarks/config.json, one after another
-    uv run python benchmarks/benchmark.py --num-seeds 5          # quick smoke test
-    uv run python benchmarks/benchmark.py --seeds-start 50       # resume from seed 50
-    uv run python benchmarks/benchmark.py --resume results.csv   # skip already-done rows (single-algorithm benchmarks/config.json only)
+    uv run python evaluation/run.py                        # run every algorithm in evaluation/config.json, one after another
+    uv run python evaluation/run.py --num-seeds 5          # quick smoke test
+    uv run python evaluation/run.py --seeds-start 50       # resume from seed 50
+    uv run python evaluation/run.py --resume results.csv   # skip already-done rows (single-algorithm evaluation/config.json only)
 
-Results are written to benchmark_results/ after each run (crash-safe).
+Results are written to evaluation_results/ after each run (crash-safe).
 A summary + figure are generated once all runs complete.
 """
 
@@ -82,13 +82,13 @@ from typing import Any, Callable
 import matplotlib.pyplot as plt
 import numpy as np
 
-from task.task_pose_sampler import (
+from tasks.sampling.pose_sampler import (
     NUM_EXTRA_PATHS,
     NUM_LINE_SAMPLES,
     NUM_SAMPLES,
     REPEAT_START_GOAL,
 )
-from task.task_pose_sampler_trajectory_ver import NUM_POSES
+from tasks.sampling.trajectory_pose_sampler import NUM_POSES
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 
@@ -98,7 +98,7 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 # field.
 ENTRY_POINTS = {
     "candidate_selection_static": {
-        "script": "main_candidate_selection_static.py",
+        "script": "scripts/candidate_selection_static.py",
         "sampler_params": {
             "num_samples": {"default": NUM_SAMPLES, "abbrev": "nsp"},
             "num_line_samples": {"default": NUM_LINE_SAMPLES, "abbrev": "nls"},
@@ -108,14 +108,14 @@ ENTRY_POINTS = {
         },
     },
     "candidate_selection_trajectory": {
-        "script": "main_candidate_selection_trajectory.py",
+        "script": "scripts/candidate_selection_trajectory.py",
         "sampler_params": {
             "num_poses": {"default": NUM_POSES, "abbrev": "npo"},
             "num_plan_candidates": {"default": 1, "abbrev": "k"},
         },
     },
     "gradient_trajectory": {
-        "script": "main_gradient_trajectory.py",
+        "script": "scripts/gradient_trajectory.py",
         "sampler_params": {
             "num_poses": {"default": NUM_POSES, "abbrev": "npo"},
         },
@@ -191,7 +191,7 @@ def _expand_configs(
 ) -> list[tuple]:
     """Cross "configs" with a separate "num_plan_candidates" sweep list, if given.
 
-    Lets benchmarks/config.json sweep top-k candidate planning independently
+    Lets evaluation/config.json sweep top-k candidate planning independently
     of an algorithm's other sampler params, instead of having to repeat every
     base config tuple once per k value. The algorithm's sampler_params (see
     ENTRY_POINTS) must list num_plan_candidates last for the appended value to
@@ -210,7 +210,7 @@ ALGORITHMS = [
             algo.get("num_plan_candidates"),
         ),
         "output_dir": PROJECT_DIR
-        / algo.get("output_dir", f"benchmark_results/{algo['optim_algo']}"),
+        / algo.get("output_dir", f"evaluation_results/{algo['optim_algo']}"),
         "num_seeds": algo.get("num_seeds"),
     }
     for algo in _presets_config["algorithms"]
@@ -286,11 +286,11 @@ def build_config(
     return cfg
 
 
-_BENCHMARK_LINE = re.compile(r"^\[Benchmark\] (\w+)=([\d.]+)$")
+_METRIC_LINE = re.compile(r"^\[Metric\] (\w+)=([\d.]+)$")
 
 
-def _extract_benchmark_metrics(stdout: str) -> dict[str, float]:
-    """Parse every `[Benchmark] name=value` line in stdout into {name: value}.
+def _extract_metrics(stdout: str) -> dict[str, float]:
+    """Parse every `[Metric] name=value` line in stdout into {name: value}.
 
     A name can appear more than once (e.g. `plan_seconds` is emitted once per
     planning attempt when num_plan_candidates > 1), in which case the values
@@ -298,7 +298,7 @@ def _extract_benchmark_metrics(stdout: str) -> dict[str, float]:
     """
     metrics: dict[str, float] = {}
     for line in stdout.splitlines():
-        match = _BENCHMARK_LINE.match(line)
+        match = _METRIC_LINE.match(line)
         if match:
             name, value = match.group(1), float(match.group(2))
             metrics[name] = metrics.get(name, 0.0) + value
@@ -316,7 +316,7 @@ def run_single(
 ) -> dict:
     cfg = build_config(seed, condition_flags, sampler_overrides, base_config)
     # Route this run's optimization CSV logs (output/<run_time>/morphology_history.csv
-    # and its siblings) under the benchmark's own output_dir instead of the
+    # and its siblings) under the evaluation's own output_dir instead of the
     # project root, so log_root_dir/<run_time>/ lands next to this run's
     # results/figure/configs.
     cfg["log_root_dir"] = str(config_dir.parent)
@@ -344,7 +344,7 @@ def run_single(
         duration = time.time() - start
         success, reason = classify_output(proc.stdout, proc.returncode, proc.stderr)
         returncode = proc.returncode
-        metrics = _extract_benchmark_metrics(proc.stdout)
+        metrics = _extract_metrics(proc.stdout)
     except subprocess.TimeoutExpired:
         duration = time.time() - start
         success, reason, returncode = False, "timeout", -1
@@ -394,7 +394,7 @@ def generate_report(results: list[dict], output_dir: Path) -> None:
     by_condition = group_by(results, lambda r: r["condition"])
 
     print("\n" + "=" * 50)
-    print("BENCHMARK SUMMARY")
+    print("EVALUATION SUMMARY")
     print("=" * 50)
     for cond, rows in sorted(by_condition.items()):
         total, n_success, avg_duration, total_duration = _stats(rows)
@@ -500,8 +500,8 @@ def _make_figure(results: list[dict], output_dir: Path) -> None:
     combos = sorted(by_combo.keys())
     optim_algo = OPTIM_ALGO
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    fig_path = output_dir / f"benchmark_{optim_algo}_{timestamp}.png"
-    title = f"Optimization + Planning Benchmark\nAlgorithm: {optim_algo}"
+    fig_path = output_dir / f"evaluation_{optim_algo}_{timestamp}.png"
+    title = f"Optimization + Planning Evaluation\nAlgorithm: {optim_algo}"
 
     if len(combos) <= 1:
         fig, ax = plt.subplots(1, 1, figsize=(6, 5))
@@ -585,12 +585,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--replot",
         action="store_true",
-        help="Load all CSVs from --output-dir and regenerate the figure without running benchmarks",
+        help="Load all CSVs from --output-dir and regenerate the figure without running evaluations",
     )
     parser.add_argument(
         "--no-results-csv",
         action="store_true",
-        help="Run the sweep without writing benchmark_<optim_algo>_<timestamp>.csv "
+        help="Run the sweep without writing evaluation_<optim_algo>_<timestamp>.csv "
         "or the report/figure. Disables --resume and crash-safety for this run; "
         "use only for a quick/disposable sweep.",
     )
@@ -609,27 +609,27 @@ def _load_results_csvs(csv_paths: list[Path]) -> list[dict]:
 
 
 def _run_replot(output_dir: Path) -> None:
-    csv_files = sorted(output_dir.glob("benchmark_*.csv"))
+    csv_files = sorted(output_dir.glob("evaluation_*.csv"))
     if not csv_files:
-        print(f"[Benchmark] No CSV files found in {output_dir}")
+        print(f"[Evaluation] No CSV files found in {output_dir}")
         return
     all_results = _load_results_csvs(csv_files)
     if all_results:
         generate_report(all_results, output_dir)
     else:
-        print("[Benchmark] No results to report.")
+        print("[Evaluation] No results to report.")
 
 
 def _resolve_results_csv(
     args: argparse.Namespace, output_dir: Path, optim_module: str
 ) -> Path:
     if args.resume and args.resume.exists():
-        print(f"[Benchmark] Resuming from {args.resume}")
+        print(f"[Evaluation] Resuming from {args.resume}")
         return args.resume
     results_csv = (
-        output_dir / f"benchmark_{optim_module}_{datetime.now():%Y%m%d_%H%M%S}.csv"
+        output_dir / f"evaluation_{optim_module}_{datetime.now():%Y%m%d_%H%M%S}.csv"
     )
-    print(f"[Benchmark] Writing results to {results_csv}")
+    print(f"[Evaluation] Writing results to {results_csv}")
     return results_csv
 
 
@@ -648,7 +648,7 @@ def _run_sweep(
     """
     completed = load_completed(results_csv) if results_csv is not None else {}
     if completed:
-        print(f"[Benchmark] Skipping {len(completed)} already-completed runs")
+        print(f"[Evaluation] Skipping {len(completed)} already-completed runs")
 
     seeds = range(args.seeds_start, args.seeds_start + args.num_seeds)
     total = len(seeds) * len(configs) * len(CONDITIONS)
@@ -735,7 +735,7 @@ def _run_algorithm(
     output_dir.mkdir(parents=True, exist_ok=True)
     config_dir.mkdir(exist_ok=True)
 
-    print(f"\n{'#' * 60}\n[Benchmark] optim_algo={optim_algo}\n{'#' * 60}")
+    print(f"\n{'#' * 60}\n[Evaluation] optim_algo={optim_algo}\n{'#' * 60}")
 
     if args.replot:
         _run_replot(output_dir)
@@ -748,7 +748,7 @@ def _run_algorithm(
     sweep_args.num_seeds = num_seeds
 
     if args.no_results_csv:
-        print("[Benchmark] --no-results-csv: not writing results CSV or report")
+        print("[Evaluation] --no-results-csv: not writing results CSV or report")
         results_csv = None
     else:
         results_csv = _resolve_results_csv(sweep_args, output_dir, optim_algo)
@@ -761,7 +761,7 @@ def _run_algorithm(
     if all_results:
         generate_report(all_results, output_dir)
     else:
-        print("[Benchmark] No results to report.")
+        print("[Evaluation] No results to report.")
 
 
 def main() -> None:
