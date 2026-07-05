@@ -56,12 +56,12 @@ class OptimizationCSVLogger:
             output_subdir:
                 Subdirectory under root_dir to write into. Pass None to write
                 directly into root_dir (e.g. when root_dir is already a
-                dedicated per-run output directory, as in the benchmark harness).
+                dedicated per-run output directory, as in the evaluation harness).
             enabled:
                 When False, skip creating the output directory/file entirely
                 and make log_iteration() a no-op. Lets callers turn off the
                 per-iteration disk writes (a real cost over many iterations
-                or many benchmark subprocesses) while keeping csv_path
+                or many evaluation subprocesses) while keeping csv_path
                 pointing at the path that would have been used.
         """
         self.enabled = enabled

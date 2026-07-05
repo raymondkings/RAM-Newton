@@ -6,7 +6,7 @@ from typing import Any
 
 import torch
 
-from interface import Morphology
+from core import Morphology
 
 
 def _raise_csv_field_size_limit() -> None:
@@ -149,7 +149,7 @@ def load_latest_optimized_morphology(
         )
 
     # Select by highest iteration, not file order. The candidate-selection optimizer
-    # (nrm_alpha_random_selection) writes the finally selected morphology with
+    # (candidate_selection.static) writes the finally selected morphology with
     # iteration=2 but does NOT place it last — later rows are iteration=0/1 candidates.
     # The trajectory optimizers (continuous/ste) write the final morphology with the
     # largest iteration, which is also the last row, so max-iteration matches both.
