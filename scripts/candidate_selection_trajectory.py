@@ -3,14 +3,14 @@ from pathlib import Path
 
 import torch
 
-from optim.nrm_alpha_random_selection_trajectory import (
+from methods.candidate_selection.trajectory import (
     optimize_morphology_and_trajectory,
 )
-from interface import Task
-from task.environment import l_environment
-from task.task_pose_sampler_trajectory_ver import NUM_POSES, create_task
-from util.optimization_timing import OptimizationTiming
-from util.pipeline_common import (
+from core import Task
+from tasks.environment import l_environment
+from tasks.sampling.trajectory_pose_sampler import NUM_POSES, create_task
+from logutils.timing import OptimizationTiming
+from pipeline.common import (
     build_arg_parser,
     report_optimization_timing,
     resolve_initial_morphology,
@@ -22,7 +22,8 @@ from util.pipeline_common import (
 )
 
 
-DEFAULT_CONFIG = Path(__file__).parent / "config.json"
+from paths import PROJECT_ROOT, DEFAULT_CONFIG
+
 IGNORED_CONFIG_KEYS = (
     "num_iterations",
     "eval_interval",
@@ -84,7 +85,7 @@ def main() -> None:
     print(f"[Info] Task trajectory poses: {task.goal_poses.shape[0]}")
 
     morph, cached_csv_path, used_cache = resolve_initial_morphology(
-        args, seed, initial_morphology_dof, device, Path(__file__).parent
+        args, seed, initial_morphology_dof, device, PROJECT_ROOT
     )
 
     print(

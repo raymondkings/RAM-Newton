@@ -1,16 +1,16 @@
 import json
 from pathlib import Path
 
-from optim.nrm_alpha_random_selection import optimize_morphology
-from interface import Task
-from task.environment import l_environment
-from task.task_pose_sampler import (
+from methods.candidate_selection.static import optimize_morphology
+from core import Task
+from tasks.environment import l_environment
+from tasks.sampling.pose_sampler import (
     START_POSE,
     create_start_goal_poses,
     create_task_pose_sets,
 )
-from util.optimization_timing import OptimizationTiming
-from util.pipeline_common import (
+from logutils.timing import OptimizationTiming
+from pipeline.common import (
     build_arg_parser,
     report_optimization_timing,
     resolve_initial_morphology,
@@ -21,7 +21,7 @@ from util.pipeline_common import (
 )
 
 
-DEFAULT_CONFIG = Path(__file__).parent / "config.json"
+from paths import PROJECT_ROOT, DEFAULT_CONFIG
 
 
 def parse_args():
@@ -74,7 +74,7 @@ def main() -> None:
 
     # NOTE: for the updated candidate selection algorithm, the initial morphology is only used to get the link radius and the device
     morph, cached_csv_path, used_cache = resolve_initial_morphology(
-        args, args.seed, initial_morphology_dof, device, Path(__file__).parent
+        args, args.seed, initial_morphology_dof, device, PROJECT_ROOT
     )
 
     print(
