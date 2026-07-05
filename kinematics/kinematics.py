@@ -2,11 +2,11 @@ import math
 import tempfile
 
 import torch
-from scipy.spatial.transform import Rotation
-from curobo.kinematics import Kinematics, KinematicsCfg
 from curobo.inverse_kinematics import InverseKinematics, InverseKinematicsCfg
-from curobo.scene import Scene, Cuboid
-from curobo.types import JointState, GoalToolPose
+from curobo.kinematics import Kinematics, KinematicsCfg
+from curobo.scene import Cuboid, Scene
+from curobo.types import GoalToolPose, JointState
+from scipy.spatial.transform import Rotation
 
 # ---------------------------------------------------------------------------
 # Kinematics with mdh parameters
@@ -215,7 +215,7 @@ def build_robot_dict(morph) -> tuple[dict, str]:
 
     ee_link = f"link_{morph.n_links - 1}"
     urdf_str = to_urdf(morph)
-    tmp = tempfile.NamedTemporaryFile(suffix=".urdf", delete=False, mode="w")
+    tmp = tempfile.NamedTemporaryFile(suffix=".urdf", delete=False, mode="w")  # noqa: SIM115 -- file must persist on disk after this block
     tmp.write(urdf_str)
     tmp.flush()
     tmp.close()

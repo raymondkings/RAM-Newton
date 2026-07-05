@@ -1,12 +1,13 @@
 import math
-import torch
-import newton
-from scipy.spatial.transform import Rotation
-import warp as wp
 import xml.etree.ElementTree as ET
+
+import newton
+import torch
+import warp as wp
+from scipy.spatial.transform import Rotation
+
 from core.morphology import Morphology
 from kinematics.self_collision import get_joint_limits
-
 
 _LINK_COLORS = [
     wp.vec3(0.13, 0.32, 0.50),

@@ -4,8 +4,8 @@ import torch
 
 from core import Morphology, Task
 from kinematics.kinematics import (
-    IK,
     FK,
+    IK,
     build_robot_dict,
     build_scene,
     pose_errors,

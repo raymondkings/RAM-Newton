@@ -69,15 +69,16 @@ A summary + figure are generated once all runs complete.
 
 import argparse
 import csv
-import math
 import json
+import math
 import re
 import subprocess
 import time
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -423,7 +424,8 @@ def _print_sampler_sweep_summary(results: list[dict]) -> None:
     for key in sorted(by_sampler.keys()):
         total, n_success, avg_duration, _ = _stats(by_sampler[key])
         params = "  ".join(
-            f"{SAMPLER_ABBREV[k]}={v:<4}" for k, v in zip(SAMPLER_KEYS, key)
+            f"{SAMPLER_ABBREV[k]}={v:<4}"
+            for k, v in zip(SAMPLER_KEYS, key, strict=False)
         )
         print(
             f"  {params}  {n_success}/{total} successful  "
@@ -464,7 +466,7 @@ def _plot_outcome_breakdown(ax, rows: list[dict]) -> None:
             )
             for c in conditions
         ]
-        pcts = [100 * cnt / tot for cnt, tot in zip(counts, totals)]
+        pcts = [100 * cnt / tot for cnt, tot in zip(counts, totals, strict=False)]
         label = reason if len(reason) <= 50 else reason[:47] + "..."
         ax.bar(
             conditions,
@@ -529,10 +531,11 @@ def _make_figure(results: list[dict], output_dir: Path) -> None:
             style="italic",
         )
         axes_flat = axes_grid.flatten()
-        for ax, key in zip(axes_flat, combos):
+        for ax, key in zip(axes_flat, combos, strict=False):
             combo_rows = by_combo[key]
             title = "   ".join(
-                f"{SAMPLER_ABBREV[k]}={v}" for k, v in zip(SAMPLER_KEYS, key)
+                f"{SAMPLER_ABBREV[k]}={v}"
+                for k, v in zip(SAMPLER_KEYS, key, strict=False)
             )
             _plot_outcome_breakdown(ax, combo_rows)
             ax.set_title(
@@ -658,7 +661,7 @@ def _run_sweep(
         nonlocal done
         for seed in seeds:
             for combo in configs:
-                overrides = dict(zip(SAMPLER_KEYS, combo))
+                overrides = dict(zip(SAMPLER_KEYS, combo, strict=False))
                 effective = effective_sampler(overrides, base_config)
                 sweep_label = " ".join(
                     f"{SAMPLER_ABBREV[k]}={effective[k]}" for k in SAMPLER_KEYS

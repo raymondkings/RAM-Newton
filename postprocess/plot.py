@@ -5,8 +5,8 @@
 # -----------------------------------------------------------------------------
 from pathlib import Path
 
-import torch
 import matplotlib.pyplot as plt
+import torch
 
 from logutils.csv_reader import read_optimization_csv, tensor_from_json_cell
 

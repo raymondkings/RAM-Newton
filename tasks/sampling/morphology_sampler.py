@@ -24,15 +24,14 @@
 
 from __future__ import annotations
 
-
 import torch
 
 # Same as original _reject_morph: test each candidate morphology on 1000 random joint configurations.
 REJECTION_TEST_CONFIGS = 1000
 from torch import Tensor
+
 from kinematics.kinematics import forward_kinematics, transformation_matrix
 from kinematics.self_collision import get_capsules
-
 
 # Same constants as the original self_collision.py
 LINK_RADIUS = 0.025
@@ -553,7 +552,7 @@ def sample_morph(
     num_robots: int,
     dof: int,
     analytically_solvable: bool = False,
-    device: torch.device | str = torch.device("cpu"),
+    device: torch.device | str = "cpu",
 ) -> Tensor:
     """
     Sample valid morphologies encoded as modified DH parameters [alpha, a, d].

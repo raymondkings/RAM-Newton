@@ -1,15 +1,10 @@
 import json
 from pathlib import Path
 
-from methods.candidate_selection.static import optimize_morphology
 from core import Task
-from tasks.environment import l_environment
-from tasks.sampling.pose_sampler import (
-    START_POSE,
-    create_start_goal_poses,
-    create_task_pose_sets,
-)
 from logutils.timing import OptimizationTiming
+from methods.candidate_selection.static import optimize_morphology
+from paths import DEFAULT_CONFIG, PROJECT_ROOT
 from pipeline.common import (
     build_arg_parser,
     report_optimization_timing,
@@ -19,9 +14,12 @@ from pipeline.common import (
     set_global_seed,
     setup_device,
 )
-
-
-from paths import PROJECT_ROOT, DEFAULT_CONFIG
+from tasks.environment import l_environment
+from tasks.sampling.pose_sampler import (
+    START_POSE,
+    create_start_goal_poses,
+    create_task_pose_sets,
+)
 
 
 def parse_args():
@@ -105,7 +103,7 @@ def main() -> None:
             "num_plan_candidates": num_plan_candidates,
         }
         if hasattr(args, "log_root_dir"):
-            optimization_parameters["log_root_dir"] = getattr(args, "log_root_dir")
+            optimization_parameters["log_root_dir"] = args.log_root_dir
 
         optimized_morph, csv_path, optimization_timing, candidates = (
             optimize_morphology(

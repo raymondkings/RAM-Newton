@@ -15,10 +15,10 @@ from pathlib import Path
 import torch
 
 from core import Morphology, Task
-from tasks.sampling.morphology_sampler import sample_initial_morphologies
 from logutils.csv_reader import load_latest_optimized_morphology
 from logutils.timing import OptimizationTiming
 from planning.curobo_planner import CuroboPlanner
+from tasks.sampling.morphology_sampler import sample_initial_morphologies
 from visualization.render import animate_plan, render_scene
 
 

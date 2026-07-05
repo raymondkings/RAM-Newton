@@ -19,25 +19,24 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from core import Morphology, Task
-from tasks.sampling.morphology_sampler import sample_morph
+from kinematics.kinematics import forward_kinematics
+from logutils.csv_logger import OptimizationCSVLogger
+from logutils.timing import OptimizationTimer
 from methods.baselines.direct_ik_common import (
     _collision_critical_distance,
     _preprocess_lengths,
 )
-from kinematics.kinematics import forward_kinematics
-from logutils.csv_logger import OptimizationCSVLogger
-from logutils.timing import OptimizationTimer
-from validation.optimization_validation import run_optimization_validation
-
 from paths import PROJECT_ROOT as _PROJECT_ROOT
+from tasks.sampling.morphology_sampler import sample_morph
+from validation.optimization_validation import run_optimization_validation
 
 # ── JAX / optimistix / optax imports ─────────────────────────────────────────
 try:
+    import equinox as eqx
     import jax
     import jax.numpy as jnp
-    import equinox as eqx
-    import optimistix as optx
     import optax
+    import optimistix as optx
 
     # ── Forward kinematics (Python for-loop, same as NAGE utils.py) ──────────
 
@@ -245,7 +244,7 @@ def optimize_morphology(
     timer = OptimizationTimer(device, sync_jax=True)
     timer.start()
 
-    candidate_dofs_raw = optimization_parameters.get("candidate_dofs", None)
+    candidate_dofs_raw = optimization_parameters.get("candidate_dofs")
     morph_dof = morph.n_links - 1
     dof = (
         _resolve_candidate_dofs(candidate_dofs_raw)[0]

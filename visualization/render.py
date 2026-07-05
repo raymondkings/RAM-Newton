@@ -1,10 +1,11 @@
 import math
 import socket
 import time
+
+import newton
 import numpy as np
 import torch
 import warp as wp
-import newton
 
 from core import Morphology, Task
 from kinematics.kinematics import (
@@ -157,7 +158,7 @@ def add_curobo_scene_to_viser(server, scene) -> None:
         )
 
 
-# Jiyao: new function to visulize direction, blue shows Z-direction
+# Jiyao: new function to visualize direction, blue shows Z-direction
 def make_goal_pose_axes(goal_poses, axis_length: float = 0.05):
     """Return (begins, ends, colors) warp arrays for EEF frame axes at each goal pose.
 
@@ -538,7 +539,7 @@ def render_scene(
 
     def _apply_to_ghost(q: np.ndarray) -> None:
         spheres = curobo_planner.robot_spheres_world(torch.from_numpy(q[:n_joints]))
-        for h, (x, y, z, *_) in zip(ghost_handles, spheres):
+        for h, (x, y, z, *_) in zip(ghost_handles, spheres, strict=False):
             h.position = (float(x), float(y), float(z))
 
     def _on_joint_change(q: np.ndarray) -> None:
@@ -789,7 +790,7 @@ def animate_plan(
                 grown = np.full_like(ys_full, np.nan)
                 grown[: frame_idx + 1] = ys_full[: frame_idx + 1]
                 manip_plot.data = (xs, grown)
-            for i, (lbl, bar) in enumerate(zip(sv_labels, sv_bars)):
+            for i, (lbl, bar) in enumerate(zip(sv_labels, sv_bars, strict=False)):
                 sv = float(svd_values[frame_idx, i])
                 lbl.content = f"σ{i + 1} = {sv:.4g}"
                 bar.value = sv / sv_max
@@ -798,7 +799,7 @@ def animate_plan(
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
         if curobo_planner is not None and robot_sphere_handles:
             spheres = curobo_planner.robot_spheres_world(q[:n_joints])
-            for h, (x, y, z, *_) in zip(robot_sphere_handles, spheres):
+            for h, (x, y, z, *_) in zip(robot_sphere_handles, spheres, strict=False):
                 h.position = (float(x), float(y), float(z))
             if crit_monitor is not None and frame_idx is not None:
                 crit_monitor.update(frame_idx, spheres)

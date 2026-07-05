@@ -4,7 +4,6 @@ import math
 
 import torch
 
-
 NUM_POSES = 10
 ALPHA_RANGE_DEGREES = (0.0, 180.0)
 

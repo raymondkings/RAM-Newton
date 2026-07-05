@@ -3,13 +3,12 @@ from pathlib import Path
 
 import torch
 
+from core import Task
+from logutils.timing import OptimizationTiming
 from methods.candidate_selection.trajectory import (
     optimize_morphology_and_trajectory,
 )
-from core import Task
-from tasks.environment import l_environment
-from tasks.sampling.trajectory_pose_sampler import NUM_POSES, create_task
-from logutils.timing import OptimizationTiming
+from paths import DEFAULT_CONFIG, PROJECT_ROOT
 from pipeline.common import (
     build_arg_parser,
     report_optimization_timing,
@@ -20,9 +19,8 @@ from pipeline.common import (
     setup_device,
     warn_ignored_config_keys,
 )
-
-
-from paths import PROJECT_ROOT, DEFAULT_CONFIG
+from tasks.environment import l_environment
+from tasks.sampling.trajectory_pose_sampler import NUM_POSES, create_task
 
 IGNORED_CONFIG_KEYS = (
     "num_iterations",
@@ -117,12 +115,9 @@ def main() -> None:
             "num_plan_candidates": num_plan_candidates,
         }
         if hasattr(args, "num_alpha_candidates"):
-            optimization_parameters["num_alpha_candidates"] = getattr(
-                args,
-                "num_alpha_candidates",
-            )
+            optimization_parameters["num_alpha_candidates"] = args.num_alpha_candidates
         if hasattr(args, "log_root_dir"):
-            optimization_parameters["log_root_dir"] = getattr(args, "log_root_dir")
+            optimization_parameters["log_root_dir"] = args.log_root_dir
 
         (
             optimized_morph,

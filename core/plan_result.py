@@ -1,6 +1,7 @@
 """Path data types and interpolation utilities."""
 
 from dataclasses import dataclass
+
 import torch
 
 

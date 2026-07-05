@@ -1,8 +1,8 @@
 """Ground plane helpers: collision geometry, visual grid, and origin frame."""
 
+import newton
 import numpy as np
 import warp as wp
-import newton
 
 
 def add_ground_collision(

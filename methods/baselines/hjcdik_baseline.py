@@ -21,12 +21,11 @@ from tqdm import tqdm
 from core import Morphology, Task
 from kinematics.kinematics import forward_kinematics
 from kinematics.self_collision import get_capsules
-from tasks.sampling.morphology_sampler import get_joint_limits, sample_morph
 from logutils.csv_logger import OptimizationCSVLogger
 from logutils.timing import OptimizationTimer
-from validation.optimization_validation import run_optimization_validation
-
 from paths import PROJECT_ROOT as _PROJECT_ROOT
+from tasks.sampling.morphology_sampler import get_joint_limits, sample_morph
+from validation.optimization_validation import run_optimization_validation
 
 
 def _resolve_candidate_dofs(value) -> list[int]:
@@ -776,7 +775,7 @@ def optimize_morphology(
     timer.start()
 
     # ── DOF selection ────────────────────────────────────────────────────────
-    candidate_dofs_raw = optimization_parameters.get("candidate_dofs", None)
+    candidate_dofs_raw = optimization_parameters.get("candidate_dofs")
     morph_dof = morph.n_links - 1
 
     if candidate_dofs_raw is not None:

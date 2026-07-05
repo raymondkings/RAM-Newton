@@ -46,28 +46,28 @@ import torch.nn.functional as F
 from torch import Tensor
 from tqdm import tqdm
 
-from methods.nrm_model import MLP
 from core import Morphology, Task
-from validation.distribution_checker import check_morphology_distribution
+from logutils.csv_logger import (
+    InternalOptimizationCSVLogger,
+    OptimizationCSVLogger,
+)
+from logutils.timing import OptimizationTimer
+from methods.nrm_model import MLP
 from tasks.sampling.fixed_alpha_candidates import (
     DEFAULT_ZERO_ALPHA_RUN_EXCLUSION_LENGTH,
     generate_alpha_candidates,
     sample_fixed_alpha_morphology_candidates,
     sample_fixed_alpha_morphology_candidates_by_dof,
 )
-from logutils.csv_logger import (
-    InternalOptimizationCSVLogger,
-    OptimizationCSVLogger,
-)
-from logutils.timing import OptimizationTimer
+from validation.distribution_checker import check_morphology_distribution
 from validation.optimization_validation import (
     build_optimization_validation_context,
     run_optimization_validation,
 )
 
-
 EPS = 1e-4
-from paths import PROJECT_ROOT as _PROJECT_ROOT, WEIGHTS_DIR as _WEIGHTS_DIR
+from paths import PROJECT_ROOT as _PROJECT_ROOT
+from paths import WEIGHTS_DIR as _WEIGHTS_DIR
 
 _CHECKPOINT_PATH = _WEIGHTS_DIR / "checkpoint_5-7.pth"
 
@@ -91,7 +91,7 @@ DEFAULT_DISTRIBUTION_BATCH_SIZE = 128
 # For DOF=6 / seq_len=7, run_length=3 changes the alpha maximum
 # from 3^7=2187 to 1892.
 # DEFAULT = 3 for non-degenerate robot, you can also change this
-# to your prefered number to avoid consecutive zero-alpha entries.
+# to your preferred number to avoid consecutive zero-alpha entries.
 ZERO_ALPHA_RUN_EXCLUSION_LENGTH = DEFAULT_ZERO_ALPHA_RUN_EXCLUSION_LENGTH
 
 # Per-candidate early stopping:
@@ -549,7 +549,7 @@ def _distribution_valid_mask(
     return valid_mask, reports
 
 
-# TIE BREAK HEURSITIC
+# TIE BREAK HEURISTIC
 def _tie_score(
     processed_morphology: Tensor,
     link_radius: float,

@@ -3,22 +3,22 @@ import io
 import os
 import tempfile
 
-import torch
 import numpy as np
+import torch
+from curobo.kinematics import Kinematics
+from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
+from curobo.types import JointState
 from scipy.spatial.transform import Rotation
 
 from core import Morphology, Task
 from core.plan_result import PlanResult
-from kinematics.mdh import to_urdf
 from kinematics.kinematics import (
-    build_sphere_dict,
-    build_self_collision_ignore,
     build_scene,
+    build_self_collision_ignore,
+    build_sphere_dict,
     mat_to_goal_pose,
 )
-from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
-from curobo.kinematics import Kinematics
-from curobo.types import JointState
+from kinematics.mdh import to_urdf
 
 
 class CuroboPlanner:
@@ -114,10 +114,8 @@ class CuroboPlanner:
         path = getattr(self, "_urdf_path", None)
         if path is None:
             return
-        try:
+        with contextlib.suppress(Exception):
             os.unlink(path)
-        except Exception:
-            pass
 
     # === Public API — planning ===
 
@@ -359,7 +357,7 @@ class CuroboPlanner:
             ``(waypoints, last_q)`` where ``waypoints`` is a list of joint-config
             tensors on CPU in the morphology dtype (one per interpolated waypoint,
             each shaped ``(dof,)``), and ``last_q`` is the final waypoint kept on
-            the planner device for re-use as the next plan's start (avoids a
+            the planner device for reuse as the next plan's start (avoids a
             CPU→GPU round-trip in chained sequence planning).
         """
         n_joints = len(self._planner.joint_names)
@@ -393,7 +391,7 @@ class CuroboPlanner:
         parts: list[str] = []
         worst = 0.0
         n_bad = 0
-        for i, (qi, loi, hii) in enumerate(zip(q_list, lo, hi)):
+        for i, (qi, loi, hii) in enumerate(zip(q_list, lo, hi, strict=False)):
             if qi < loi:
                 over = loi - qi
                 parts.append(
@@ -442,7 +440,7 @@ class CuroboPlanner:
             px, py, pz, qw, qx, qy, qz = cub.pose
             R_wc = Rotation.from_quat([qx, qy, qz, qw]).as_matrix().T
             half = np.array(cub.dims, dtype=np.float64) * 0.5
-            for s, ln in zip(spheres, sphere_link):
+            for s, ln in zip(spheres, sphere_link, strict=False):
                 p_local = R_wc @ (s[:3].astype(np.float64) - np.array([px, py, pz]))
                 dist = float(np.linalg.norm(p_local - np.clip(p_local, -half, half)))
                 penetration = float(s[3]) - dist

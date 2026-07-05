@@ -138,7 +138,7 @@ def _downsample_min(values: np.ndarray, max_points: int):
     starts = (np.arange(max_points) * n) // max_points
     ends = np.append(starts[1:], n)
     idx = np.empty(max_points, dtype=np.int64)
-    for k, (s, e) in enumerate(zip(starts, ends)):
+    for k, (s, e) in enumerate(zip(starts, ends, strict=False)):
         block = values[s:e]
         idx[k] = s + (int(np.nanargmin(block)) if np.isfinite(block).any() else 0)
     return idx, values[idx]
@@ -362,7 +362,8 @@ class CriticalDistanceMonitor:
         # Sphere indices per link, for recoloring the critical pair.
         block_ends = np.append(block_starts[1:], n_spheres)
         self._link_spheres = [
-            list(range(int(s), int(e))) for s, e in zip(block_starts, block_ends)
+            list(range(int(s), int(e)))
+            for s, e in zip(block_starts, block_ends, strict=False)
         ]
         self._gap_handle = server.scene.add_line_segments(
             "/curobo/crit_gap",

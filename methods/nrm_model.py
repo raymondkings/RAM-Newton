@@ -6,8 +6,8 @@
 # -----------------------------------------------------------------------------
 import torch
 import torch.nn as nn
-from torch import Tensor
 from jaxtyping import Float
+from torch import Tensor
 
 
 class MLP(nn.Module):

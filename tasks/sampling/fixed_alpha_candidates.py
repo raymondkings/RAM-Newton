@@ -19,15 +19,14 @@ from tqdm import tqdm
 
 from tasks.sampling.morphology_sampler import (
     LINK_RADIUS,
-    _sample_link_type,
-    _reject_link_type,
-    _reject_link_twist,
-    _sample_link_length,
     _reject_link_length,
+    _reject_link_twist,
+    _reject_link_type,
     _reject_morph,
+    _sample_link_length,
+    _sample_link_type,
     sample_morph,
 )
-
 
 DEFAULT_FIXED_ALPHA_BATCH_SIZE = 512
 DEFAULT_FIXED_ALPHA_RANDOM_TRIES = 5000

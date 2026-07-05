@@ -1,12 +1,11 @@
 import torch
-from typing import Optional
 
 LINK_RADIUS = 0.025
 EPS = 1e-4
 
 
 def get_capsules(
-    mdh: torch.Tensor, poses: Optional[torch.Tensor]
+    mdh: torch.Tensor, poses: torch.Tensor | None
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Given a robot morphology, compute link-enclosing capsule start and endpoints.

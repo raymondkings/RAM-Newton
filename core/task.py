@@ -1,6 +1,8 @@
 from dataclasses import dataclass
+
 import torch
 from jaxtyping import Float
+
 from .environment import Environment
 
 

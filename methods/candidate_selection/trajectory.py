@@ -31,25 +31,24 @@ import torch.nn.functional as F
 from torch import Tensor
 from tqdm import tqdm
 
+from core import Morphology, Task
+from logutils.csv_logger import (
+    InternalOptimizationCSVLogger,
+    OptimizationCSVLogger,
+)
+from logutils.timing import OptimizationTimer
 from methods.candidate_selection import static as candidate_base
 from methods.nrm_model import MLP
-from core import Morphology, Task
 from tasks.sampling.fixed_alpha_candidates import (
     DEFAULT_ZERO_ALPHA_RUN_EXCLUSION_LENGTH,
     generate_alpha_candidates,
     sample_fixed_alpha_morphology_candidates,
     sample_fixed_alpha_morphology_candidates_by_dof,
 )
-from logutils.csv_logger import (
-    InternalOptimizationCSVLogger,
-    OptimizationCSVLogger,
-)
-from logutils.timing import OptimizationTimer
 from validation.optimization_validation import (
     build_optimization_validation_context,
     run_optimization_validation,
 )
-
 
 EPS = 1e-4
 
@@ -72,7 +71,8 @@ WALL_REPULSION_WEIGHT = 0.005
 # decaying of the weight for the poses to be far from wall, bigger, slower decay
 WALL_REPULSION_DISTANCE = 0.0005
 
-from paths import PROJECT_ROOT as _PROJECT_ROOT, WEIGHTS_DIR as _WEIGHTS_DIR
+from paths import PROJECT_ROOT as _PROJECT_ROOT
+from paths import WEIGHTS_DIR as _WEIGHTS_DIR
 
 _CHECKPOINT_PATH = _WEIGHTS_DIR / "checkpoint_5-7.pth"
 

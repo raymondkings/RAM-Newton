@@ -78,7 +78,7 @@ class OptimizationCSVLogger:
         self._writer = None
         if self.enabled:
             self.run_dir.mkdir(parents=True, exist_ok=True)
-            self._file = open(self.csv_path, "w", newline="", encoding="utf-8")
+            self._file = open(self.csv_path, "w", newline="", encoding="utf-8")  # noqa: SIM115 -- handle kept open for the logger's lifetime, closed in close()
             self._writer = csv.DictWriter(self._file, fieldnames=self.FIELDNAMES)
             self._writer.writeheader()
             self._file.flush()
@@ -212,7 +212,7 @@ class InternalOptimizationCSVLogger:
         self._file = None
         self._writer = None
         if self.enabled:
-            self._file = open(self.csv_path, "w", newline="", encoding="utf-8")
+            self._file = open(self.csv_path, "w", newline="", encoding="utf-8")  # noqa: SIM115 -- handle kept open for the logger's lifetime, closed in close()
             self._writer = csv.DictWriter(self._file, fieldnames=self.fieldnames)
             self._writer.writeheader()
             self._file.flush()

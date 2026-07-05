@@ -3,16 +3,12 @@ from pathlib import Path
 
 import torch
 
+from core import Task
+from logutils.timing import OptimizationTiming
 from methods.nrm_gradient.trajectory import (
     optimize_morphology_and_trajectory,
 )
-from core import Task
-from tasks.environment import l_environment
-from tasks.sampling.trajectory_pose_sampler import (
-    NUM_POSES,
-    create_task,
-)
-from logutils.timing import OptimizationTiming
+from paths import DEFAULT_CONFIG, PROJECT_ROOT
 from pipeline.common import (
     build_arg_parser,
     report_optimization_timing,
@@ -23,9 +19,11 @@ from pipeline.common import (
     setup_device,
     warn_ignored_config_keys,
 )
-
-
-from paths import PROJECT_ROOT, DEFAULT_CONFIG
+from tasks.environment import l_environment
+from tasks.sampling.trajectory_pose_sampler import (
+    NUM_POSES,
+    create_task,
+)
 
 IGNORED_TRAJECTORY_CONFIG_KEYS = (
     "candidate_batch_size",

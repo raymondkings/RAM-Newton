@@ -14,7 +14,6 @@ from kinematics.kinematics import forward_kinematics, se3_distance
 from kinematics.self_collision import get_capsules
 from validation.optimization_validation import run_optimization_validation
 
-
 EPS = 0.005
 
 

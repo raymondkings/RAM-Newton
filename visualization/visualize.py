@@ -1,8 +1,9 @@
 import time
+
+import newton
 import numpy as np
 import torch
 import warp as wp
-import newton
 from newton import JointTargetMode
 
 from core import Morphology, Task

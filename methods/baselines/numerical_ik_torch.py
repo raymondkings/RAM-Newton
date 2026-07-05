@@ -14,16 +14,15 @@ from torch import Tensor
 from tqdm import tqdm
 
 from core import Morphology, Task
-from tasks.sampling.morphology_sampler import sample_morph
 from kinematics.kinematics import forward_kinematics
-from methods.baselines.direct_ik_common import _collision_critical_distance
 from logutils.csv_logger import OptimizationCSVLogger
 from logutils.timing import OptimizationTimer
+from methods.baselines.direct_ik_common import _collision_critical_distance
+from tasks.sampling.morphology_sampler import sample_morph
 from validation.optimization_validation import run_optimization_validation
 
 EPS = 1e-4
 from paths import PROJECT_ROOT as _PROJECT_ROOT
-
 
 # ── Morphology preprocessing ─────────────────────────────────────────────────
 
@@ -272,7 +271,7 @@ def optimize_morphology(
     timer.start()
 
     # ── DOF selection ────────────────────────────────────────────────────────
-    candidate_dofs_raw = optimization_parameters.get("candidate_dofs", None)
+    candidate_dofs_raw = optimization_parameters.get("candidate_dofs")
     morph_dof = morph.n_links - 1
     dof = (
         _resolve_candidate_dofs(candidate_dofs_raw)[0]
@@ -346,7 +345,9 @@ def optimize_morphology(
             sampled_goals = goal_poses[perm].detach()  # [N, 4, 4]
             N_cur = sampled_goals.shape[0]
 
-            def closure():
+            # Bind loop vars as defaults so the closure captures this iteration's
+            # values (it runs synchronously via optimizer.step, but this is explicit).
+            def closure(sampled_goals=sampled_goals, N_cur=N_cur):
                 optimizer.zero_grad()
                 processed_lengths, _ = _preprocess(lengths, link_radius)
                 mdh = torch.cat([alpha, processed_lengths], dim=1)

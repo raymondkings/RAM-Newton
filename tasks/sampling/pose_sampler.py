@@ -7,7 +7,6 @@ from typing import Any
 
 import torch
 
-
 NUM_SAMPLES = 50
 NUM_LINE_SAMPLES = 50
 NUM_EXTRA_PATHS = 4

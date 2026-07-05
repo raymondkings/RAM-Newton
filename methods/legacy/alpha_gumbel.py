@@ -17,26 +17,26 @@ LEGACY:
 
 import json
 import math
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 import torch
 import torch.nn.functional as F
-from tqdm import tqdm
 from torch import Tensor
+from tqdm import tqdm
 
-from methods.nrm_model import MLP
 from core import Morphology, Task
 from logutils.csv_logger import OptimizationCSVLogger
 from logutils.timing import OptimizationTimer
+from methods.nrm_model import MLP
 from validation.optimization_validation import run_optimization_validation
-
 
 EPS = 1e-4
 DELTA_EARLY_STOPPING = 1e-5
 EARLY_STOPPING_PATIENCE = 50
 
-from paths import PROJECT_ROOT as _PROJECT_ROOT, WEIGHTS_DIR as _WEIGHTS_DIR
+from paths import PROJECT_ROOT as _PROJECT_ROOT
+from paths import WEIGHTS_DIR as _WEIGHTS_DIR
 
 # Discrete alpha choices: index 0 → 0, index 1 → +π/2, index 2 → -π/2
 _ALPHA_CHOICES = torch.tensor([0.0, math.pi / 2, -math.pi / 2])
@@ -327,10 +327,9 @@ def _optimize_morphology_impl(
                 break
 
             loss.backward()
-            if in_warmup:
-                # Don't let AdamW accumulate stale momentum on alpha_logits during warmup.
-                if alpha_logits.grad is not None:
-                    alpha_logits.grad.zero_()
+            # Don't let AdamW accumulate stale momentum on alpha_logits during warmup.
+            if in_warmup and alpha_logits.grad is not None:
+                alpha_logits.grad.zero_()
             optimizer.step()
             if not in_warmup:
                 tau = max(tau_min, tau * tau_decay)
