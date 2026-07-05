@@ -1,6 +1,6 @@
 import torch
 
-from morphology_sampler import sample_initial_morphologies
+from tasks.sampling.morphology_sampler import sample_initial_morphologies
 
 
 def main():
