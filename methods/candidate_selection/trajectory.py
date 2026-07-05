@@ -7,7 +7,7 @@
 # Discrete-alpha candidate search with alternating morphology/trajectory
 # optimization per candidate.
 #
-# This keeps the candidate-selection shell from nrm_alpha_random_selection.py:
+# This keeps the candidate-selection shell from candidate_selection/static.py:
 #   - alpha candidate generation
 #   - fixed-alpha initial morphology sampling and cache
 #   - post-optimization distribution filter
@@ -16,7 +16,7 @@
 #   - final pick by validation success rate and the existing tie heuristic
 #
 # The per-candidate optimizer is replaced with the alternating NRM trajectory
-# logic from nrm_trajectory.py.  There is no per-candidate early stopping.
+# logic from methods/nrm_gradient/trajectory.py.  There is no per-candidate early stopping.
 # -----------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -31,20 +31,20 @@ import torch.nn.functional as F
 from torch import Tensor
 from tqdm import tqdm
 
-from optim import nrm_alpha_random_selection as candidate_base
-from optim.model import MLP
-from interface import Morphology, Task
-from util.fixed_alpha_morphology_candidates import (
+from methods.candidate_selection import static as candidate_base
+from methods.nrm_model import MLP
+from core import Morphology, Task
+from tasks.sampling.fixed_alpha_candidates import (
     DEFAULT_ZERO_ALPHA_RUN_EXCLUSION_LENGTH,
     generate_alpha_candidates,
     sample_fixed_alpha_morphology_candidates,
     sample_fixed_alpha_morphology_candidates_by_dof,
 )
-from util.optimization_csv_logger import (
+from logutils.csv_logger import (
     InternalOptimizationCSVLogger,
     OptimizationCSVLogger,
 )
-from util.optimization_timing import OptimizationTimer
+from logutils.timing import OptimizationTimer
 from validation.optimization_validation import (
     build_optimization_validation_context,
     run_optimization_validation,
@@ -72,8 +72,8 @@ WALL_REPULSION_WEIGHT = 0.005
 # decaying of the weight for the poses to be far from wall, bigger, slower decay
 WALL_REPULSION_DISTANCE = 0.0005
 
-_PROJECT_ROOT = Path(__file__).parent.parent
-_WEIGHTS_DIR = _PROJECT_ROOT / "weights"
+from paths import PROJECT_ROOT as _PROJECT_ROOT, WEIGHTS_DIR as _WEIGHTS_DIR
+
 _CHECKPOINT_PATH = _WEIGHTS_DIR / "checkpoint_5-7.pth"
 
 # ----------------------------- hard-coded knobs -----------------------------

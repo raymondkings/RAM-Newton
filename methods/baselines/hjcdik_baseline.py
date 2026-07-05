@@ -18,15 +18,15 @@ import torch.nn.functional as F
 from torch import Tensor
 from tqdm import tqdm
 
-from interface import Morphology, Task
-from util.kinematics import forward_kinematics
-from util.self_collision import get_capsules
-from task.morphology_sampler import get_joint_limits, sample_morph
-from util.optimization_csv_logger import OptimizationCSVLogger
-from util.optimization_timing import OptimizationTimer
+from core import Morphology, Task
+from kinematics.kinematics import forward_kinematics
+from kinematics.self_collision import get_capsules
+from tasks.sampling.morphology_sampler import get_joint_limits, sample_morph
+from logutils.csv_logger import OptimizationCSVLogger
+from logutils.timing import OptimizationTimer
 from validation.optimization_validation import run_optimization_validation
 
-_PROJECT_ROOT = Path(__file__).parent.parent
+from paths import PROJECT_ROOT as _PROJECT_ROOT
 
 
 def _resolve_candidate_dofs(value) -> list[int]:

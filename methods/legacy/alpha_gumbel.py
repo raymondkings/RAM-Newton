@@ -25,10 +25,10 @@ import torch.nn.functional as F
 from tqdm import tqdm
 from torch import Tensor
 
-from optim.model import MLP
-from interface import Morphology, Task
-from util.optimization_csv_logger import OptimizationCSVLogger
-from util.optimization_timing import OptimizationTimer
+from methods.nrm_model import MLP
+from core import Morphology, Task
+from logutils.csv_logger import OptimizationCSVLogger
+from logutils.timing import OptimizationTimer
 from validation.optimization_validation import run_optimization_validation
 
 
@@ -36,8 +36,7 @@ EPS = 1e-4
 DELTA_EARLY_STOPPING = 1e-5
 EARLY_STOPPING_PATIENCE = 50
 
-_PROJECT_ROOT = Path(__file__).parent.parent
-_WEIGHTS_DIR = _PROJECT_ROOT / "weights"
+from paths import PROJECT_ROOT as _PROJECT_ROOT, WEIGHTS_DIR as _WEIGHTS_DIR
 
 # Discrete alpha choices: index 0 → 0, index 1 → +π/2, index 2 → -π/2
 _ALPHA_CHOICES = torch.tensor([0.0, math.pi / 2, -math.pi / 2])

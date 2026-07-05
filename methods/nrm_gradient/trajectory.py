@@ -5,7 +5,7 @@
 # Modified work Copyright (c) 2026 Julian Arkenau / Shiyuan Zhang
 # -----------------------------------------------------------------------------
 # Alternating NRM optimization for morphology and intermediate trajectory poses.
-# The morphology phase follows optim/nrm.py closely. The trajectory phase keeps
+# The morphology phase follows methods/legacy/nrm_gradient_static.py closely. The trajectory phase keeps
 # morphology fixed, optimizes only intermediate poses, and leaves start/goal fixed.
 # -----------------------------------------------------------------------------
 
@@ -19,10 +19,10 @@ import torch.nn.functional as F
 from torch import Tensor
 from tqdm import tqdm
 
-from optim.model import MLP
-from interface import Morphology, Task
-from util.optimization_csv_logger import OptimizationCSVLogger
-from util.optimization_timing import OptimizationTimer
+from methods.nrm_model import MLP
+from core import Morphology, Task
+from logutils.csv_logger import OptimizationCSVLogger
+from logutils.timing import OptimizationTimer
 from validation.optimization_validation import run_optimization_validation
 
 
@@ -47,8 +47,7 @@ WALL_REPULSION_WEIGHT = 0.005
 # decaying of the weight for the poses to be far from wall, bigger, slower decay
 WALL_REPULSION_DISTANCE = 0.0005
 
-_PROJECT_ROOT = Path(__file__).parent.parent
-_WEIGHTS_DIR = _PROJECT_ROOT / "weights"
+from paths import PROJECT_ROOT as _PROJECT_ROOT, WEIGHTS_DIR as _WEIGHTS_DIR
 
 
 def _se3_to_vector(pose: Tensor) -> Tensor:

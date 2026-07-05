@@ -1,4 +1,4 @@
-# numerical_567.py  (GPU-batch, optimised backward)
+# numerical_ik_torch.py  (GPU-batch, optimised backward)
 #
 # Three-stage pipeline:
 #   forward : _batched_lm_ik  — GPU LM, all N poses in parallel, FD Jacobian
@@ -13,16 +13,16 @@ import torch.nn.functional as F
 from torch import Tensor
 from tqdm import tqdm
 
-from interface import Morphology, Task
-from task.morphology_sampler import sample_morph
-from util.kinematics import forward_kinematics
-from util.direct_ik_common import _collision_critical_distance
-from util.optimization_csv_logger import OptimizationCSVLogger
-from util.optimization_timing import OptimizationTimer
+from core import Morphology, Task
+from tasks.sampling.morphology_sampler import sample_morph
+from kinematics.kinematics import forward_kinematics
+from methods.baselines.direct_ik_common import _collision_critical_distance
+from logutils.csv_logger import OptimizationCSVLogger
+from logutils.timing import OptimizationTimer
 from validation.optimization_validation import run_optimization_validation
 
 EPS = 1e-4
-_PROJECT_ROOT = Path(__file__).parent.parent
+from paths import PROJECT_ROOT as _PROJECT_ROOT
 
 
 # ── Morphology preprocessing ─────────────────────────────────────────────────

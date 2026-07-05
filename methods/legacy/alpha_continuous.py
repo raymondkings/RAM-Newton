@@ -4,13 +4,12 @@
 #
 # Modified work Copyright (c) 2026 Shiyuan Zhang
 # -----------------------------------------------------------------------------
-# Alpha-discrete STE variant for NRM-based morphology optimization.
 #   - final validation always runs once after the last optimizer step.
 #   - CSV logging uses raw_morphology / processed_morphology only.
 #
 # Alpha behaviour:
-#   - forward: raw alpha -> nearest-map to {-pi/2, 0, pi/2} -> NRM.
-#   - backward: STE passes gradients to raw alpha unchanged.
+#   - during optimization, NRM sees continuous alpha directly.
+#   - the final returned morphology maps alpha to {-pi/2, 0, pi/2}.
 # -----------------------------------------------------------------------------
 """
 LEGACY:
@@ -31,17 +30,16 @@ import torch
 from tqdm import tqdm
 from torch import Tensor
 
-from optim.model import MLP
-from interface import Morphology, Task
-from util.optimization_csv_logger import OptimizationCSVLogger
-from util.optimization_timing import OptimizationTimer
+from methods.nrm_model import MLP
+from core import Morphology, Task
+from logutils.csv_logger import OptimizationCSVLogger
+from logutils.timing import OptimizationTimer
 from validation.optimization_validation import run_optimization_validation
 
 
 EPS = 1e-4
 
-_PROJECT_ROOT = Path(__file__).parent.parent
-_WEIGHTS_DIR = _PROJECT_ROOT / "weights"
+from paths import PROJECT_ROOT as _PROJECT_ROOT, WEIGHTS_DIR as _WEIGHTS_DIR
 
 
 def _se3_to_vector(pose: Tensor) -> Tensor:
@@ -82,19 +80,6 @@ class SquasherSTE(torch.autograd.Function):
         return grad_output, None
 
 
-class AlphaNearestSTE(torch.autograd.Function):
-    @staticmethod
-    def forward(_ctx, alpha: Tensor) -> Tensor:
-        levels = alpha.new_tensor([-math.pi / 2.0, 0.0, math.pi / 2.0])
-        distances = (alpha.unsqueeze(-1) - levels.view(*([1] * alpha.ndim), 3)).abs()
-        indices = distances.argmin(dim=-1)
-        return levels[indices]
-
-    @staticmethod
-    def backward(_ctx, grad_output: Tensor) -> Tensor:
-        return grad_output
-
-
 class Normaliser(torch.autograd.Function):
     @staticmethod
     def forward(ctx, param: Tensor) -> Tensor:
@@ -123,7 +108,11 @@ def _preprocess(lengths: Tensor, link_radius: float) -> tuple[Tensor, Tensor]:
 
 
 def _map_alpha_nearest(alpha: Tensor) -> Tensor:
-    return AlphaNearestSTE.apply(alpha)
+    """Nearest-map alpha to {-pi/2, 0, pi/2}. No STE is needed for final output."""
+    levels = alpha.new_tensor([-math.pi / 2.0, 0.0, math.pi / 2.0])
+    distances = (alpha.unsqueeze(-1) - levels.view(*([1] * alpha.ndim), 3)).abs()
+    indices = distances.argmin(dim=-1)
+    return levels[indices]
 
 
 def _compute_loss_and_prob(
@@ -147,7 +136,7 @@ def optimize_morphology(
     task: Task,
     optimization_parameters: dict,
 ) -> tuple[Morphology, Path, list[float]]:
-    """Optimize morphology with nearest-mapped alpha during NRM forward."""
+    """Optimize morphology with continuous alpha during NRM forward."""
     n_iter = optimization_parameters.get("num_iterations", 100)
     lr_fallback = optimization_parameters.get("learning_rate", 0.01)
     lr_angle = optimization_parameters.get("learning_rate_angle", lr_fallback)
@@ -164,7 +153,7 @@ def optimize_morphology(
 
     if logging:
         print(
-            f"[Info] Starting alpha-STE optimization with {n_iter} iterations on device {device}."
+            f"[Info] Starting alpha-continuous optimization with {n_iter} iterations on device {device}."
         )
         print(
             "[Info] "
@@ -180,14 +169,14 @@ def optimize_morphology(
 
     task_vec = _se3_to_vector(task.goal_poses.to(device))
 
-    alpha_raw = morph.params[:, 0:1].clone().to(device)
+    alpha = morph.params[:, 0:1].clone().to(device)
     lengths = morph.params[:, 1:].clone().to(device)
-    alpha_raw.requires_grad_(True)
+    alpha.requires_grad_(True)
     lengths.requires_grad_(True)
 
     optimizer = torch.optim.AdamW(
         [
-            {"params": [alpha_raw], "lr": lr_angle},
+            {"params": [alpha], "lr": lr_angle},
             {"params": [lengths], "lr": lr_length},
         ]
     )
@@ -203,7 +192,7 @@ def optimize_morphology(
     try:
         progress_bar = tqdm(
             range(n_iter),
-            desc="optimizing alpha-STE",
+            desc="optimizing alpha-continuous",
             dynamic_ncols=True,
             disable=not logging,
         )
@@ -212,10 +201,9 @@ def optimize_morphology(
             # Current state is after update_idx optimizer steps.
             optimizer.zero_grad()
 
-            alpha_mapped = _map_alpha_nearest(alpha_raw)
             processed_lengths, _ = _preprocess(lengths, morph.link_radius)
-            raw_morphology = torch.cat([alpha_raw, lengths], dim=1)
-            processed_morphology = torch.cat([alpha_mapped, processed_lengths], dim=1)
+            raw_morphology = torch.cat([alpha, lengths], dim=1)
+            processed_morphology = torch.cat([alpha, processed_lengths], dim=1)
 
             loss, prob = _compute_loss_and_prob(model, processed_morphology, task_vec)
 
@@ -264,7 +252,7 @@ def optimize_morphology(
 
         # Final state after n_iter optimizer steps.
         with torch.no_grad():
-            final_alpha_raw = alpha_raw.detach().clone()
+            final_alpha_raw = alpha.detach().clone()
             final_alpha_mapped = _map_alpha_nearest(final_alpha_raw)
             final_processed_lengths, _ = _preprocess(
                 lengths.detach(), morph.link_radius

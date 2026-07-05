@@ -46,20 +46,20 @@ import torch.nn.functional as F
 from torch import Tensor
 from tqdm import tqdm
 
-from optim.model import MLP
-from interface import Morphology, Task
-from util.distribution_checker import check_morphology_distribution
-from util.fixed_alpha_morphology_candidates import (
+from methods.nrm_model import MLP
+from core import Morphology, Task
+from validation.distribution_checker import check_morphology_distribution
+from tasks.sampling.fixed_alpha_candidates import (
     DEFAULT_ZERO_ALPHA_RUN_EXCLUSION_LENGTH,
     generate_alpha_candidates,
     sample_fixed_alpha_morphology_candidates,
     sample_fixed_alpha_morphology_candidates_by_dof,
 )
-from util.optimization_csv_logger import (
+from logutils.csv_logger import (
     InternalOptimizationCSVLogger,
     OptimizationCSVLogger,
 )
-from util.optimization_timing import OptimizationTimer
+from logutils.timing import OptimizationTimer
 from validation.optimization_validation import (
     build_optimization_validation_context,
     run_optimization_validation,
@@ -67,8 +67,8 @@ from validation.optimization_validation import (
 
 
 EPS = 1e-4
-_PROJECT_ROOT = Path(__file__).parent.parent
-_WEIGHTS_DIR = _PROJECT_ROOT / "weights"
+from paths import PROJECT_ROOT as _PROJECT_ROOT, WEIGHTS_DIR as _WEIGHTS_DIR
+
 _CHECKPOINT_PATH = _WEIGHTS_DIR / "checkpoint_5-7.pth"
 
 # ----------------------------- hard-coded knobs -----------------------------

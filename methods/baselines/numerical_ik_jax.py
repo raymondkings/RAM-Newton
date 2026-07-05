@@ -1,4 +1,4 @@
-# numerical_567_jax.py
+# numerical_ik_jax.py
 #
 # Morphology optimiser following the NAGE baseline
 # (paper_archive/rq3_design_optimisation/baseline.py in nrm-master).
@@ -18,15 +18,18 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
-from interface import Morphology, Task
-from task.morphology_sampler import sample_morph
-from util.direct_ik_common import _collision_critical_distance, _preprocess_lengths
-from util.kinematics import forward_kinematics
-from util.optimization_csv_logger import OptimizationCSVLogger
-from util.optimization_timing import OptimizationTimer
+from core import Morphology, Task
+from tasks.sampling.morphology_sampler import sample_morph
+from methods.baselines.direct_ik_common import (
+    _collision_critical_distance,
+    _preprocess_lengths,
+)
+from kinematics.kinematics import forward_kinematics
+from logutils.csv_logger import OptimizationCSVLogger
+from logutils.timing import OptimizationTimer
 from validation.optimization_validation import run_optimization_validation
 
-_PROJECT_ROOT = Path(__file__).parent.parent
+from paths import PROJECT_ROOT as _PROJECT_ROOT
 
 # ── JAX / optimistix / optax imports ─────────────────────────────────────────
 try:

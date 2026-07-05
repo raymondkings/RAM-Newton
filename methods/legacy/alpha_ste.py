@@ -2,33 +2,45 @@
 # Original work Copyright (c) 2025 Tim Walter
 # Source: https://github.com/TimWalter/nrm
 #
-# Modified work Copyright (c) 2026 Julian Arkenau / Shiyuan Zhang
+# Modified work Copyright (c) 2026 Shiyuan Zhang
 # -----------------------------------------------------------------------------
-# This version keeps the original optimization structure, but removes plotting
-# and recorder/timelapse creation. All data needed for later plotting/video
-# reconstruction is written to output/<time>/morphology_history.csv.
+# Alpha-discrete STE variant for NRM-based morphology optimization.
+#   - final validation always runs once after the last optimizer step.
+#   - CSV logging uses raw_morphology / processed_morphology only.
+#
+# Alpha behaviour:
+#   - forward: raw alpha -> nearest-map to {-pi/2, 0, pi/2} -> NRM.
+#   - backward: STE passes gradients to raw alpha unchanged.
 # -----------------------------------------------------------------------------
+"""
+LEGACY:
+    If you want to run this code, simply put in inside the optim folder.
+    This method simply doesn't work, gradient is misleading to the garbage example.
+    Easy way to prove this is to try different parameter, if we want the alpha to be
+    near +-90 and 0, it will lead all alpha to be 0. Which means the gradient is
+    misleading.
+    Also, plotting the alpha w.r.t. reachability with a fixed a and d, alpha should move
+    faster than the a and d, other wise the graident w.r.t alpha will go to 0 for all alpha
+"""
 
 import json
+import math
 from pathlib import Path
 
 import torch
 from tqdm import tqdm
 from torch import Tensor
 
-from optim.model import MLP
-from interface import Morphology, Task
-from util.optimization_csv_logger import OptimizationCSVLogger
-from util.optimization_timing import OptimizationTimer
+from methods.nrm_model import MLP
+from core import Morphology, Task
+from logutils.csv_logger import OptimizationCSVLogger
+from logutils.timing import OptimizationTimer
 from validation.optimization_validation import run_optimization_validation
 
 
 EPS = 1e-4
-DELTA_EARLY_STOPPING = 1e-5
-EARLY_STOPPING_PATIENCE = 10
 
-_PROJECT_ROOT = Path(__file__).parent.parent
-_WEIGHTS_DIR = _PROJECT_ROOT / "weights"
+from paths import PROJECT_ROOT as _PROJECT_ROOT, WEIGHTS_DIR as _WEIGHTS_DIR
 
 
 def _se3_to_vector(pose: Tensor) -> Tensor:
@@ -44,7 +56,7 @@ def _load_model(device: torch.device) -> MLP:
     model = MLP(**metadata["hyperparameter"])
     model.load_state_dict(
         torch.load(
-            _WEIGHTS_DIR / "checkpoint_5-7.pth", map_location=device, weights_only=True
+            _WEIGHTS_DIR / "checkpoint.pth", map_location=device, weights_only=True
         )
     )
     model = model.to(device)
@@ -60,53 +72,73 @@ def _load_model(device: torch.device) -> MLP:
 
 class SquasherSTE(torch.autograd.Function):
     @staticmethod
-    def forward(_ctx, param, threshold):
+    def forward(_ctx, param: Tensor, threshold: float) -> Tensor:
         mask = (param.abs() >= threshold).float()
         return param * mask
 
     @staticmethod
-    def backward(_ctx, grad_output):
+    def backward(_ctx, grad_output: Tensor):
         return grad_output, None
+
+
+class AlphaNearestSTE(torch.autograd.Function):
+    @staticmethod
+    def forward(_ctx, alpha: Tensor) -> Tensor:
+        levels = alpha.new_tensor([-math.pi / 2.0, 0.0, math.pi / 2.0])
+        distances = (alpha.unsqueeze(-1) - levels.view(*([1] * alpha.ndim), 3)).abs()
+        indices = distances.argmin(dim=-1)
+        return levels[indices]
+
+    @staticmethod
+    def backward(_ctx, grad_output: Tensor) -> Tensor:
+        return grad_output
 
 
 class Normaliser(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, param):
+    def forward(ctx, param: Tensor) -> Tensor:
         l2_norm = torch.hypot(param[:, 0:1], param[:, 1:2])
         norm = l2_norm.sum(dim=0, keepdim=True)
-
         ctx.save_for_backward(param, l2_norm, norm)
-
         return param / norm
 
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(ctx, grad_output: Tensor) -> Tensor:
         param, l2_norm, norm = ctx.saved_tensors
-
         chain = torch.where(
             (param.abs() > EPS).any(dim=1, keepdim=True),
             param / l2_norm,
             torch.zeros_like(param),
         )
-
         return (grad_output * norm - chain * (grad_output * param).sum()) / norm**2
 
 
 def _preprocess(lengths: Tensor, link_radius: float) -> tuple[Tensor, Tensor]:
-    """Apply normalize -> squash -> normalize to raw [a, d] lengths.
-
-    Returns:
-        processed_lengths:
-            normalize -> squash -> normalize result.
-        norm_lengths:
-            normalize-only result, useful for CSV/debugging.
-    """
+    """Apply normalize -> squash -> normalize to raw [a, d] lengths."""
     threshold = 2.0 * link_radius
-
     norm_lengths = Normaliser.apply(lengths)
     squashed = SquasherSTE.apply(norm_lengths, threshold)
-
     return Normaliser.apply(squashed), norm_lengths
+
+
+def _map_alpha_nearest(alpha: Tensor) -> Tensor:
+    return AlphaNearestSTE.apply(alpha)
+
+
+def _compute_loss_and_prob(
+    model: MLP,
+    processed_morphology: Tensor,
+    task_vec: Tensor,
+) -> tuple[Tensor, Tensor]:
+    bmorph = processed_morphology.unsqueeze(0).expand(task_vec.shape[0], -1, -1)
+    logit = model(bmorph, task_vec)
+    loss = torch.nn.BCEWithLogitsLoss(reduction="mean")(logit, torch.ones_like(logit))
+    prob = torch.sigmoid(logit).mean()
+    return loss, prob
+
+
+def _format_alpha_degrees(alpha: Tensor) -> Tensor:
+    return alpha.detach().cpu().squeeze(-1) * 180.0 / math.pi
 
 
 def optimize_morphology(
@@ -114,31 +146,16 @@ def optimize_morphology(
     task: Task,
     optimization_parameters: dict,
 ) -> tuple[Morphology, Path, list[float]]:
-    """Optimize morphology link lengths (a, d) for the given task.
-
-    Returns:
-        optimized_morphology:
-            Final processed morphology.
-        csv_path:
-            Path to output/<time>/morphology_history.csv.
-        timing:
-            [optimizer/backprop time, cuRobo validation time] in seconds.
-    """
+    """Optimize morphology with nearest-mapped alpha during NRM forward."""
     n_iter = optimization_parameters.get("num_iterations", 100)
-    lr = optimization_parameters.get("learning_rate", 0.01)
+    lr_fallback = optimization_parameters.get("learning_rate", 0.01)
+    lr_angle = optimization_parameters.get("learning_rate_angle", lr_fallback)
+    lr_length = optimization_parameters.get("learning_rate_length", lr_fallback)
     logging = optimization_parameters.get("logging", True)
-    csv_logging = bool(optimization_parameters.get("csv_logging", True))
-    eval_interval = optimization_parameters.get("eval_interval", 1)
-    eval_interval = int(eval_interval)
+    eval_interval = int(optimization_parameters.get("eval_interval", 1))
     random_seed = optimization_parameters.get("random_seed", 42)
     number_random_seed = optimization_parameters.get("number_random_seed", 32)
     percentage_poses = optimization_parameters.get("percentage_poses", 1)
-    early_stopping_patience = int(
-        optimization_parameters.get("early_stopping_patience", EARLY_STOPPING_PATIENCE)
-    )
-    delta_early_stopping = float(
-        optimization_parameters.get("delta_early_stopping", DELTA_EARLY_STOPPING)
-    )
 
     device = morph.params.device
     timer = OptimizationTimer(device)
@@ -146,76 +163,63 @@ def optimize_morphology(
 
     if logging:
         print(
-            f"[Info] Starting morphology optimization with {n_iter} iterations on device {device}."
+            f"[Info] Starting alpha-STE optimization with {n_iter} iterations on device {device}."
         )
         print(
             "[Info] "
+            f"lr_angle={lr_angle}, "
+            f"lr_length={lr_length}, "
             f"eval_interval={eval_interval}, "
             f"random_seed={random_seed}, "
             f"number_random_seed={number_random_seed}, "
-            f"percentage_poses={percentage_poses}, "
-            f"early_stopping_patience={early_stopping_patience}, "
-            f"delta_early_stopping={delta_early_stopping}"
+            f"percentage_poses={percentage_poses}"
         )
 
     scene = None
 
     task_vec = _se3_to_vector(task.goal_poses.to(device))
 
-    alpha = morph.params[:, 0:1].clone().to(device)
+    alpha_raw = morph.params[:, 0:1].clone().to(device)
     lengths = morph.params[:, 1:].clone().to(device)
+    alpha_raw.requires_grad_(True)
     lengths.requires_grad_(True)
 
-    optimizer = torch.optim.AdamW([lengths], lr=lr)
+    optimizer = torch.optim.AdamW(
+        [
+            {"params": [alpha_raw], "lr": lr_angle},
+            {"params": [lengths], "lr": lr_length},
+        ]
+    )
     model = _load_model(device)
+    csv_logger = OptimizationCSVLogger(root_dir=_PROJECT_ROOT)
 
-    csv_logger = OptimizationCSVLogger(root_dir=_PROJECT_ROOT, enabled=csv_logging)
-
-    # for pose sampling (each validation sample different poses if not full pose validation)
     pose_sampling_generator = torch.Generator(device=device)
     pose_sampling_generator.manual_seed(random_seed)
 
     if logging:
         print(f"[Info] Writing CSV log to: {csv_logger.csv_path}")
 
-    best_loss = float("inf")
-    best_lengths = lengths.detach().clone()
-    best_iteration = 0
-    stale_count = 0
-    final_iteration = n_iter
-
     try:
-        progress_bar = tqdm(range(n_iter), desc="optimizing", dynamic_ncols=True)
+        progress_bar = tqdm(
+            range(n_iter),
+            desc="optimizing alpha-STE",
+            dynamic_ncols=True,
+            disable=not logging,
+        )
+
         for update_idx in progress_bar:
             # Current state is after update_idx optimizer steps.
             optimizer.zero_grad()
 
+            alpha_mapped = _map_alpha_nearest(alpha_raw)
             processed_lengths, _ = _preprocess(lengths, morph.link_radius)
-            raw_morphology = torch.cat([alpha, lengths], dim=1)
-            processed_morphology = torch.cat([alpha, processed_lengths], dim=1)
+            raw_morphology = torch.cat([alpha_raw, lengths], dim=1)
+            processed_morphology = torch.cat([alpha_mapped, processed_lengths], dim=1)
 
-            bmorph = processed_morphology.unsqueeze(0).expand(task_vec.shape[0], -1, -1)
-            logit = model(bmorph, task_vec)
-
-            loss = torch.nn.BCEWithLogitsLoss(reduction="mean")(
-                logit, torch.ones_like(logit)
-            )
-            loss = loss + 100.0 * torch.relu(-processed_morphology[-1, 2])
-            prob = torch.sigmoid(logit).mean()
-            loss_value = float(loss.detach().cpu().item())
-
-            improved = loss_value < best_loss - delta_early_stopping
-            if improved:
-                best_loss = loss_value
-                best_lengths = lengths.detach().clone()
-                best_iteration = update_idx
-                stale_count = 0
-            else:
-                stale_count += 1
+            loss, prob = _compute_loss_and_prob(model, processed_morphology, task_vec)
 
             validation_data = None
-
-            if eval_interval > 0 and update_idx % eval_interval == 0 and logging:
+            if logging and eval_interval > 0 and update_idx % eval_interval == 0:
                 with timer.validation():
                     validation_data = run_optimization_validation(
                         processed_morphology=processed_morphology.detach(),
@@ -232,15 +236,13 @@ def optimize_morphology(
                 ik_success_rate = (
                     validation_data["ik_success_pose_rate"].detach().cpu().item()
                 )
-                msg = (
+                tqdm.write(
                     f"[Iter {update_idx:>4}/{n_iter}] "
                     f"loss={loss.item():.6f}, "
-                    f"nrm_prob={prob.item():.6f},"
+                    f"nrm_prob={prob.item():.6f}, "
                     f"best_se3={best_se3:.6f}, "
                     f"ik_success_pose_rate={ik_success_rate * 100.0:.2f}%"
                 )
-
-                tqdm.write(msg)
 
             csv_logger.log_iteration(
                 iteration=update_idx,
@@ -251,60 +253,35 @@ def optimize_morphology(
                 validation_data=validation_data,
             )
 
-            should_stop = (
-                early_stopping_patience > 0
-                and stale_count >= early_stopping_patience
-                and (update_idx + 1) < n_iter
-            )
-            if should_stop:
-                final_iteration = update_idx + 1
-                if logging:
-                    tqdm.write(
-                        "[Early stopping] "
-                        f"loss did not improve for {stale_count} updates; "
-                        f"stopping at iteration {final_iteration}. "
-                        f"best_iteration={best_iteration}, best_loss={best_loss:.6f}"
-                    )
-                break
-
             loss.backward()
             optimizer.step()
 
-            progress_bar.set_postfix(
-                loss=f"{loss.item():.4f}",
-                prob=f"{prob.item():.3f}",
-                stale=stale_count,
-            )
+            if logging:
+                progress_bar.set_postfix(
+                    loss=f"{loss.item():.4f}", prob=f"{prob.item():.3f}"
+                )
 
-        # Final state after all optimizer steps, or the best state before early stopping.
+        # Final state after n_iter optimizer steps.
         with torch.no_grad():
+            final_alpha_raw = alpha_raw.detach().clone()
+            final_alpha_mapped = _map_alpha_nearest(final_alpha_raw)
             final_processed_lengths, _ = _preprocess(
-                best_lengths,
-                morph.link_radius,
+                lengths.detach(), morph.link_radius
             )
 
-            final_raw_morphology = torch.cat([alpha, best_lengths], dim=1)
+            final_raw_morphology = torch.cat([final_alpha_raw, lengths.detach()], dim=1)
             final_processed_morphology = torch.cat(
-                [alpha, final_processed_lengths], dim=1
+                [final_alpha_mapped, final_processed_lengths], dim=1
             )
 
-            final_bmorph = final_processed_morphology.unsqueeze(0).expand(
-                task_vec.shape[0], -1, -1
+            final_loss, final_prob = _compute_loss_and_prob(
+                model, final_processed_morphology, task_vec
             )
-            final_logit = model(final_bmorph, task_vec)
-            final_loss = torch.nn.BCEWithLogitsLoss(reduction="mean")(
-                final_logit,
-                torch.ones_like(final_logit),
-            )
-            final_loss = final_loss + 100.0 * torch.relu(
-                -final_processed_morphology[-1, 2]
-            )
-            final_prob = torch.sigmoid(final_logit).mean()
 
-        # you will always do a validation for the final result even if not in logging mode
+        # ALWAYS do a validation for the final data!
         with timer.validation():
             final_validation_data = run_optimization_validation(
-                processed_morphology=final_processed_morphology,
+                processed_morphology=final_processed_morphology.detach(),
                 morph=morph,
                 task=task,
                 scene=scene,
@@ -315,11 +292,11 @@ def optimize_morphology(
             )
 
         csv_logger.log_iteration(
-            iteration=final_iteration,
-            loss=final_loss,
-            reachability_probability=final_prob,
-            raw_morphology=final_raw_morphology,
-            processed_morphology=final_processed_morphology,
+            iteration=n_iter,
+            loss=final_loss.detach(),
+            reachability_probability=final_prob.detach(),
+            raw_morphology=final_raw_morphology.detach(),
+            processed_morphology=final_processed_morphology.detach(),
             validation_data=final_validation_data,
         )
 
@@ -329,21 +306,26 @@ def optimize_morphology(
         final_ik_success_rate = (
             final_validation_data["ik_success_pose_rate"].detach().cpu().item()
         )
-
-        msg = (
-            f"[Iter {final_iteration:>4}/{n_iter}] "
+        print(
+            f"[Iter {n_iter:>4}/{n_iter}] "
             f"loss={final_loss.item():.6f}, "
-            f"nrm_prob={final_prob.item():.6f},"
+            f"nrm_prob={final_prob.item():.6f}, "
             f"final_se3_err={final_se3_err:.6f}, "
             f"ik_success_pose_rate={final_ik_success_rate * 100.0:.2f}%"
         )
-        print(msg)
+
+        if logging:
+            print("\nFinal alpha raw before nearest-map [deg]:")
+            print(_format_alpha_degrees(final_alpha_raw))
+            print("Final alpha after nearest-map [deg]:")
+            print(_format_alpha_degrees(final_alpha_mapped))
+            print("Final optimized morphology params:")
+            print(final_processed_morphology.detach().cpu())
 
         optimized_morph = Morphology(
             params=final_processed_morphology.detach(),
             link_radius=morph.link_radius,
         )
-
         return optimized_morph, csv_logger.csv_path, timer.result()
 
     finally:

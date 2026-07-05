@@ -9,9 +9,9 @@ import torch.nn.functional as F
 from torch import Tensor
 from tqdm import tqdm
 
-from interface import Morphology, Task
-from util.kinematics import forward_kinematics, se3_distance
-from util.self_collision import get_capsules
+from core import Morphology, Task
+from kinematics.kinematics import forward_kinematics, se3_distance
+from kinematics.self_collision import get_capsules
 from validation.optimization_validation import run_optimization_validation
 
 
