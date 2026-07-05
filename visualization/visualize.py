@@ -5,10 +5,10 @@ import warp as wp
 import newton
 from newton import JointTargetMode
 
-from interface import Morphology, Task
-from util.kinematics import compute_link_world_poses
-from util.mdh import add_robot_to_builder
-from validation.ground import add_ground_grid_to_viser, make_origin_axes
+from core import Morphology, Task
+from kinematics.kinematics import compute_link_world_poses
+from kinematics.mdh import add_robot_to_builder
+from visualization.ground import add_ground_grid_to_viser, make_origin_axes
 
 # PD gains for joint position control during Newton simulation
 _KE = 500.0  # position stiffness  [N·m/rad]

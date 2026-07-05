@@ -10,7 +10,7 @@ import time
 
 import numpy as np
 
-from validation import critical_distance_style as style
+from visualization import critical_distance_style as style
 
 # Severity thresholds (m): gap > SAFE -> green, > WARN -> orange, else red.
 # Colors and other styling live in critical_distance_style.

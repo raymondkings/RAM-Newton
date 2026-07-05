@@ -6,14 +6,17 @@ import torch
 import warp as wp
 import newton
 
-from interface import Morphology, Task
-from util.kinematics import compute_link_world_poses, forward_kinematics
-from util.mdh import add_robot_to_builder
-from util.self_collision import get_joint_limits
-from task.morphology_sampler import yoshikawa_manipulability
-from validation.critical_distance import build_critical_distance_monitor
-from validation.critical_distance_style import SPHERE_DEFAULT_COLOR
-from validation.ground import add_ground_grid_to_viser, make_origin_axes
+from core import Morphology, Task
+from kinematics.kinematics import (
+    compute_link_world_poses,
+    forward_kinematics,
+)
+from kinematics.mdh import add_robot_to_builder
+from kinematics.self_collision import get_joint_limits
+from tasks.sampling.morphology_sampler import yoshikawa_manipulability
+from visualization.critical_distance import build_critical_distance_monitor
+from visualization.critical_distance_style import SPHERE_DEFAULT_COLOR
+from visualization.ground import add_ground_grid_to_viser, make_origin_axes
 
 
 def _trajectory_manipulability(curobo_planner, path: list, n_joints: int) -> np.ndarray:
