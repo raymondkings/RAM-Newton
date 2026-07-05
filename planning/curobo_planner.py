@@ -7,10 +7,10 @@ import torch
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from interface import Morphology, Task
-from interface.plan_result import PlanResult
-from util.mdh import to_urdf
-from util.kinematics import (
+from core import Morphology, Task
+from core.plan_result import PlanResult
+from kinematics.mdh import to_urdf
+from kinematics.kinematics import (
     build_sphere_dict,
     build_self_collision_ignore,
     build_scene,
