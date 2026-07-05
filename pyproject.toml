@@ -77,6 +77,21 @@ dev = [
 quote-style = "double"
 indent-style = "space"
 
-# Suppress false positives from jaxtyping
 [tool.ruff.lint]
-ignore = ["F722", "F821", "E402"]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort (import sorting)
+    "B",   # flake8-bugbear (likely bugs)
+    "UP",  # pyupgrade (modern syntax for py>=3.11)
+    "SIM", # flake8-simplify
+]
+# F722/F821 are jaxtyping false positives; E402 allows imports after path setup.
+# E501 (line length) is delegated to the ruff formatter.
+ignore = ["F722", "F821", "E402", "E501"]
+
+[tool.codespell]
+skip = "*.lock,*.json,*.egg-info,.git,.venv,.ruff_cache,.pytest_cache"
+# To whitelist domain terms that codespell misflags, add a comma-separated
+# ignore-words-list, e.g. ignore-words-list = "mdh,curobo"
