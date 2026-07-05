@@ -29,7 +29,6 @@ IGNORED_TRAJECTORY_CONFIG_KEYS = (
     "candidate_batch_size",
     "distribution_batch_size",
     "num_iterations",
-    "timelapse",
 )
 
 

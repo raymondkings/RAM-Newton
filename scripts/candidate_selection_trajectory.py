@@ -25,7 +25,6 @@ from tasks.sampling.trajectory_pose_sampler import NUM_POSES, create_task
 IGNORED_CONFIG_KEYS = (
     "num_iterations",
     "eval_interval",
-    "timelapse",
 )
 
 

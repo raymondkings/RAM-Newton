@@ -9,8 +9,8 @@ from torch import Tensor
 class OptimizationCSVLogger:
     """CSV logger for NRM morphology optimization.
 
-    The CSV file is intended to be the source for later plotting and timelapse
-    reconstruction. Therefore, optimization itself does not directly plot or
+    The CSV file is intended to be the source for later plotting.
+    Therefore, optimization itself does not directly plot or
     record videos.
 
     Rows without IK/FK validation use empty strings in validation-related fields.

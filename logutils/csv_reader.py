@@ -45,7 +45,7 @@ def _parse_float_cell(value: str) -> float | None:
 def read_optimization_csv(csv_path: str | Path) -> list[dict]:
     """Read optimization CSV rows into Python dictionaries.
 
-    This helper keeps all JSON arrays as Python lists. Plot/timelapse utilities
+    This helper keeps all JSON arrays as Python lists. Plotting utilities
     can convert them to torch.Tensor when needed.
     """
     csv_path = Path(csv_path)

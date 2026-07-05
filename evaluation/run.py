@@ -279,7 +279,6 @@ def build_config(
     cfg["visualize"] = False
     cfg["debug"] = False
     cfg["plot"] = {"enabled": False, "output_dir": "output/figures"}
-    cfg["timelapse"] = {"enabled": False}
     cfg.update(condition_flags)
     for key, value in sampler_overrides.items():
         if value is not None:
