@@ -5,10 +5,10 @@
 # -----------------------------------------------------------------------------
 from pathlib import Path
 
-import torch
 import matplotlib.pyplot as plt
+import torch
 
-from util.csv_log_reader import read_optimization_csv, tensor_from_json_cell
+from logutils.csv_reader import read_optimization_csv, tensor_from_json_cell
 
 
 def plot_ik_fk_trajectory(
@@ -142,7 +142,7 @@ def create_plots_from_csv(
     csv_path: str | Path,
     output_dir: str | Path = "output/figures",
 ) -> list[Path]:
-    """Create the same basic plots that the old nrm.py created online.
+    """Create the same basic plots that the old gradient NRM optimizer created online.
 
     This function reads the CSV and produces:
         - raw link lengths over iterations

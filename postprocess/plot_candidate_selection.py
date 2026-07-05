@@ -1,5 +1,5 @@
 # -----------------------------------------------------------------------------
-# Candidate-selection CSV plots for nrm_alpha_random_selection.py
+# Candidate-selection CSV plots for candidate_selection/static.py
 #
 # Expected CSV convention:
 #   iteration = 0  -> validated top-probability candidate, not final-tier
@@ -22,7 +22,7 @@ import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 import numpy as np
 
-from util.csv_log_reader import read_optimization_csv
+from logutils.csv_reader import read_optimization_csv
 
 
 def _csv_time_suffix(csv_path: str | Path) -> str:
