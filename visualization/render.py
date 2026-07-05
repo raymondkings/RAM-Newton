@@ -158,34 +158,46 @@ def add_curobo_scene_to_viser(server, scene) -> None:
         )
 
 
-# Jiyao: new function to visualize direction, blue shows Z-direction
-def make_goal_pose_axes(goal_poses, axis_length: float = 0.05):
-    """Return (begins, ends, colors) warp arrays for EEF frame axes at each goal pose.
+# X/Y/Z axes are drawn red/green/blue.
+_AXIS_COLORS = [
+    wp.vec3(1.0, 0.0, 0.0),
+    wp.vec3(0.0, 1.0, 0.0),
+    wp.vec3(0.0, 0.0, 1.0),
+]
 
-    Draws X/Y/Z axes as red/green/blue line segments of length axis_length.
-    goal_poses: [N, 4, 4] SE3 matrices in world frame.
+
+def _pose_axis_lines(poses_pos_rot, axis_length: float):
+    """Build (begins, ends, colors) warp arrays for an RGB triad at each pose.
+
+    poses_pos_rot: iterable of (pos, R) pairs as plain Python lists, where pos is
+    a length-3 position and R is a 3x3 rotation (world frame).
     """
     begins_list, ends_list, colors_list = [], [], []
-    axis_colors = [
-        wp.vec3(1.0, 0.0, 0.0),
-        wp.vec3(0.0, 1.0, 0.0),
-        wp.vec3(0.0, 0.0, 1.0),
-    ]
-    #                          r                            g                            b
-    for i in range(goal_poses.shape[0]):
-        pos = goal_poses[i, :3, 3].cpu().tolist()
-        R = goal_poses[i, :3, :3].cpu().tolist()
+    for pos, R in poses_pos_rot:
         for j in range(3):
             tip = [pos[k] + R[k][j] * axis_length for k in range(3)]
             begins_list.append(wp.vec3(*pos))
             ends_list.append(wp.vec3(*tip))
-            colors_list.append(axis_colors[j])
+            colors_list.append(_AXIS_COLORS[j])
 
     return (
         wp.array(begins_list, dtype=wp.vec3),
         wp.array(ends_list, dtype=wp.vec3),
         wp.array(colors_list, dtype=wp.vec3),
     )
+
+
+def make_goal_pose_axes(goal_poses, axis_length: float = 0.05):
+    """Return (begins, ends, colors) warp arrays for EEF frame axes at each goal pose.
+
+    Draws X/Y/Z axes as red/green/blue line segments of length axis_length.
+    goal_poses: [N, 4, 4] SE3 matrices in world frame.
+    """
+    pairs = [
+        (goal_poses[i, :3, 3].cpu().tolist(), goal_poses[i, :3, :3].cpu().tolist())
+        for i in range(goal_poses.shape[0])
+    ]
+    return _pose_axis_lines(pairs, axis_length)
 
 
 def make_eef_pose_axes(morph, q_joints: torch.Tensor, axis_length: float = 0.05):
@@ -204,24 +216,7 @@ def make_eef_pose_axes(morph, q_joints: torch.Tensor, axis_length: float = 0.05)
 
     pos = eef_world[:3, 3].tolist()
     R = eef_world[:3, :3].tolist()
-
-    axis_colors = [
-        wp.vec3(1.0, 0.0, 0.0),
-        wp.vec3(0.0, 1.0, 0.0),
-        wp.vec3(0.0, 0.0, 1.0),
-    ]
-    begins_list, ends_list, colors_list = [], [], []
-    for j in range(3):
-        tip = [pos[k] + R[k][j] * axis_length for k in range(3)]
-        begins_list.append(wp.vec3(*pos))
-        ends_list.append(wp.vec3(*tip))
-        colors_list.append(axis_colors[j])
-
-    return (
-        wp.array(begins_list, dtype=wp.vec3),
-        wp.array(ends_list, dtype=wp.vec3),
-        wp.array(colors_list, dtype=wp.vec3),
-    )
+    return _pose_axis_lines([(pos, R)], axis_length)
 
 
 _GHOST_COLOR = (160, 60, 255)  # purple — best IK approximation
