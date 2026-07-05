@@ -1,5 +1,5 @@
 [project]
-name = "nrm-newton"
+name = "ram-newton"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
@@ -25,7 +25,22 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["interface", "validation", "optim", "task", "util"]
+py-modules = ["paths"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+    "core*",
+    "kinematics*",
+    "tasks*",
+    "methods*",
+    "planning*",
+    "validation*",
+    "visualization*",
+    "logutils*",
+    "pipeline*",
+    "postprocess*",
+]
 
 [tool.uv]
 # graphik pins trimesh<=3.7.12, but viser requires trimesh>=3.21.7. viser is a
