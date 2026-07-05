@@ -13,7 +13,7 @@ from typing import Any
 import torch
 from torch import Tensor
 
-from task.morphology_sampler import (
+from tasks.sampling.morphology_sampler import (
     LINK_RADIUS,
     _reject_link_type,
     _reject_link_twist,

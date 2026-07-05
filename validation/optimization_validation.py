@@ -2,8 +2,8 @@ import os
 
 import torch
 
-from interface import Morphology, Task
-from util.kinematics import (
+from core import Morphology, Task
+from kinematics.kinematics import (
     IK,
     FK,
     build_robot_dict,
