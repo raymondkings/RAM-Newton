@@ -35,6 +35,26 @@ class OptimizationCSVLogger:
         "best_se3_dist_per_pose_json",
     ]
 
+    # Cell-type classification derived from FIELDNAMES so csv_reader can parse
+    # each column without re-listing them (keeps writer and reader in sync):
+    # `iteration` is an int, `*_json` columns hold one JSON value each, and every
+    # other column is a single float scalar — matching how log_iteration writes.
+    INT_FIELDNAMES = ("iteration",)
+
+    @classmethod
+    def json_fieldnames(cls) -> list[str]:
+        """Columns stored as one JSON cell each (tensors / lists)."""
+        return [name for name in cls.FIELDNAMES if name.endswith("_json")]
+
+    @classmethod
+    def scalar_fieldnames(cls) -> list[str]:
+        """Columns stored as a single float scalar."""
+        return [
+            name
+            for name in cls.FIELDNAMES
+            if name not in cls.INT_FIELDNAMES and not name.endswith("_json")
+        ]
+
     def __init__(
         self,
         root_dir: str | Path,
