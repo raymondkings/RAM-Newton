@@ -13,8 +13,17 @@ from pipeline.common import (
     setup_device,
     warn_ignored_config_keys,
 )
+from tasks.environment import l_environment
+from tasks.sampling.pose_sampler import (
+    NUM_EXTRA_PATHS,
+    NUM_LINE_SAMPLES,
+    NUM_SAMPLES,
+    REPEAT_START_GOAL,
+    START_POSE,
+    create_start_goal_poses,
+    create_task_pose_sets,
+)
 
-DEFAULT_CONFIG = Path(__file__).parent / "config.json"
 IGNORED_CONFIG_KEYS = (
     "learning_rate_angle",
     "timelapse",
