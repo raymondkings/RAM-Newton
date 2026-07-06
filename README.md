@@ -1,6 +1,6 @@
-# NRM-Newton
+# RAM-Newton
 
-Gradient-based robot morphology optimization pipeline based on Neural Reachability Maps (NRM) and Newton physics simulation. An optimized 6-DOF arm morphology is found for a given task, then validated with collision-free motion planning via cuRobo.
+A gradient-based pipeline for robot morphology optimization. Given a target task, it leverages [Reachability Across Morphologies (RAM)](https://arxiv.org/abs/2606.09108) to optimize a 6-DOF arm morphology, which is subsequently validated through collision-free motion planning with [cuRobo](https://github.com/NVlabs/curobo) and visualized in the [Newton physics simulator](https://github.com/newton-physics/newton).
 
 Practical course project — TUM CPS, Summer 2026.
 
