@@ -1,20 +1,17 @@
 import json
-from pathlib import Path
-
-import torch
 
 from core import Task
-from logutils.timing import OptimizationTiming
 from methods.nrm_gradient.trajectory import (
     optimize_morphology_and_trajectory,
 )
 from paths import DEFAULT_CONFIG, PROJECT_ROOT
 from pipeline.common import (
     build_arg_parser,
-    report_optimization_timing,
+    build_trajectory_plan_task,
+    cached_optimization_result,
+    finalize_and_report,
     resolve_initial_morphology,
     run_plan,
-    run_postprocess,
     set_global_seed,
     setup_device,
     warn_ignored_config_keys,
@@ -93,10 +90,8 @@ def main() -> None:
     )
 
     if used_cache:
-        optimized_morph, csv_path, optimization_timing = (
-            morph,
-            cached_csv_path,
-            OptimizationTiming(0.0, 0.0),
+        optimized_morph, csv_path, optimization_timing = cached_optimization_result(
+            morph, cached_csv_path
         )
         optimized_trajectory = task.goal_poses
     else:
@@ -117,37 +112,18 @@ def main() -> None:
             )
         )
 
-    print(
-        f"[Info] Optimized morphology params:\n{optimized_morph.params} \nlink_radius={optimized_morph.link_radius}"
+    finalize_and_report(
+        optimized_morph,
+        csv_path,
+        optimization_timing,
+        args,
+        used_cache,
+        optimized_trajectory=optimized_trajectory,
     )
-    print(f"[Info] Optimized trajectory poses: {optimized_trajectory.shape[0]}")
-    print(f"[Info] Optimization CSV: {csv_path}")
-    report_optimization_timing(optimization_timing)
-
-    if used_cache or csv_logging:
-        run_postprocess(Path(csv_path), args)
-    else:
-        print("[Info] csv_logging disabled: skipping CSV-based postprocessing.")
-
-    if plan_goal_start:
-        plan_task = Task(
-            environment=task.environment,
-            goal_poses=torch.stack(
-                [optimized_trajectory[0], optimized_trajectory[-1]],
-                dim=0,
-            ),
-            start_q=task.start_q,
-        )
-    else:
-        plan_task = Task(
-            environment=task.environment,
-            goal_poses=optimized_trajectory,
-            start_q=task.start_q,
-        )
 
     run_plan(
         optimized_morph,
-        plan_task,
+        build_trajectory_plan_task(task, optimized_trajectory, plan_goal_start),
         ignore_ground=ignore_ground,
         ignore_obstacles=ignore_obstacles,
         debug=debug,

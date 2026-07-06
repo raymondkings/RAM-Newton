@@ -210,6 +210,91 @@ def run_plan(
     return True
 
 
+def cached_optimization_result(
+    morph: Morphology,
+    cached_csv_path: Path | None,
+) -> tuple[Morphology, Path | None, OptimizationTiming]:
+    """Pack a cache-hit morphology as an optimizer result with zero timing."""
+    return morph, cached_csv_path, OptimizationTiming(0.0, 0.0)
+
+
+def finalize_and_report(
+    optimized_morph: Morphology,
+    csv_path: Path,
+    optimization_timing: OptimizationTiming,
+    args: argparse.Namespace,
+    used_cache: bool,
+    optimized_trajectory: torch.Tensor | None = None,
+) -> None:
+    """Print the optimization summary and run CSV postprocessing if enabled."""
+    print(
+        f"[Info] Optimized morphology params:\n{optimized_morph.params} "
+        f"\nlink_radius={optimized_morph.link_radius}"
+    )
+    if optimized_trajectory is not None:
+        print(f"[Info] Optimized trajectory poses: {optimized_trajectory.shape[0]}")
+    print(f"[Info] Optimization CSV: {csv_path}")
+    report_optimization_timing(optimization_timing)
+
+    if used_cache or bool(getattr(args, "csv_logging", True)):
+        run_postprocess(Path(csv_path), args)
+    else:
+        print("[Info] csv_logging disabled: skipping CSV-based postprocessing.")
+
+
+def build_trajectory_plan_task(
+    task: Task,
+    trajectory: torch.Tensor,
+    plan_goal_start: bool,
+) -> Task:
+    """Build the planner task for a trajectory: all poses, or just its endpoints."""
+    if plan_goal_start:
+        goal_poses = torch.stack([trajectory[0], trajectory[-1]], dim=0)
+    else:
+        goal_poses = trajectory
+    return Task(
+        environment=task.environment,
+        goal_poses=goal_poses,
+        start_q=task.start_q,
+    )
+
+
+def run_candidate_plans(
+    planned_candidates: list[tuple[Morphology, Task, float | None]],
+    *,
+    num_plan_candidates: int,
+    ignore_ground: bool,
+    ignore_obstacles: bool,
+    debug: bool,
+    visualize: bool,
+) -> None:
+    """Plan each (morphology, task) candidate; only the first is visualized."""
+    successes = []
+    for idx, (candidate_morph, plan_task, ik_success_rate) in enumerate(
+        planned_candidates
+    ):
+        if len(planned_candidates) > 1:
+            print(
+                f"[Info] Planning candidate {idx + 1}/{len(planned_candidates)} "
+                f"(ik_success_pose_rate={ik_success_rate})"
+            )
+        success = run_plan(
+            candidate_morph,
+            plan_task,
+            ignore_ground=ignore_ground,
+            ignore_obstacles=ignore_obstacles,
+            debug=debug,
+            visualize=visualize and idx == 0,
+        )
+        successes.append(success)
+
+    if len(planned_candidates) > 1:
+        print(
+            f"[Info] success@{num_plan_candidates}: "
+            f"tried={len(planned_candidates)} any_success={any(successes)}"
+        )
+
+
 def run_postprocess(csv_path: Path, args: argparse.Namespace) -> None:
     """Run candidate-selection CSV plotting.
 
