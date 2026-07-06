@@ -1,11 +1,20 @@
 import json
 from pathlib import Path
 
-from core import Task
-from logutils.timing import OptimizationTiming
-from methods.candidate_selection.static import optimize_morphology
-from paths import DEFAULT_CONFIG, PROJECT_ROOT
-from pipeline.common import (
+from interface import Task
+from optim.nrm_alpha_random_selection import optimize_morphology
+from task.environment import l_environment
+from task.task_pose_sampler import (
+    NUM_EXTRA_PATHS,
+    NUM_LINE_SAMPLES,
+    NUM_SAMPLES,
+    REPEAT_START_GOAL,
+    START_POSE,
+    create_start_goal_poses,
+    create_task_pose_sets,
+)
+from util.optimization_timing import OptimizationTiming
+from util.pipeline_common import (
     build_arg_parser,
     report_optimization_timing,
     resolve_initial_morphology,
@@ -13,12 +22,13 @@ from pipeline.common import (
     run_postprocess,
     set_global_seed,
     setup_device,
+    warn_ignored_config_keys,
 )
-from tasks.environment import l_environment
-from tasks.sampling.pose_sampler import (
-    START_POSE,
-    create_start_goal_poses,
-    create_task_pose_sets,
+
+DEFAULT_CONFIG = Path(__file__).parent / "config.json"
+IGNORED_CONFIG_KEYS = (
+    "learning_rate_angle",
+    "timelapse",
 )
 
 
@@ -31,6 +41,7 @@ def parse_args():
 
 def main() -> None:
     args = parse_args()
+    warn_ignored_config_keys(args, IGNORED_CONFIG_KEYS, "candidate static")
     set_global_seed(args.seed)
     initial_morphology_dof = int(getattr(args, "dof", 6))
 
@@ -50,6 +61,10 @@ def main() -> None:
         seed=args.seed,
         start_pose=START_POSE,
         device=device,
+        num_samples=int(getattr(args, "num_samples", NUM_SAMPLES)),
+        num_line_samples=int(getattr(args, "num_line_samples", NUM_LINE_SAMPLES)),
+        num_extra_paths=int(getattr(args, "num_extra_paths", NUM_EXTRA_PATHS)),
+        repeat=int(getattr(args, "repeat_start_goal", REPEAT_START_GOAL)),
     )
 
     task = Task(
@@ -153,11 +168,15 @@ def main() -> None:
             visualize=args.visualize and idx == 0,
         )
         successes.append(success)
+        if success:
+            # success@k is satisfied by the first candidate that plans; the
+            # remaining candidates can't change the outcome, so stop here.
+            break
 
     if len(candidates) > 1:
         print(
             f"[Info] success@{num_plan_candidates}: "
-            f"tried={len(candidates)} any_success={any(successes)}"
+            f"tried={len(successes)}/{len(candidates)} any_success={any(successes)}"
         )
 
 

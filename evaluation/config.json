@@ -3,7 +3,7 @@
     "obstacles_off_ground_off": {"ignore_obstacles": true, "ignore_ground": true},
     "obstacles_on_ground_off": {"ignore_obstacles": false, "ignore_ground": true}
   },
-  "num_seeds": 1,
+  "num_seeds": 15,
   "algorithms": [
     {
       "optim_algo": "candidate_selection_static",
@@ -11,16 +11,15 @@
         [50, 0, 0, 0],
         [50, 25, 0, 0]
       ],
-      "num_plan_candidates": [1, 5],
-      "output_dir": "evaluation_results/candidate_selection_static"
+      "num_plan_candidates": [1, 10]
     },
     {
       "optim_algo": "candidate_selection_trajectory",
       "configs": [
-        [10]
+        [25],
+        [50]
       ],
-      "num_plan_candidates": [1, 5],
-      "output_dir": "evaluation_results/candidate_selection_trajectory"
+      "num_plan_candidates": [1, 10]
     }
   ]
 }

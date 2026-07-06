@@ -511,31 +511,49 @@ def _make_figure(results: list[dict], output_dir: Path) -> None:
         _plot_outcome_breakdown(ax, results)
         plt.tight_layout()
     else:
-        ncols = 3
+        # Lay the combos out on a roughly square grid (e.g. 4 combos -> 2x2).
+        ncols = math.ceil(math.sqrt(len(combos)))
         nrows = math.ceil(len(combos) / ncols)
+        fig_h = 4.5 * nrows + 1.2
         fig, axes_grid = plt.subplots(
-            nrows, ncols, figsize=(5.5 * ncols, 4.5 * nrows + 1.2), squeeze=False
+            nrows, ncols, figsize=(5.5 * ncols, fig_h), squeeze=False
         )
-        fig.suptitle(title, fontsize=14, fontweight="bold", y=1.0)
+        # Only show sampler params that actually vary (drop keys that are 0 in
+        # every combo, e.g. nep/rsg), so the titles/legend aren't cluttered
+        # with constant zeros.
+        display_keys = [
+            k
+            for i, k in enumerate(SAMPLER_KEYS)
+            if any(combo[i] != 0 for combo in combos)
+        ]
         abbrev_legend = "   |   ".join(
-            f"{abbr} = {key}" for key, abbr in SAMPLER_ABBREV.items()
+            f"{SAMPLER_ABBREV[k]} = {k}" for k in display_keys
         )
-        plt.tight_layout(rect=[0, 0, 1, 0.96], h_pad=6.0)
+
+        # Stack the two-line title and the abbreviation legend with fixed
+        # physical gaps (in inches) so they never overlap each other or the
+        # subplot titles, regardless of how many rows the grid has.
+        def _from_top(inches: float) -> float:
+            return 1.0 - inches / fig_h
+
+        fig.suptitle(title, fontsize=14, fontweight="bold", y=_from_top(0.15), va="top")
         fig.text(
             0.5,
-            0.965,
+            _from_top(0.75),
             abbrev_legend,
             ha="center",
-            va="bottom",
+            va="top",
             fontsize=9,
             style="italic",
         )
+        plt.tight_layout(rect=[0, 0, 1, _from_top(1.05)], h_pad=6.0)
         axes_flat = axes_grid.flatten()
         for ax, key in zip(axes_flat, combos, strict=False):
             combo_rows = by_combo[key]
             title = "   ".join(
                 f"{SAMPLER_ABBREV[k]}={v}"
                 for k, v in zip(SAMPLER_KEYS, key, strict=False)
+                if k in display_keys
             )
             _plot_outcome_breakdown(ax, combo_rows)
             ax.set_title(
