@@ -50,14 +50,16 @@ from logutils.csv_logger import (
     InternalOptimizationCSVLogger,
 )
 from logutils.timing import OptimizationTimer
-from methods.candidate_selection._common import (
+from methods._nrm_common import (
     _CHECKPOINT_PATH,
-    TOP_PROBABILITY_FRACTION,
     _build_morphology_tensors,
+    _se3_to_vector,
+)
+from methods.candidate_selection._common import (
+    TOP_PROBABILITY_FRACTION,
     _generate_initial_candidates,
     _parse_candidate_search_params,
     _postfilter_dof_group,
-    _se3_to_vector,
     _select_and_log_final_candidates,
     _setup_search_runtime,
 )

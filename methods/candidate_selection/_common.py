@@ -13,7 +13,6 @@
 
 from __future__ import annotations
 
-import json
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -30,8 +29,9 @@ from logutils.csv_logger import (
     OptimizationCSVLogger,
 )
 from logutils.timing import OptimizationTimer
+from methods._nrm_common import _load_model
 from methods.nrm_model import MLP
-from paths import PROJECT_ROOT, WEIGHTS_DIR
+from paths import PROJECT_ROOT
 from tasks.sampling.fixed_alpha_candidates import (
     DEFAULT_ZERO_ALPHA_RUN_EXCLUSION_LENGTH,
     generate_alpha_candidates,
@@ -44,10 +44,6 @@ from validation.optimization_validation import (
     run_optimization_validation,
 )
 
-EPS = 1e-4
-
-_CHECKPOINT_PATH = WEIGHTS_DIR / "checkpoint_5-7.pth"
-
 # ----------------------------- shared knobs ---------------------------------
 
 DEFAULT_CANDIDATE_DOFS = (5, 6, 7)
@@ -59,36 +55,6 @@ ZERO_ALPHA_RUN_EXCLUSION_LENGTH = DEFAULT_ZERO_ALPHA_RUN_EXCLUSION_LENGTH
 # After post-optimization distribution filtering, only validate the top fraction
 # by final NRM probability.
 TOP_PROBABILITY_FRACTION = 0.025
-
-
-# ------------------------------- model helpers ------------------------------
-
-
-def _se3_to_vector(pose: Tensor) -> Tensor:
-    """Convert SE(3) pose matrices [..., 4, 4] to 9D NRM pose vectors."""
-    rot_6d = pose[..., :3, :2].transpose(-1, -2).reshape(*pose.shape[:-2], 6)
-    return torch.cat([pose[..., :3, 3], rot_6d], dim=-1)
-
-
-def _load_model(device: torch.device) -> MLP:
-    metadata = json.loads((WEIGHTS_DIR / "metadata.json").read_text())
-    model = MLP(**metadata["hyperparameter"])
-    model.load_state_dict(
-        torch.load(
-            _CHECKPOINT_PATH,
-            map_location=device,
-            weights_only=True,
-        )
-    )
-    model = model.to(device)
-
-    # cuDNN LSTM backward may require train mode.
-    # The weights are frozen, but gradients still flow to optimized inputs.
-    model.train()
-    for p in model.parameters():
-        p.requires_grad_(False)
-
-    return model
 
 
 # ------------------------------- candidates ---------------------------------
@@ -189,60 +155,6 @@ def _sample_initial_candidate_morphologies_by_dof(
         batch_size=batch_size,
         logging=logging,
     )
-
-
-# --------------------------- morphology preprocessing -------------------------
-
-
-class SquasherSTE(torch.autograd.Function):
-    @staticmethod
-    def forward(_ctx, param: Tensor, threshold: float) -> Tensor:
-        mask = (param.abs() >= threshold).float()
-        return param * mask
-
-    @staticmethod
-    def backward(_ctx, grad_output: Tensor):
-        return grad_output, None
-
-
-class BatchedNormaliser(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, param: Tensor) -> Tensor:
-        l2_norm = torch.hypot(param[..., 0:1], param[..., 1:2])
-        norm = l2_norm.sum(dim=-2, keepdim=True)
-        ctx.save_for_backward(param, l2_norm, norm)
-        return param / norm
-
-    @staticmethod
-    def backward(ctx, grad_output: Tensor) -> Tensor:
-        param, l2_norm, norm = ctx.saved_tensors
-        chain = torch.where(
-            (param.abs() > EPS).any(dim=-1, keepdim=True),
-            param / l2_norm,
-            torch.zeros_like(param),
-        )
-        dot = (grad_output * param).sum(dim=(-2, -1), keepdim=True)
-        return (grad_output * norm - chain * dot) / norm.pow(2)
-
-
-def _preprocess_lengths(lengths: Tensor, link_radius: float) -> tuple[Tensor, Tensor]:
-    """Apply normalize -> squash -> normalize to [a, d] lengths."""
-    threshold = 2.0 * link_radius
-    norm_lengths = BatchedNormaliser.apply(lengths)
-    squashed = SquasherSTE.apply(norm_lengths, threshold)
-    return BatchedNormaliser.apply(squashed), norm_lengths
-
-
-def _build_morphology_tensors(
-    alpha_candidates: Tensor,
-    length_candidates: Tensor,
-    link_radius: float,
-) -> tuple[Tensor, Tensor]:
-    """Build raw and processed morphology tensors for batched candidates."""
-    processed_lengths, _ = _preprocess_lengths(length_candidates, link_radius)
-    raw_morphologies = torch.cat([alpha_candidates, length_candidates], dim=-1)
-    processed_morphologies = torch.cat([alpha_candidates, processed_lengths], dim=-1)
-    return raw_morphologies, processed_morphologies
 
 
 def _last_d_nonnegative_mask(processed_morphologies: Tensor) -> Tensor:

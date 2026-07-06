@@ -34,20 +34,23 @@ from logutils.csv_logger import (
     InternalOptimizationCSVLogger,
 )
 from logutils.timing import OptimizationTimer
-from methods.candidate_selection._common import (
+from methods._nrm_common import (
     _CHECKPOINT_PATH,
-    TOP_PROBABILITY_FRACTION,
+    EPS,
     _build_morphology_tensors,
+    _rotation_angle_between,
+    _se3_to_vector,
+    _vector_to_se3,
+)
+from methods.candidate_selection._common import (
+    TOP_PROBABILITY_FRACTION,
     _generate_initial_candidates,
     _parse_candidate_search_params,
     _postfilter_dof_group,
-    _se3_to_vector,
     _select_and_log_final_candidates,
     _setup_search_runtime,
 )
 from methods.nrm_model import MLP
-
-EPS = 1e-4
 
 num_steps = 20
 num_iteratives = 50
@@ -128,45 +131,6 @@ ALL_CANDIDATES_LOG_FIELDNAMES = [
 
 
 # ------------------------------- SE(3) helpers ------------------------------
-
-
-def _rotation_6d_to_matrix(rot_6d: Tensor) -> Tensor:
-    a1 = rot_6d[..., 0:3]
-    a2 = rot_6d[..., 3:6]
-
-    b1 = F.normalize(a1, dim=-1, eps=EPS)
-    a2_orthogonal = a2 - (b1 * a2).sum(dim=-1, keepdim=True) * b1
-    b2 = F.normalize(a2_orthogonal, dim=-1, eps=EPS)
-    b3 = torch.cross(b1, b2, dim=-1)
-    return torch.stack([b1, b2, b3], dim=-1)
-
-
-def _rotation_angle_between(rot_a: Tensor, rot_b: Tensor) -> Tensor:
-    rel = rot_a.transpose(-1, -2) @ rot_b
-    trace = rel[..., 0, 0] + rel[..., 1, 1] + rel[..., 2, 2]
-    cos_angle = 0.5 * (trace - 1.0)
-    skew = torch.stack(
-        [
-            rel[..., 2, 1] - rel[..., 1, 2],
-            rel[..., 0, 2] - rel[..., 2, 0],
-            rel[..., 1, 0] - rel[..., 0, 1],
-        ],
-        dim=-1,
-    )
-    sin_angle = 0.5 * torch.linalg.vector_norm(skew, dim=-1)
-    return torch.atan2(sin_angle, cos_angle)
-
-
-def _vector_to_se3(vector: Tensor) -> Tensor:
-    poses = torch.eye(4, dtype=vector.dtype, device=vector.device).expand(
-        *vector.shape[:-1],
-        4,
-        4,
-    )
-    poses = poses.clone()
-    poses[..., :3, :3] = _rotation_6d_to_matrix(vector[..., 3:9])
-    poses[..., :3, 3] = vector[..., 0:3]
-    return poses
 
 
 def _trajectory_from_intermediate(
