@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "NRM-Newton"
+abstract: >-
+  A gradient-based pipeline for robot morphology optimization. Given a target
+  task, it leverages Reachability Across Morphologies (RAM) to optimize a 6-DOF
+  arm morphology, which is subsequently validated through collision-free motion
+  planning with cuRobo and visualized in the Newton physics simulator.
+type: software
+authors:
+  - given-names: Julian
+    family-names: Arkenau
+  - given-names: Shiyuan
+    family-names: Zhang
+  - given-names: Jiyao
+    family-names: Zhang
+  - given-names: Raymond King
+    family-names: Setia
+repository-code: "https://github.com/raymondkings/nrm-newton"
+license: MIT
+version: 0.1.0
