@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
-title: "NRM-Newton"
+title: "RAM-Newton"
 abstract: >-
   A gradient-based pipeline for robot morphology optimization. Given a target
   task, it leverages Reachability Across Morphologies (RAM) to optimize a 6-DOF
@@ -16,6 +16,6 @@ authors:
     family-names: Zhang
   - given-names: Raymond King
     family-names: Setia
-repository-code: "https://github.com/raymondkings/nrm-newton"
+repository-code: "https://github.com/raymondkings/ram-newton"
 license: MIT
 version: 0.1.0
