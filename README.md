@@ -10,11 +10,16 @@ Practical course project at TUM CPS, Summer 2026.
 
 ## Table of Contents
 
+- [Demo](#demo)
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Repository Layout](#repository-layout)
 - [Usage](#usage)
 - [Evaluation](#evaluation)
+
+## Demo
+
+![RAM-Newton pipeline: morphology optimization, motion planning, and simulation](docs/media/project_summary.gif)
 
 ## Requirements
 

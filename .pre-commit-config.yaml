@@ -11,7 +11,7 @@ repos:
       - id: check-json
       - id: check-added-large-files
         args: [--maxkb=1024]
-        exclude: ^data/weights/
+        exclude: ^(data/weights/|docs/media/)
       - id: check-merge-conflict
       - id: check-case-conflict
       - id: debug-statements
