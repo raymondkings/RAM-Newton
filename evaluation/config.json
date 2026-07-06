@@ -8,11 +8,10 @@
     {
       "optim_algo": "candidate_selection_static",
       "configs": [
-        [50, 0, 0, 0],   
+        [50, 0, 0, 0],
         [50, 25, 0, 0]
       ],
-      "num_plan_candidates": [1, 10],
-      "output_dir": "benchmark_results/candidate_selection_static"
+      "num_plan_candidates": [1, 10]
     },
     {
       "optim_algo": "candidate_selection_trajectory",
@@ -20,8 +19,7 @@
         [25],
         [50]
       ],
-      "num_plan_candidates": [1, 10],
-      "output_dir": "benchmark_results/candidate_selection_trajectory"
+      "num_plan_candidates": [1, 10]
     }
   ]
 }
