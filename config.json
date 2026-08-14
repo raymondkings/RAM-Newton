@@ -1,8 +1,9 @@
 {
     "seed": 0,
     "dof": 7,
-    "visualize": true,
+    "visualize": false,
     "debug": true,
+    "csv_logging": true,
     "num_iterations": 500,
     "eval_interval": 500,
     "number_random_seed": 32,
