@@ -33,6 +33,8 @@ from methods._nrm_common import _load_model
 from methods.nrm_model import MLP
 from paths import PROJECT_ROOT
 from tasks.sampling.fixed_alpha_candidates import (
+    DEFAULT_DIRECT_PRESAMPLING_BATCH_SIZE,
+    DEFAULT_DYNAMIC_REJECTION_BATCH_SIZE,
     DEFAULT_ZERO_ALPHA_RUN_EXCLUSION_LENGTH,
     generate_alpha_candidates,
     sample_fixed_alpha_morphology_candidates,
@@ -128,6 +130,8 @@ def _sample_initial_candidate_morphologies_by_dof(
     seed: int,
     link_radius: float,
     batch_size: int,
+    direct_presampling_batch_size: int,
+    dynamic_rejection_batch_size: int,
     logging: bool,
 ) -> dict[int, Tensor]:
     """Sample fixed-alpha initial morphologies while preserving cache schemas.
@@ -144,6 +148,8 @@ def _sample_initial_candidate_morphologies_by_dof(
                 seed=seed,
                 link_radius=link_radius,
                 batch_size=batch_size,
+                direct_presampling_batch_size=direct_presampling_batch_size,
+                dynamic_rejection_batch_size=dynamic_rejection_batch_size,
                 logging=logging,
             )
         }
@@ -153,6 +159,8 @@ def _sample_initial_candidate_morphologies_by_dof(
         seed=seed,
         link_radius=link_radius,
         batch_size=batch_size,
+        direct_presampling_batch_size=direct_presampling_batch_size,
+        dynamic_rejection_batch_size=dynamic_rejection_batch_size,
         logging=logging,
     )
 
@@ -393,6 +401,8 @@ class CandidateSearchParams:
     num_alpha_candidates: int | str | None
     candidate_batch_size: int
     distribution_batch_size: int
+    direct_presampling_batch_size: int
+    dynamic_rejection_batch_size: int
 
 
 def _parse_candidate_search_params(
@@ -413,10 +423,25 @@ def _parse_candidate_search_params(
         )
     )
 
+    direct_presampling_batch_size = int(
+        optimization_parameters.get(
+            "direct_presampling_batch_size", DEFAULT_DIRECT_PRESAMPLING_BATCH_SIZE
+        )
+    )
+    dynamic_rejection_batch_size = int(
+        optimization_parameters.get(
+            "dynamic_rejection_batch_size", DEFAULT_DYNAMIC_REJECTION_BATCH_SIZE
+        )
+    )
+
     if candidate_batch_size <= 0:
         raise ValueError("candidate_batch_size must be positive.")
     if distribution_batch_size <= 0:
         raise ValueError("distribution_batch_size must be positive.")
+    if direct_presampling_batch_size <= 0:
+        raise ValueError("direct_presampling_batch_size must be positive.")
+    if dynamic_rejection_batch_size <= 0:
+        raise ValueError("dynamic_rejection_batch_size must be positive.")
 
     return CandidateSearchParams(
         num_plan_candidates=max(
@@ -438,6 +463,8 @@ def _parse_candidate_search_params(
         ),
         candidate_batch_size=candidate_batch_size,
         distribution_batch_size=distribution_batch_size,
+        direct_presampling_batch_size=direct_presampling_batch_size,
+        dynamic_rejection_batch_size=dynamic_rejection_batch_size,
     )
 
 
@@ -495,6 +522,8 @@ def _generate_initial_candidates(
             seed=params.random_seed,
             link_radius=link_radius,
             batch_size=params.distribution_batch_size,
+            direct_presampling_batch_size=params.direct_presampling_batch_size,
+            dynamic_rejection_batch_size=params.dynamic_rejection_batch_size,
             logging=params.logging,
         )
     )
