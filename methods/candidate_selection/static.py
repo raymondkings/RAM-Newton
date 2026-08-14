@@ -376,6 +376,11 @@ def _optimize_one_dof_group(
             f"{n_stopped}/{alpha_candidates.shape[0]} candidates stopped before max iteration."
         )
 
+    # Release optimizer state and gradient buffers before the distribution check,
+    # which needs a fresh 500+ MiB allocation for FK across all candidates.
+    del stop_iterations
+    torch.cuda.empty_cache()
+
     _, processed_morphologies = _build_morphology_tensors(
         alpha_candidates,
         length_candidates,
