@@ -158,34 +158,46 @@ def add_curobo_scene_to_viser(server, scene) -> None:
         )
 
 
-# Jiyao: new function to visualize direction, blue shows Z-direction
-def make_goal_pose_axes(goal_poses, axis_length: float = 0.05):
-    """Return (begins, ends, colors) warp arrays for EEF frame axes at each goal pose.
+# X/Y/Z axes are drawn red/green/blue.
+_AXIS_COLORS = [
+    wp.vec3(1.0, 0.0, 0.0),
+    wp.vec3(0.0, 1.0, 0.0),
+    wp.vec3(0.0, 0.0, 1.0),
+]
 
-    Draws X/Y/Z axes as red/green/blue line segments of length axis_length.
-    goal_poses: [N, 4, 4] SE3 matrices in world frame.
+
+def _pose_axis_lines(poses_pos_rot, axis_length: float):
+    """Build (begins, ends, colors) warp arrays for an RGB triad at each pose.
+
+    poses_pos_rot: iterable of (pos, R) pairs as plain Python lists, where pos is
+    a length-3 position and R is a 3x3 rotation (world frame).
     """
     begins_list, ends_list, colors_list = [], [], []
-    axis_colors = [
-        wp.vec3(1.0, 0.0, 0.0),
-        wp.vec3(0.0, 1.0, 0.0),
-        wp.vec3(0.0, 0.0, 1.0),
-    ]
-    #                          r                            g                            b
-    for i in range(goal_poses.shape[0]):
-        pos = goal_poses[i, :3, 3].cpu().tolist()
-        R = goal_poses[i, :3, :3].cpu().tolist()
+    for pos, R in poses_pos_rot:
         for j in range(3):
             tip = [pos[k] + R[k][j] * axis_length for k in range(3)]
             begins_list.append(wp.vec3(*pos))
             ends_list.append(wp.vec3(*tip))
-            colors_list.append(axis_colors[j])
+            colors_list.append(_AXIS_COLORS[j])
 
     return (
         wp.array(begins_list, dtype=wp.vec3),
         wp.array(ends_list, dtype=wp.vec3),
         wp.array(colors_list, dtype=wp.vec3),
     )
+
+
+def make_goal_pose_axes(goal_poses, axis_length: float = 0.05):
+    """Return (begins, ends, colors) warp arrays for EEF frame axes at each goal pose.
+
+    Draws X/Y/Z axes as red/green/blue line segments of length axis_length.
+    goal_poses: [N, 4, 4] SE3 matrices in world frame.
+    """
+    pairs = [
+        (goal_poses[i, :3, 3].cpu().tolist(), goal_poses[i, :3, :3].cpu().tolist())
+        for i in range(goal_poses.shape[0])
+    ]
+    return _pose_axis_lines(pairs, axis_length)
 
 
 def make_eef_pose_axes(morph, q_joints: torch.Tensor, axis_length: float = 0.05):
@@ -204,24 +216,7 @@ def make_eef_pose_axes(morph, q_joints: torch.Tensor, axis_length: float = 0.05)
 
     pos = eef_world[:3, 3].tolist()
     R = eef_world[:3, :3].tolist()
-
-    axis_colors = [
-        wp.vec3(1.0, 0.0, 0.0),
-        wp.vec3(0.0, 1.0, 0.0),
-        wp.vec3(0.0, 0.0, 1.0),
-    ]
-    begins_list, ends_list, colors_list = [], [], []
-    for j in range(3):
-        tip = [pos[k] + R[k][j] * axis_length for k in range(3)]
-        begins_list.append(wp.vec3(*pos))
-        ends_list.append(wp.vec3(*tip))
-        colors_list.append(axis_colors[j])
-
-    return (
-        wp.array(begins_list, dtype=wp.vec3),
-        wp.array(ends_list, dtype=wp.vec3),
-        wp.array(colors_list, dtype=wp.vec3),
-    )
+    return _pose_axis_lines([(pos, R)], axis_length)
 
 
 _GHOST_COLOR = (160, 60, 255)  # purple — best IK approximation
@@ -233,10 +228,9 @@ _GOAL_COLOR_UNREACHED = (210, 40, 40)  # 🔴 red — never attempted
 _GOAL_COLOR_DEFAULT = (190, 190, 190)  # ⚪ light grey — unknown status
 _GOAL_FRAME_AXIS_LENGTH = 0.08
 _EEF_FRAME_AXIS_LENGTH = 0.08
-_POSE_FRAME_LINE_WIDTH = 0.035
 
 
-def _goal_color(i: int, failed_at_goal: int | None, n_goals: int) -> tuple:
+def _goal_color(i: int, failed_at_goal: int | None) -> tuple:
     if failed_at_goal is None:
         return _GOAL_COLOR_SUCCESS
     if i < failed_at_goal:
@@ -282,29 +276,9 @@ def _add_ghost_toggle(server, ghost_handles: list):
     return toggle
 
 
-def build_scene_builder(morph: Morphology, task: Task, q=None) -> newton.ModelBuilder:
-    """Construct a ModelBuilder for the robot and static scene markers."""
+def build_scene_builder(morph: Morphology, q=None) -> newton.ModelBuilder:
+    """Construct a ModelBuilder for the robot."""
     builder = newton.ModelBuilder()
-
-    region = task.reachable_region
-    if region is not None:
-        builder.add_shape_box(
-            body=-1,
-            xform=wp.transform(
-                p=wp.vec3(
-                    (region.x_min + region.x_max) / 2,
-                    (region.y_min + region.y_max) / 2,
-                    (region.z_min + region.z_max) / 2,
-                ),
-                q=wp.quat_identity(),
-            ),
-            hx=(region.x_max - region.x_min) / 2,
-            hy=(region.y_max - region.y_min) / 2,
-            hz=(region.z_max - region.z_min) / 2,
-            as_site=True,
-            color=wp.vec3(0.0, 0.8, 0.2),
-            label="reachable_region",
-        )
 
     poses = compute_link_world_poses(morph, q=q)
     poses = poses.cpu()
@@ -320,7 +294,7 @@ def add_goals_to_viser(server, task, failed_at_goal) -> None:
         color = (
             _GOAL_COLOR_DEFAULT
             if failed_at_goal == "unknown"
-            else _goal_color(i, failed_at_goal, n_goals)
+            else _goal_color(i, failed_at_goal)
         )
         server.scene.add_icosphere(
             f"/goals/sphere_{i}",
@@ -472,7 +446,7 @@ def render_scene(
     start_q=None,
 ) -> None:
     """Render morphology + task environment in the Newton viewer (static)."""
-    builder = build_scene_builder(morph, task, q=q)
+    builder = build_scene_builder(morph, q=q)
     model = builder.finalize()
     state = model.state()
 
@@ -606,7 +580,6 @@ def animate_plan(
     fps: int = 30,
     hold_seconds: float = 2.0,
     loop: bool = True,
-    sim_substeps: int = 4,
     startup_delay: float = 5.0,
     max_joint_speed: float = math.pi / 4,
     curobo_planner=None,
@@ -615,15 +588,10 @@ def animate_plan(
 ) -> None:
     """Execute a planned joint-space trajectory in Newton physics and stream it to the viewer.
 
-    Each animation frame sets the next position target and advances the Newton
-    simulation by `sim_substeps` steps using PD position control, so contact
-    forces with obstacles are fully resolved.
-
     Args:
         path: list of joint-config tensors (n_joints,), expected to already be
             dense (e.g. cuRobo's interpolated plan) for smooth target tracking.
         fps: rendered frames per second — lower values mean slower playback.
-        sim_substeps: physics substeps per rendered frame.
         startup_delay: seconds to hold the initial pose before playback starts,
             giving time to open the browser tab.
         max_joint_speed: joint-space playback speed in rad/s. The cuRobo path
@@ -633,7 +601,7 @@ def animate_plan(
     """
     n_joints = morph.n_links - 1
 
-    builder = build_scene_builder(morph, task)
+    builder = build_scene_builder(morph)
     model = builder.finalize()
     state = model.state()
 

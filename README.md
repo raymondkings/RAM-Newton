@@ -71,7 +71,6 @@ core/                   # data model: Morphology, Task, Environment, results
 kinematics/             # forward kinematics, MDH parameters, self-collision
 tasks/                  # task setup
 ├── environment.py      #   the L-shaped room
-├── targets/            #   hand-authored target poses
 └── sampling/           #   morphology + task-pose samplers, candidate cache
 methods/                # optimization approaches (see below)
 ├── nrm_model.py        #   shared NRM surrogate network (MLP)
@@ -84,7 +83,7 @@ validation/             # reachability/collision validation of a morphology
 visualization/          # live viser 3-D rendering, ground plane, d_crit view
 logutils/               # optimization CSV logging/reading, timing
 pipeline/               # shared entry-point plumbing (common.py)
-postprocess/            # figures + timelapse videos from logged CSVs
+postprocess/            # figures from logged CSVs
 
 scripts/                # the three pipeline entry points
 evaluation/             # seed-sweep harness + its config.json

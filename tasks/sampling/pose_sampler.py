@@ -10,31 +10,20 @@ import torch
 NUM_SAMPLES = 50
 NUM_LINE_SAMPLES = 50
 NUM_EXTRA_PATHS = 4
-ALPHA_RANGE_DEGREES = (0.0, 180.0)
 BETA_RANGE_DEGREES = (-30.0, 30.0)
 LINE_P_RANGE = (0.0, 1.0)
 REPEAT_START_GOAL = 80
 
 from paths import INITIAL_CANDIDATES_DIR as CACHE_DIR
 
-# Interprets the handwritten START_POSE as the alpha=0 orientation with the
-# missing +x tool-axis entry restored in the first row.
-START_POSE = torch.tensor(
-    [
-        [0.0, 0.0, 1.0, 0.20],
-        [0.0, -1.0, 0.0, 0.0],
-        [1.0, 0.0, 0.0, 0.1],
-        [0.0, 0.0, 0.0, 1.0],
-    ],
-    dtype=torch.float32,
+# ALPHA_RANGE_DEGREES, START_POSE, _default_device, and _pose_from_alpha are the
+# shared arch geometry, re-exported here for callers of this module.
+from tasks.sampling._pose_common import (
+    ALPHA_RANGE_DEGREES,
+    START_POSE,
+    _default_device,
+    _pose_from_alpha,
 )
-
-
-def _default_device() -> torch.device:
-    try:
-        return torch.get_default_device()
-    except AttributeError:
-        return torch.empty(()).device
 
 
 def _jsonable_float_list(tensor: torch.Tensor) -> list:
@@ -65,40 +54,6 @@ def _as_pose_tensor(pose: torch.Tensor, *, dtype: torch.dtype) -> torch.Tensor:
     if pose.shape != (4, 4):
         raise ValueError(f"start_pose must have shape (4, 4), got {tuple(pose.shape)}.")
     return pose
-
-
-def _pose_from_alpha(alpha: torch.Tensor, *, dtype: torch.dtype) -> torch.Tensor:
-    """Create base poses from alpha values in radians.
-
-    The rotation block follows the user's derivation:
-        [[sin(a),  0, cos(a)],
-         [0,      -1, 0     ],
-         [cos(a),  0, -sin(a)]]
-
-    Translation follows the corrected formula:
-        x = 0.45 - 0.25*cos(alpha)
-        z = 0.1 + 0.25*sin(alpha)
-    """
-    alpha = alpha.to(dtype=dtype)
-    s = torch.sin(alpha)
-    c = torch.cos(alpha)
-    n = alpha.numel()
-
-    poses = torch.eye(4, dtype=dtype, device=alpha.device).repeat(n, 1, 1)
-    poses[:, 0, 0] = s
-    poses[:, 0, 1] = 0.0
-    poses[:, 0, 2] = c
-    poses[:, 1, 0] = 0.0
-    poses[:, 1, 1] = -1.0
-    poses[:, 1, 2] = 0.0
-    poses[:, 2, 0] = c
-    poses[:, 2, 1] = 0.0
-    poses[:, 2, 2] = -s
-
-    poses[:, 0, 3] = 0.45 - 0.25 * c
-    poses[:, 1, 3] = 0.0
-    poses[:, 2, 3] = 0.1 + 0.25 * s
-    return poses
 
 
 def _line_pose_from_p(p: torch.Tensor, *, dtype: torch.dtype) -> torch.Tensor:
@@ -533,21 +488,6 @@ def task_sampler(
     if return_planner_goal_poses:
         return goal_poses, planner_goal_poses
     return goal_poses
-
-
-def create_task(
-    seed: int | None = None,
-    *,
-    start_pose: torch.Tensor | None = None,
-    device: torch.device | str | None = None,
-    dtype: torch.dtype = torch.float32,
-) -> torch.Tensor:
-    return task_sampler(
-        seed=seed,
-        start_pose=start_pose,
-        device=device,
-        dtype=dtype,
-    )
 
 
 def create_task_pose_sets(

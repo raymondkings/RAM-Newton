@@ -7,6 +7,7 @@ from typing import Any
 import torch
 
 from core import Morphology
+from logutils.csv_logger import OptimizationCSVLogger
 
 
 def _raise_csv_field_size_limit() -> None:
@@ -45,7 +46,7 @@ def _parse_float_cell(value: str) -> float | None:
 def read_optimization_csv(csv_path: str | Path) -> list[dict]:
     """Read optimization CSV rows into Python dictionaries.
 
-    This helper keeps all JSON arrays as Python lists. Plot/timelapse utilities
+    This helper keeps all JSON arrays as Python lists. Plotting utilities
     can convert them to torch.Tensor when needed.
     """
     csv_path = Path(csv_path)
@@ -56,36 +57,17 @@ def read_optimization_csv(csv_path: str | Path) -> list[dict]:
         for row in reader:
             parsed = dict(row)
 
+            # Parse each cell by the type OptimizationCSVLogger declares for it,
+            # so the reader stays in sync with the writer's columns automatically.
             parsed["iteration"] = int(row["iteration"])
-            parsed["loss"] = _parse_float_cell(row.get("loss", ""))
-            parsed["reachability_probability"] = _parse_float_cell(
-                row.get("reachability_probability", "")
-            )
-            parsed["ik_success_pose_rate"] = _parse_float_cell(
-                row.get("ik_success_pose_rate", "")
-            )
 
-            for key in [
-                "raw_morphology_json",
-                "processed_morphology_json",
-                "sampled_pose_indices_json",
-                "sampled_goal_poses_json",
-                "best_joints_json",
-                "fk_reached_poses_best_json",
-                "best_pos_err_per_pose_json",
-                "best_rot_err_per_pose_json",
-                "best_se3_dist_per_pose_json",
-            ]:
-                if key in parsed:
-                    parsed[key] = _parse_json_cell(row.get(key, ""))
-
-            for key in [
-                "best_pos_err_mean",
-                "best_rot_err_mean",
-                "best_se3_dist_mean",
-            ]:
+            for key in OptimizationCSVLogger.scalar_fieldnames():
                 if key in parsed:
                     parsed[key] = _parse_float_cell(row.get(key, ""))
+
+            for key in OptimizationCSVLogger.json_fieldnames():
+                if key in parsed:
+                    parsed[key] = _parse_json_cell(row.get(key, ""))
 
             rows.append(parsed)
 

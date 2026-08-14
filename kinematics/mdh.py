@@ -196,22 +196,3 @@ def add_robot_to_builder(
         builder.add_articulation(joints, label=label)
 
     return links, joints
-
-
-def build_mdh_newton_model(
-    morph: Morphology,
-    pose: torch.Tensor,
-    add_ground_plane: bool = True,
-    label: str = "robot",
-):
-    """Convenience wrapper: builds a model with just the robot (no environment)."""
-    builder = newton.ModelBuilder()
-    builder.validate_inertia_detailed = True
-    if add_ground_plane:
-        add_ground_collision(builder)
-
-    add_robot_to_builder(builder, morph, pose, label=label)
-
-    model = builder.finalize()
-    state = model.state()
-    return model, state

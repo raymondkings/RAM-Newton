@@ -4,54 +4,13 @@ import math
 
 import torch
 
-NUM_POSES = 10
-ALPHA_RANGE_DEGREES = (0.0, 180.0)
-
-# Interprets the handwritten START_POSE as the alpha=0 orientation with the
-# missing +x tool-axis entry restored in the first row.
-START_POSE = torch.tensor(
-    [
-        [0.0, 0.0, 1.0, 0.20],
-        [0.0, -1.0, 0.0, 0.0],
-        [1.0, 0.0, 0.0, 0.1],
-        [0.0, 0.0, 0.0, 1.0],
-    ],
-    dtype=torch.float32,
+from tasks.sampling._pose_common import (
+    ALPHA_RANGE_DEGREES,
+    _default_device,
+    _pose_from_alpha,
 )
 
-
-def _default_device() -> torch.device:
-    try:
-        return torch.get_default_device()
-    except AttributeError:
-        return torch.empty(()).device
-
-
-def _pose_from_alpha(alpha: torch.Tensor, *, dtype: torch.dtype) -> torch.Tensor:
-    """Create poses on the y=0 half-circle arch."""
-    alpha = alpha.to(dtype=dtype)
-    s = torch.sin(alpha)
-    c = torch.cos(alpha)
-
-    poses = torch.eye(4, dtype=dtype, device=alpha.device).repeat(
-        alpha.numel(),
-        1,
-        1,
-    )
-    poses[:, 0, 0] = s
-    poses[:, 0, 1] = 0.0
-    poses[:, 0, 2] = c
-    poses[:, 1, 0] = 0.0
-    poses[:, 1, 1] = -1.0
-    poses[:, 1, 2] = 0.0
-    poses[:, 2, 0] = c
-    poses[:, 2, 1] = 0.0
-    poses[:, 2, 2] = -s
-
-    poses[:, 0, 3] = 0.45 - 0.25 * c
-    poses[:, 1, 3] = 0.0
-    poses[:, 2, 3] = 0.1 + 0.25 * s
-    return poses
+NUM_POSES = 10
 
 
 def task_sampler(
@@ -89,18 +48,6 @@ def create_task(
 ) -> torch.Tensor:
     return task_sampler(
         num_poses=num_poses,
-        device=device,
-        dtype=dtype,
-    )
-
-
-def create_start_goal_poses(
-    *,
-    device: torch.device | str | None = None,
-    dtype: torch.dtype = torch.float32,
-) -> torch.Tensor:
-    return task_sampler(
-        num_poses=2,
         device=device,
         dtype=dtype,
     )

@@ -11,7 +11,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import torch
@@ -22,10 +21,16 @@ from tqdm import tqdm
 from core import Morphology, Task
 from logutils.csv_logger import OptimizationCSVLogger
 from logutils.timing import OptimizationTimer
+from methods._nrm_common import (
+    EPS,
+    _build_morphology_tensors,
+    _load_model,
+    _rotation_angle_between,
+    _se3_to_vector,
+    _vector_to_se3,
+)
 from methods.nrm_model import MLP
 from validation.optimization_validation import run_optimization_validation
-
-EPS = 1e-4
 
 num_steps = 20
 num_iteratives = 50
@@ -47,110 +52,6 @@ WALL_REPULSION_WEIGHT = 0.005
 WALL_REPULSION_DISTANCE = 0.0005
 
 from paths import PROJECT_ROOT as _PROJECT_ROOT
-from paths import WEIGHTS_DIR as _WEIGHTS_DIR
-
-
-def _se3_to_vector(pose: Tensor) -> Tensor:
-    """Convert SE(3) matrices [..., 4, 4] to 9D NRM pose vectors."""
-    rot_6d = pose[..., :3, :2].transpose(-1, -2).reshape(*pose.shape[:-2], 6)
-    return torch.cat([pose[..., :3, 3], rot_6d], dim=-1)
-
-
-def _rotation_6d_to_matrix(rot_6d: Tensor) -> Tensor:
-    a1 = rot_6d[..., 0:3]
-    a2 = rot_6d[..., 3:6]
-
-    b1 = F.normalize(a1, dim=-1, eps=EPS)
-    a2_orthogonal = a2 - (b1 * a2).sum(dim=-1, keepdim=True) * b1
-    b2 = F.normalize(a2_orthogonal, dim=-1, eps=EPS)
-    b3 = torch.cross(b1, b2, dim=-1)
-    return torch.stack([b1, b2, b3], dim=-1)
-
-
-def _vector_to_se3(vector: Tensor) -> Tensor:
-    """Convert 9D pose vectors [position, rotation_6d] to SE(3) matrices."""
-    poses = torch.eye(4, dtype=vector.dtype, device=vector.device).repeat(
-        vector.shape[0], 1, 1
-    )
-    poses[:, :3, :3] = _rotation_6d_to_matrix(vector[:, 3:9])
-    poses[:, :3, 3] = vector[:, 0:3]
-    return poses
-
-
-def _load_model(device: torch.device) -> MLP:
-    """Load pretrained NRM model on the same device as the morphology."""
-    metadata = json.loads((_WEIGHTS_DIR / "metadata.json").read_text())
-
-    model = MLP(**metadata["hyperparameter"])
-    model.load_state_dict(
-        torch.load(
-            _WEIGHTS_DIR / "checkpoint_5-7.pth", map_location=device, weights_only=True
-        )
-    )
-    model = model.to(device)
-
-    # cuDNN LSTM backward may require train mode.
-    # The weights are frozen, but gradients still flow to the optimized inputs.
-    model.train()
-    for p in model.parameters():
-        p.requires_grad_(False)
-
-    return model
-
-
-class SquasherSTE(torch.autograd.Function):
-    @staticmethod
-    def forward(_ctx, param, threshold):
-        mask = (param.abs() >= threshold).float()
-        return param * mask
-
-    @staticmethod
-    def backward(_ctx, grad_output):
-        return grad_output, None
-
-
-class Normaliser(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, param):
-        l2_norm = torch.hypot(param[:, 0:1], param[:, 1:2])
-        norm = l2_norm.sum(dim=0, keepdim=True)
-
-        ctx.save_for_backward(param, l2_norm, norm)
-
-        return param / norm
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        param, l2_norm, norm = ctx.saved_tensors
-
-        chain = torch.where(
-            (param.abs() > EPS).any(dim=1, keepdim=True),
-            param / l2_norm,
-            torch.zeros_like(param),
-        )
-
-        return (grad_output * norm - chain * (grad_output * param).sum()) / norm**2
-
-
-def _preprocess(lengths: Tensor, link_radius: float) -> tuple[Tensor, Tensor]:
-    """Apply normalize -> squash -> normalize to raw [a, d] lengths."""
-    threshold = 2.0 * link_radius
-
-    norm_lengths = Normaliser.apply(lengths)
-    squashed = SquasherSTE.apply(norm_lengths, threshold)
-
-    return Normaliser.apply(squashed), norm_lengths
-
-
-def _build_morphology(
-    alpha: Tensor,
-    lengths: Tensor,
-    link_radius: float,
-) -> tuple[Tensor, Tensor]:
-    processed_lengths, _ = _preprocess(lengths, link_radius)
-    raw_morphology = torch.cat([alpha, lengths], dim=1)
-    processed_morphology = torch.cat([alpha, processed_lengths], dim=1)
-    return raw_morphology, processed_morphology
 
 
 def _morphology_loss_and_prob(
@@ -161,10 +62,8 @@ def _morphology_loss_and_prob(
     task_vec: Tensor,
     link_radius: float,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-    raw_morphology, processed_morphology = _build_morphology(
-        alpha=alpha,
-        lengths=lengths,
-        link_radius=link_radius,
+    raw_morphology, processed_morphology = _build_morphology_tensors(
+        alpha, lengths, link_radius
     )
 
     bmorph = processed_morphology.unsqueeze(0).expand(task_vec.shape[0], -1, -1)
@@ -175,22 +74,6 @@ def _morphology_loss_and_prob(
     prob = torch.sigmoid(logit).mean()
 
     return loss, prob, raw_morphology, processed_morphology
-
-
-def _rotation_angle_between(rot_a: Tensor, rot_b: Tensor) -> Tensor:
-    rel = rot_a.transpose(-1, -2) @ rot_b
-    trace = rel[..., 0, 0] + rel[..., 1, 1] + rel[..., 2, 2]
-    cos_angle = 0.5 * (trace - 1.0)
-    skew = torch.stack(
-        [
-            rel[..., 2, 1] - rel[..., 1, 2],
-            rel[..., 0, 2] - rel[..., 2, 0],
-            rel[..., 1, 0] - rel[..., 0, 1],
-        ],
-        dim=-1,
-    )
-    sin_angle = 0.5 * torch.linalg.vector_norm(skew, dim=-1)
-    return torch.atan2(sin_angle, cos_angle)
 
 
 def _trajectory_from_intermediate(
@@ -441,7 +324,6 @@ def _validation_for_current_state(
     current_task = Task(
         environment=base_task.environment,
         goal_poses=trajectory.detach(),
-        reachable_region=base_task.reachable_region,
         start_q=base_task.start_q,
     )
     validation_morph = Morphology(
@@ -662,10 +544,8 @@ def optimize_morphology_and_trajectory(
             for _ in range(num_steps):
                 trajectory_optimizer.zero_grad()
 
-                raw_morphology, processed_morphology = _build_morphology(
-                    alpha=alpha,
-                    lengths=lengths,
-                    link_radius=morph.link_radius,
+                raw_morphology, processed_morphology = _build_morphology_tensors(
+                    alpha, lengths, morph.link_radius
                 )
                 task_vec, poses = _trajectory_from_intermediate(
                     start_vec,
@@ -741,10 +621,8 @@ def optimize_morphology_and_trajectory(
         progress_bar.close()
 
         with torch.no_grad():
-            final_raw_morphology, final_processed_morphology = _build_morphology(
-                alpha=alpha,
-                lengths=lengths,
-                link_radius=morph.link_radius,
+            final_raw_morphology, final_processed_morphology = (
+                _build_morphology_tensors(alpha, lengths, morph.link_radius)
             )
             final_task_vec, final_trajectory = _trajectory_from_intermediate(
                 start_vec,

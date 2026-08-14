@@ -21,8 +21,6 @@
 
 from __future__ import annotations
 
-import json
-import math
 from pathlib import Path
 from typing import Any
 
@@ -34,23 +32,25 @@ from tqdm import tqdm
 from core import Morphology, Task
 from logutils.csv_logger import (
     InternalOptimizationCSVLogger,
-    OptimizationCSVLogger,
 )
 from logutils.timing import OptimizationTimer
-from methods.candidate_selection import static as candidate_base
+from methods._nrm_common import (
+    _CHECKPOINT_PATH,
+    EPS,
+    _build_morphology_tensors,
+    _rotation_angle_between,
+    _se3_to_vector,
+    _vector_to_se3,
+)
+from methods.candidate_selection._common import (
+    TOP_PROBABILITY_FRACTION,
+    _generate_initial_candidates,
+    _parse_candidate_search_params,
+    _postfilter_dof_group,
+    _select_and_log_final_candidates,
+    _setup_search_runtime,
+)
 from methods.nrm_model import MLP
-from tasks.sampling.fixed_alpha_candidates import (
-    DEFAULT_ZERO_ALPHA_RUN_EXCLUSION_LENGTH,
-    generate_alpha_candidates,
-    sample_fixed_alpha_morphology_candidates,
-    sample_fixed_alpha_morphology_candidates_by_dof,
-)
-from validation.optimization_validation import (
-    build_optimization_validation_context,
-    run_optimization_validation,
-)
-
-EPS = 1e-4
 
 num_steps = 20
 num_iteratives = 50
@@ -71,21 +71,11 @@ WALL_REPULSION_WEIGHT = 0.005
 # decaying of the weight for the poses to be far from wall, bigger, slower decay
 WALL_REPULSION_DISTANCE = 0.0005
 
-from paths import PROJECT_ROOT as _PROJECT_ROOT
-from paths import WEIGHTS_DIR as _WEIGHTS_DIR
-
-_CHECKPOINT_PATH = _WEIGHTS_DIR / "checkpoint_5-7.pth"
-
 # ----------------------------- hard-coded knobs -----------------------------
+# Shared knobs (candidate DOFs, alpha-candidate count, batch sizes, zero-alpha
+# run exclusion, top-probability fraction, checkpoint path) live in _common.
 
-DEFAULT_CANDIDATE_DOFS = (5, 6, 7)
 CANDIDATE_DOF: str | int | tuple[int, ...] = 7
-
-DEFAULT_NUM_ALPHA_CANDIDATES: int | str = "ALL"
-DEFAULT_CANDIDATE_BATCH_SIZE = 64
-DEFAULT_DISTRIBUTION_BATCH_SIZE = 128
-ZERO_ALPHA_RUN_EXCLUSION_LENGTH = DEFAULT_ZERO_ALPHA_RUN_EXCLUSION_LENGTH
-TOP_PROBABILITY_FRACTION = 0.025
 MORPHOLOGY_FINAL_D_PENALTY_WEIGHT = 100.0
 
 TRAJECTORY_INTERNAL_LOG_FIELDNAMES = [
@@ -140,168 +130,7 @@ ALL_CANDIDATES_LOG_FIELDNAMES = [
 ]
 
 
-def _load_model(device: torch.device) -> MLP:
-    metadata = json.loads((_WEIGHTS_DIR / "metadata.json").read_text())
-    model = MLP(**metadata["hyperparameter"])
-    model.load_state_dict(
-        torch.load(
-            _CHECKPOINT_PATH,
-            map_location=device,
-            weights_only=True,
-        )
-    )
-    model = model.to(device)
-
-    # cuDNN LSTM backward may require train mode.
-    # The weights are frozen, but gradients still flow to optimized inputs.
-    model.train()
-    for p in model.parameters():
-        p.requires_grad_(False)
-
-    return model
-
-
-# ------------------------------- candidates ---------------------------------
-
-
-def _resolve_candidate_dofs(value: Any) -> list[int]:
-    """Resolve the hard-coded DOF selector to a sorted non-empty subset of 5, 6, 7."""
-    if value is None:
-        return list(DEFAULT_CANDIDATE_DOFS)
-
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized == "all":
-            return list(DEFAULT_CANDIDATE_DOFS)
-        parts = normalized.replace(",", " ").split()
-        dofs = [int(part) for part in parts]
-    elif isinstance(value, int):
-        dofs = [int(value)]
-    else:
-        dofs = [int(dof) for dof in value]
-
-    if not dofs:
-        raise ValueError("dof must not be empty.")
-
-    resolved = sorted(set(dofs))
-    unsupported = [dof for dof in resolved if dof not in DEFAULT_CANDIDATE_DOFS]
-    if unsupported:
-        raise ValueError(
-            f"dof supports only {list(DEFAULT_CANDIDATE_DOFS)} or 'all', "
-            f"got {resolved}."
-        )
-
-    return resolved
-
-
-def _generate_alpha_candidates_by_dof(
-    *,
-    dofs: list[int],
-    requested_num_candidates: int | str | None,
-    device: torch.device,
-    generator: torch.Generator,
-    logging: bool,
-) -> dict[int, Tensor]:
-    """Generate fixed alpha candidate tensors keyed by DOF."""
-    alpha_candidates_by_dof: dict[int, Tensor] = {}
-
-    for dof in dofs:
-        seq_len = dof + 1
-        alpha_candidates, max_alpha_candidates, using_all = generate_alpha_candidates(
-            requested_num_candidates=requested_num_candidates,
-            seq_len=seq_len,
-            device=device,
-            generator=generator,
-            forbidden_zero_run_length=ZERO_ALPHA_RUN_EXCLUSION_LENGTH,
-        )
-        alpha_candidates_by_dof[dof] = alpha_candidates
-
-        if logging:
-            print(
-                f"[Info] DOF{dof} alpha candidates generated: "
-                f"{alpha_candidates.shape[0]} / max_valid={max_alpha_candidates} "
-                f"(using_all={using_all})."
-            )
-
-    return alpha_candidates_by_dof
-
-
-def _sample_initial_candidate_morphologies_by_dof(
-    *,
-    alpha_candidates_by_dof: dict[int, Tensor],
-    seed: int,
-    link_radius: float,
-    batch_size: int,
-    logging: bool,
-) -> dict[int, Tensor]:
-    """Sample fixed-alpha initial morphologies while preserving cache schemas."""
-    if len(alpha_candidates_by_dof) == 1:
-        dof, alpha_candidates = next(iter(alpha_candidates_by_dof.items()))
-        return {
-            dof: sample_fixed_alpha_morphology_candidates(
-                alpha_candidates=alpha_candidates,
-                seed=seed,
-                link_radius=link_radius,
-                batch_size=batch_size,
-                logging=logging,
-            )
-        }
-
-    return sample_fixed_alpha_morphology_candidates_by_dof(
-        alpha_candidates_by_dof=alpha_candidates_by_dof,
-        seed=seed,
-        link_radius=link_radius,
-        batch_size=batch_size,
-        logging=logging,
-    )
-
-
 # ------------------------------- SE(3) helpers ------------------------------
-
-
-def _se3_to_vector(pose: Tensor) -> Tensor:
-    """Convert SE(3) pose matrices [..., 4, 4] to 9D NRM pose vectors."""
-    rot_6d = pose[..., :3, :2].transpose(-1, -2).reshape(*pose.shape[:-2], 6)
-    return torch.cat([pose[..., :3, 3], rot_6d], dim=-1)
-
-
-def _rotation_6d_to_matrix(rot_6d: Tensor) -> Tensor:
-    a1 = rot_6d[..., 0:3]
-    a2 = rot_6d[..., 3:6]
-
-    b1 = F.normalize(a1, dim=-1, eps=EPS)
-    a2_orthogonal = a2 - (b1 * a2).sum(dim=-1, keepdim=True) * b1
-    b2 = F.normalize(a2_orthogonal, dim=-1, eps=EPS)
-    b3 = torch.cross(b1, b2, dim=-1)
-    return torch.stack([b1, b2, b3], dim=-1)
-
-
-def _rotation_angle_between(rot_a: Tensor, rot_b: Tensor) -> Tensor:
-    rel = rot_a.transpose(-1, -2) @ rot_b
-    trace = rel[..., 0, 0] + rel[..., 1, 1] + rel[..., 2, 2]
-    cos_angle = 0.5 * (trace - 1.0)
-    skew = torch.stack(
-        [
-            rel[..., 2, 1] - rel[..., 1, 2],
-            rel[..., 0, 2] - rel[..., 2, 0],
-            rel[..., 1, 0] - rel[..., 0, 1],
-        ],
-        dim=-1,
-    )
-    sin_angle = 0.5 * torch.linalg.vector_norm(skew, dim=-1)
-    return torch.atan2(sin_angle, cos_angle)
-
-
-def _vector_to_se3(vector: Tensor) -> Tensor:
-    poses = torch.eye(4, dtype=vector.dtype, device=vector.device).expand(
-        *vector.shape[:-1],
-        4,
-        4,
-    )
-    poses = poses.clone()
-    poses[..., :3, :3] = _rotation_6d_to_matrix(vector[..., 3:9])
-    poses[..., :3, 3] = vector[..., 0:3]
-    return poses
 
 
 def _trajectory_from_intermediate(
@@ -324,18 +153,6 @@ def _wrapped_angle_difference(angle: Tensor) -> Tensor:
 
 
 # --------------------------- morphology/NRM loss ----------------------------
-
-
-def _build_morphology_tensors(
-    alpha_candidates: Tensor,
-    length_candidates: Tensor,
-    link_radius: float,
-) -> tuple[Tensor, Tensor]:
-    return candidate_base._build_morphology_tensors(
-        alpha_candidates,
-        length_candidates,
-        link_radius,
-    )
 
 
 def _morphology_loss_and_prob_batched(
@@ -1008,156 +825,20 @@ def _optimize_one_dof_group(
         dof=dof,
     )
 
-    post_valid_mask, _ = candidate_base._distribution_valid_mask(
-        processed_morphologies,
-        batch_size=distribution_batch_size,
+    return _postfilter_dof_group(
+        dof=dof,
+        losses=losses,
+        probs=probs,
+        initial_morphologies_for_log=initial_morphologies_for_log,
+        processed_morphologies=processed_morphologies,
+        distribution_batch_size=distribution_batch_size,
         logging=logging,
-        desc=f"post-checking DOF{dof} candidate distribution",
-    )
-
-    if logging:
-        print(
-            f"[Info] DOF{dof} post-optimization distribution filter: "
-            f"kept {int(post_valid_mask.sum().item())}/"
-            f"{processed_morphologies.shape[0]} candidates."
-        )
-
-    records: list[dict[str, Any]] = []
-    valid_indices = torch.nonzero(post_valid_mask, as_tuple=False).squeeze(1)
-    for idx in valid_indices.tolist():
-        records.append(
-            {
-                "dof": dof,
-                "loss": losses[idx],
-                "prob": probs[idx],
-                "raw_morphology": initial_morphologies_for_log[idx],
-                "processed_morphology": processed_morphologies[idx],
-                "trajectory": trajectories[idx],
-                "loss_components": {
-                    key: values[idx] for key, values in loss_components.items()
-                },
-            }
-        )
-
-    return records
-
-
-# ------------------------------- validation ---------------------------------
-
-
-def _validation_generator(device: torch.device, random_seed: int) -> torch.Generator:
-    generator = torch.Generator(device=device)
-    generator.manual_seed(random_seed)
-    return generator
-
-
-def _validate_candidate(
-    *,
-    processed_morphology: Tensor,
-    trajectory: Tensor,
-    morph: Morphology,
-    base_task: Task,
-    scene,
-    device: torch.device,
-    percentage_poses: float,
-    number_random_seed: int,
-    random_seed: int,
-    timer: OptimizationTimer | None = None,
-) -> dict:
-    """Validate one candidate on its own optimized trajectory."""
-    candidate_task = Task(
-        environment=base_task.environment,
-        goal_poses=trajectory.detach(),
-        reachable_region=base_task.reachable_region,
-        start_q=base_task.start_q,
-    )
-    pose_sampling_generator = _validation_generator(device, random_seed)
-    if timer is None:
-        return run_optimization_validation(
-            processed_morphology=processed_morphology.detach(),
-            morph=morph,
-            task=candidate_task,
-            scene=scene,
-            device=device,
-            percentage_poses=percentage_poses,
-            number_random_seed=number_random_seed,
-            pose_sampling_generator=pose_sampling_generator,
-        )
-    with timer.validation():
-        return run_optimization_validation(
-            processed_morphology=processed_morphology.detach(),
-            morph=morph,
-            task=candidate_task,
-            scene=scene,
-            device=device,
-            percentage_poses=percentage_poses,
-            number_random_seed=number_random_seed,
-            pose_sampling_generator=pose_sampling_generator,
-        )
-
-
-def _validate_top_records(
-    *,
-    records: list[dict[str, Any]],
-    morph: Morphology,
-    task: Task,
-    scene,
-    device: torch.device,
-    percentage_poses: float,
-    number_random_seed: int,
-    random_seed: int,
-    logging: bool,
-    timer: OptimizationTimer | None = None,
-) -> tuple[Tensor, Tensor, list[dict]]:
-    """Run validation on selected candidate records and return scores plus data."""
-    se3_scores = torch.empty(len(records), device=device)
-    ik_success_rates = torch.empty(len(records), device=device)
-    validation_data_list: list[dict] = []
-
-    for idx in tqdm(
-        range(len(records)),
-        desc="validating top-probability trajectory candidates",
-        disable=not logging,
-        dynamic_ncols=True,
-    ):
-        validation_data = _validate_candidate(
-            processed_morphology=records[idx]["processed_morphology"],
-            trajectory=records[idx]["trajectory"],
-            morph=morph,
-            base_task=task,
-            scene=scene,
-            device=device,
-            percentage_poses=percentage_poses,
-            number_random_seed=number_random_seed,
-            random_seed=random_seed,
-            timer=timer,
-        )
-        validation_data_list.append(validation_data)
-        se3_scores[idx] = validation_data["best_se3_dist_mean"].detach().to(device)
-        ik_success_rates[idx] = (
-            validation_data["ik_success_pose_rate"].detach().to(device)
-        )
-
-    return se3_scores, ik_success_rates, validation_data_list
-
-
-def _log_candidate(
-    csv_logger: OptimizationCSVLogger,
-    iteration_marker: int,
-    loss: Tensor,
-    prob: Tensor,
-    raw_morphology: Tensor,
-    processed_morphology: Tensor,
-    validation_data: dict,
-) -> None:
-    candidate_base._log_candidate(
-        csv_logger=csv_logger,
-        iteration_marker=iteration_marker,
-        loss=loss,
-        prob=prob,
-        raw_morphology=raw_morphology,
-        processed_morphology=processed_morphology,
-        validation_data=validation_data,
+        extra_record_fields=lambda idx: {
+            "trajectory": trajectories[idx],
+            "loss_components": {
+                key: values[idx] for key, values in loss_components.items()
+            },
+        },
     )
 
 
@@ -1172,47 +853,15 @@ def optimize_morphology_and_trajectory(
     Morphology, Tensor, Path, list[float], list[tuple[Morphology, Tensor, float]]
 ]:
     """Discrete-alpha candidate search with per-candidate trajectory optimization."""
-    num_plan_candidates = max(
-        1, int(optimization_parameters.get("num_plan_candidates", 1))
-    )
-    lr = float(optimization_parameters.get("learning_rate", 0.01))
+    dof_selector = CANDIDATE_DOF
+    params = _parse_candidate_search_params(optimization_parameters, dof_selector)
     lr_pose = float(
         optimization_parameters.get(
             "learning_rate_pose",
-            optimization_parameters.get("learning_rate_angle", lr),
-        )
-    )
-    logging = bool(optimization_parameters.get("logging", True))
-    csv_logging = bool(optimization_parameters.get("csv_logging", True))
-    random_seed = int(optimization_parameters.get("random_seed", 42))
-    number_random_seed = int(optimization_parameters.get("number_random_seed", 32))
-    percentage_poses = float(optimization_parameters.get("percentage_poses", 1))
-    ignore_ground = bool(optimization_parameters.get("ignore_ground", False))
-    ignore_obstacles = bool(optimization_parameters.get("ignore_obstacles", False))
-    dof_selector = CANDIDATE_DOF
-    candidate_dofs = _resolve_candidate_dofs(dof_selector)
-
-    num_alpha_candidates = optimization_parameters.get(
-        "num_alpha_candidates",
-        DEFAULT_NUM_ALPHA_CANDIDATES,
-    )
-    candidate_batch_size = int(
-        optimization_parameters.get(
-            "candidate_batch_size",
-            DEFAULT_CANDIDATE_BATCH_SIZE,
-        )
-    )
-    distribution_batch_size = int(
-        optimization_parameters.get(
-            "distribution_batch_size",
-            DEFAULT_DISTRIBUTION_BATCH_SIZE,
+            optimization_parameters.get("learning_rate_angle", params.learning_rate),
         )
     )
 
-    if candidate_batch_size <= 0:
-        raise ValueError("candidate_batch_size must be positive.")
-    if distribution_batch_size <= 0:
-        raise ValueError("distribution_batch_size must be positive.")
     if task.goal_poses.shape[0] < 2:
         raise ValueError("trajectory candidate selection requires at least 2 poses.")
 
@@ -1220,26 +869,25 @@ def optimize_morphology_and_trajectory(
     device = morph.params.device
     timer = OptimizationTimer(device)
     timer.start()
-    selected_label = ",".join(str(dof) for dof in candidate_dofs)
 
-    if logging:
+    if params.logging:
         print(f"[Info] Starting DOF trajectory candidate optimization on {device}.")
         print(
             "[Info] "
             f"dof={dof_selector!r}, "
-            f"candidate_dofs={candidate_dofs}, "
+            f"candidate_dofs={params.candidate_dofs}, "
             f"num_iteratives={num_iteratives}, "
             f"morphology_steps={morphology_steps}, "
             f"trajectory_steps={trajectory_steps}, "
-            f"learning_rate_length={lr}, "
+            f"learning_rate_length={params.learning_rate}, "
             f"learning_rate_pose={lr_pose}, "
-            f"num_alpha_candidates={num_alpha_candidates}, "
-            f"candidate_batch_size={candidate_batch_size}, "
-            f"distribution_batch_size={distribution_batch_size}, "
+            f"num_alpha_candidates={params.num_alpha_candidates}, "
+            f"candidate_batch_size={params.candidate_batch_size}, "
+            f"distribution_batch_size={params.distribution_batch_size}, "
             f"top_probability_fraction={TOP_PROBABILITY_FRACTION}, "
-            f"random_seed={random_seed}, "
-            f"number_random_seed={number_random_seed}, "
-            f"percentage_poses={percentage_poses}"
+            f"random_seed={params.random_seed}, "
+            f"number_random_seed={params.number_random_seed}, "
+            f"percentage_poses={params.percentage_poses}"
         )
         print(
             "[Info] trajectory_weights="
@@ -1259,66 +907,32 @@ def optimize_morphology_and_trajectory(
         )
         print(f"[Info] Loading NRM checkpoint: {_CHECKPOINT_PATH}")
 
-    scene = build_optimization_validation_context(
+    scene, model, csv_logger, alpha_generator = _setup_search_runtime(
         task=task,
         device=device,
-        ignore_ground=ignore_ground,
-        ignore_obstacles=ignore_obstacles,
-    )
-
-    model = _load_model(device)
-    log_root_dir = optimization_parameters.get("log_root_dir")
-    csv_logger = (
-        OptimizationCSVLogger(
-            root_dir=Path(log_root_dir), output_subdir=None, enabled=csv_logging
-        )
-        if log_root_dir
-        else OptimizationCSVLogger(root_dir=_PROJECT_ROOT, enabled=csv_logging)
+        optimization_parameters=optimization_parameters,
+        params=params,
     )
     internal_logger: InternalOptimizationCSVLogger | None = None
-
-    alpha_generator = torch.Generator(device=device)
-    alpha_generator.manual_seed(random_seed)
 
     try:
         internal_logger = InternalOptimizationCSVLogger(
             csv_logger.csv_path,
             fieldnames=TRAJECTORY_INTERNAL_LOG_FIELDNAMES,
-            enabled=csv_logging,
+            enabled=params.csv_logging,
         )
 
-        alpha_candidates_by_dof = _generate_alpha_candidates_by_dof(
-            dofs=candidate_dofs,
-            requested_num_candidates=num_alpha_candidates,
+        initial_candidate_morphologies_by_dof = _generate_initial_candidates(
+            params=params,
             device=device,
-            generator=alpha_generator,
-            logging=logging,
+            link_radius=morph.link_radius,
+            alpha_generator=alpha_generator,
+            csv_logger=csv_logger,
+            internal_logger=internal_logger,
         )
-
-        initial_candidate_morphologies_by_dof = (
-            _sample_initial_candidate_morphologies_by_dof(
-                alpha_candidates_by_dof=alpha_candidates_by_dof,
-                seed=random_seed,
-                link_radius=morph.link_radius,
-                batch_size=distribution_batch_size,
-                logging=logging,
-            )
-        )
-
-        if logging:
-            print(f"[Info] Writing CSV log to: {csv_logger.csv_path}")
-            print(f"[Info] Writing internal CSV log to: {internal_logger.csv_path}")
-            for dof in candidate_dofs:
-                original_count = alpha_candidates_by_dof[dof].shape[0]
-                accepted_count = initial_candidate_morphologies_by_dof[dof].shape[0]
-                print(
-                    f"[Info] DOF{dof} fixed-alpha sampler accepted "
-                    f"{accepted_count}/{original_count} alpha candidates "
-                    f"and dropped {original_count - accepted_count}."
-                )
 
         records: list[dict[str, Any]] = []
-        for dof in candidate_dofs:
+        for dof in params.candidate_dofs:
             records.extend(
                 _optimize_one_dof_group(
                     dof=dof,
@@ -1328,217 +942,43 @@ def optimize_morphology_and_trajectory(
                     model=model,
                     task=task,
                     link_radius=morph.link_radius,
-                    learning_rate=lr,
+                    learning_rate=params.learning_rate,
                     learning_rate_pose=lr_pose,
-                    candidate_batch_size=candidate_batch_size,
-                    distribution_batch_size=distribution_batch_size,
-                    logging=logging,
+                    candidate_batch_size=params.candidate_batch_size,
+                    distribution_batch_size=params.distribution_batch_size,
+                    logging=params.logging,
                     internal_logger=internal_logger,
                 )
             )
 
-        if not records:
-            raise RuntimeError(
-                f"All optimized DOF {selected_label} candidates were rejected by "
-                "the post-optimization distribution checker."
-            )
-
-        before_last_d_filter = len(records)
-        records = [
-            record
-            for record in records
-            if bool(
-                candidate_base._last_d_nonnegative_mask(
-                    record["processed_morphology"]
-                ).item()
-            )
-        ]
-
-        if not records:
-            raise RuntimeError(
-                f"All optimized DOF {selected_label} candidates were rejected by "
-                "the final-link d filter (requires processed params[-1, 2] >= 0)."
-            )
-
-        if logging:
-            print(
-                "[Info] Final-link d filter: "
-                f"kept {len(records)}/{before_last_d_filter} candidates "
-                "with processed params[-1, 2] >= 0."
-            )
-
-        all_candidates_logger = InternalOptimizationCSVLogger(
-            csv_logger.csv_path,
-            fieldnames=ALL_CANDIDATES_LOG_FIELDNAMES,
-            suffix="final_candidates",
-            enabled=csv_logging,
-        )
-        if logging:
-            print(
-                "[Info] Writing all-candidates CSV log to: "
-                f"{all_candidates_logger.csv_path}"
-            )
-        try:
-            for record in records:
-                all_candidates_logger.log_row(
-                    dof=record["dof"],
-                    loss=record["loss"],
-                    nrm_prob=record["prob"],
-                    **record.get("loss_components", {}),
-                )
-        finally:
-            all_candidates_logger.close()
-
-        probs_valid = torch.stack(
-            [record["prob"].detach().to(device) for record in records]
-        )
-        num_valid = len(records)
-        top_k = max(1, int(math.ceil(num_valid * TOP_PROBABILITY_FRACTION)))
-        top_indices = torch.argsort(probs_valid, descending=True)[:top_k]
-        top_records = [records[int(idx.item())] for idx in top_indices]
-
-        if logging:
-            dof_counts = {
-                dof: sum(1 for record in records if record["dof"] == dof)
-                for dof in candidate_dofs
-            }
-            top_dof_counts = {
-                dof: sum(1 for record in top_records if record["dof"] == dof)
-                for dof in candidate_dofs
-            }
-            print(
-                "[Info] Top-probability selection: "
-                f"valid_candidates={num_valid}, top_k={top_k}, "
-                f"valid_by_dof={dof_counts}, top_by_dof={top_dof_counts}, "
-                f"best_prob={probs_valid[top_indices[0]].item():.6f}, "
-                f"worst_top_prob={probs_valid[top_indices[-1]].item():.6f}"
-            )
-
-        _, ik_success_rates, validation_data_list = _validate_top_records(
-            records=top_records,
+        final_record, optimized_morph, candidates = _select_and_log_final_candidates(
+            records=records,
+            params=params,
             morph=morph,
             task=task,
             scene=scene,
             device=device,
-            percentage_poses=percentage_poses,
-            number_random_seed=number_random_seed,
-            random_seed=random_seed,
-            logging=logging,
+            csv_logger=csv_logger,
             timer=timer,
-        )
-
-        best_ik_success_rate = ik_success_rates.max()
-        best_rate_mask = (ik_success_rates - best_ik_success_rate).abs() <= 1e-12
-        final_tier_mask = best_rate_mask
-        tied_indices = torch.nonzero(final_tier_mask, as_tuple=False).squeeze(1)
-
-        tie_scores = []
-        length_sums = []
-        for record in top_records:
-            tie_score, length_sum = candidate_base._tie_score(
-                record["processed_morphology"],
-                morph.link_radius,
-            )
-            tie_scores.append(tie_score)
-            length_sums.append(length_sum)
-
-        tie_scores_tensor = torch.stack(tie_scores).to(device)
-        length_sums_tensor = torch.stack(length_sums).to(device)
-        final_local_in_tied = torch.argmin(tie_scores_tensor[tied_indices])
-        final_idx = int(tied_indices[final_local_in_tied].item())
-
-        # Full ranking by the same key as the winner above: best ik_success_rate
-        # first, ties broken by min tie_score. Rank 0 is exactly `final_idx`.
-        ranking = sorted(
-            range(len(top_records)),
-            key=lambda idx: (
-                -ik_success_rates[idx].item(),
-                tie_scores_tensor[idx].item(),
+            all_candidates_fieldnames=ALL_CANDIDATES_LOG_FIELDNAMES,
+            validation_desc="validating top-probability trajectory candidates",
+            final_print_label="Final trajectory candidate",
+            final_print_extra=lambda record: (
+                f", num_trajectory_poses={record['trajectory'].shape[0]}"
+            ),
+            build_candidate=lambda record, ik_success_pose_rate: (
+                Morphology(
+                    params=record["processed_morphology"].detach(),
+                    link_radius=morph.link_radius,
+                ),
+                record["trajectory"].detach(),
+                ik_success_pose_rate,
             ),
         )
-        selected_indices = ranking[: min(num_plan_candidates, len(ranking))]
-
-        if logging:
-            print(
-                "[Info] Validation selection: "
-                f"best_ik_success_pose_rate="
-                f"{best_ik_success_rate.item() * 100.0:.2f}%, "
-                f"num_best_rate_candidates={int(best_rate_mask.sum().item())}, "
-                f"num_tie_break_candidates={int(final_tier_mask.sum().item())}, "
-                f"final_idx={final_idx}, "
-                f"final_dof={top_records[final_idx]['dof']}, "
-                f"final_length_sum={length_sums_tensor[final_idx].item():.6f}"
-            )
-
-        for idx, record in enumerate(top_records):
-            if idx == final_idx:
-                marker = 2
-            elif bool(final_tier_mask[idx]):
-                marker = 1
-            else:
-                marker = 0
-
-            _log_candidate(
-                csv_logger=csv_logger,
-                iteration_marker=marker,
-                loss=record["loss"],
-                prob=record["prob"],
-                raw_morphology=record["raw_morphology"],
-                processed_morphology=record["processed_morphology"],
-                validation_data=validation_data_list[idx],
-            )
-
-        final_record = top_records[final_idx]
-        final_processed_morphology = final_record["processed_morphology"]
-        final_trajectory = final_record["trajectory"]
-        final_validation_data = validation_data_list[final_idx]
-        final_se3 = final_validation_data["best_se3_dist_mean"].detach().cpu().item()
-        final_ik_success_rate = (
-            final_validation_data["ik_success_pose_rate"].detach().cpu().item()
-        )
-
-        print(
-            "[Final trajectory candidate] "
-            f"dof={final_record['dof']}, "
-            f"loss={final_record['loss'].item():.6f}, "
-            f"nrm_prob={final_record['prob'].item():.6f}, "
-            f"final_se3_err={final_se3:.6f}, "
-            f"ik_success_pose_rate={final_ik_success_rate * 100.0:.2f}%, "
-            f"length_sum={length_sums_tensor[final_idx].item():.6f}, "
-            f"num_trajectory_poses={final_trajectory.shape[0]}"
-        )
-
-        if logging:
-            print("Final alpha [deg]:")
-            print(final_processed_morphology[:, 0].detach().cpu() * 180.0 / math.pi)
-            print("Final optimized morphology params:")
-            print(final_processed_morphology.detach().cpu())
-
-        optimized_morph = Morphology(
-            params=final_processed_morphology.detach(),
-            link_radius=morph.link_radius,
-        )
-
-        candidates: list[tuple[Morphology, Tensor, float]] = []
-        for idx in selected_indices:
-            record = top_records[idx]
-            candidates.append(
-                (
-                    Morphology(
-                        params=record["processed_morphology"].detach(),
-                        link_radius=morph.link_radius,
-                    ),
-                    record["trajectory"].detach(),
-                    validation_data_list[idx]["ik_success_pose_rate"]
-                    .detach()
-                    .cpu()
-                    .item(),
-                )
-            )
 
         return (
             optimized_morph,
-            final_trajectory.detach(),
+            final_record["trajectory"].detach(),
             csv_logger.csv_path,
             timer.result(),
             candidates,

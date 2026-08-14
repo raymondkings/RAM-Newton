@@ -1,20 +1,17 @@
 import json
-from pathlib import Path
-
-import torch
 
 from core import Task
-from logutils.timing import OptimizationTiming
 from methods.candidate_selection.trajectory import (
     optimize_morphology_and_trajectory,
 )
 from paths import DEFAULT_CONFIG, PROJECT_ROOT
 from pipeline.common import (
     build_arg_parser,
-    report_optimization_timing,
+    build_trajectory_plan_task,
+    cached_optimization_result,
+    finalize_and_report,
     resolve_initial_morphology,
-    run_plan,
-    run_postprocess,
+    run_candidate_plans,
     set_global_seed,
     setup_device,
     warn_ignored_config_keys,
@@ -25,7 +22,6 @@ from tasks.sampling.trajectory_pose_sampler import NUM_POSES, create_task
 IGNORED_CONFIG_KEYS = (
     "num_iterations",
     "eval_interval",
-    "timelapse",
 )
 
 
@@ -77,7 +73,6 @@ def main() -> None:
     task = Task(
         environment=l_environment(),
         goal_poses=trajectory_poses,
-        reachable_region=None,
         start_q=None,
     )
     print(f"[Info] Task trajectory poses: {task.goal_poses.shape[0]}")
@@ -92,10 +87,8 @@ def main() -> None:
     )
 
     if used_cache:
-        optimized_morph, csv_path, optimization_timing = (
-            morph,
-            cached_csv_path,
-            OptimizationTiming(0.0, 0.0),
+        optimized_morph, csv_path, optimization_timing = cached_optimization_result(
+            morph, cached_csv_path
         )
         optimized_trajectory = task.goal_poses
         candidates = [(optimized_morph, optimized_trajectory, None)]
@@ -131,55 +124,30 @@ def main() -> None:
             optimization_parameters=optimization_parameters,
         )
 
-    print(
-        f"[Info] Optimized morphology params:\n{optimized_morph.params} "
-        f"\nlink_radius={optimized_morph.link_radius}"
+    finalize_and_report(
+        optimized_morph,
+        csv_path,
+        optimization_timing,
+        args,
+        used_cache,
+        optimized_trajectory=optimized_trajectory,
     )
-    print(f"[Info] Optimized trajectory poses: {optimized_trajectory.shape[0]}")
-    print(f"[Info] Optimization CSV: {csv_path}")
-    report_optimization_timing(optimization_timing)
 
-    if used_cache or csv_logging:
-        run_postprocess(Path(csv_path), args)
-    else:
-        print("[Info] csv_logging disabled: skipping CSV-based postprocessing.")
-
-    def build_plan_task(trajectory: torch.Tensor) -> Task:
-        if plan_goal_start:
-            goal_poses = torch.stack([trajectory[0], trajectory[-1]], dim=0)
-        else:
-            goal_poses = trajectory
-        return Task(
-            environment=task.environment,
-            goal_poses=goal_poses,
-            reachable_region=task.reachable_region,
-            start_q=task.start_q,
-        )
-
-    successes = []
-    for idx, (candidate_morph, candidate_trajectory, ik_success_rate) in enumerate(
-        candidates
-    ):
-        if len(candidates) > 1:
-            print(
-                f"[Info] Planning candidate {idx + 1}/{len(candidates)} "
-                f"(ik_success_pose_rate={ik_success_rate})"
+    run_candidate_plans(
+        [
+            (
+                candidate_morph,
+                build_trajectory_plan_task(task, candidate_trajectory, plan_goal_start),
+                ik_success_rate,
             )
-        success = run_plan(
-            candidate_morph,
-            build_plan_task(candidate_trajectory),
-            ignore_ground=ignore_ground,
-            ignore_obstacles=ignore_obstacles,
-            debug=debug,
-            visualize=visualize and idx == 0,
-        )
-        successes.append(success)
-
-    if len(candidates) > 1:
-        print(
-            f"[Info] success@{num_plan_candidates}: "
-            f"tried={len(candidates)} any_success={any(successes)}"
-        )
+            for candidate_morph, candidate_trajectory, ik_success_rate in candidates
+        ],
+        num_plan_candidates=num_plan_candidates,
+        ignore_ground=ignore_ground,
+        ignore_obstacles=ignore_obstacles,
+        debug=debug,
+        visualize=visualize,
+    )
 
 
 if __name__ == "__main__":

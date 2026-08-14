@@ -20,13 +20,5 @@
     "plot": {
         "enabled": false,
         "output_dir": "output/figures"
-    },
-    "timelapse": {
-        "enabled": true,
-        "frame_every_n_steps": 5,
-        "output_dir": "output/timelapse",
-        "format": "mp4",
-        "fps": 4,
-        "dpi": 200
     }
 }

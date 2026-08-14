@@ -1,10 +1,20 @@
 import json
-from pathlib import Path
 
-from interface import Task
-from optim.nrm_alpha_random_selection import optimize_morphology
-from task.environment import l_environment
-from task.task_pose_sampler import (
+from core import Task
+from methods.candidate_selection.static import optimize_morphology
+from paths import DEFAULT_CONFIG, PROJECT_ROOT
+from pipeline.common import (
+    build_arg_parser,
+    cached_optimization_result,
+    finalize_and_report,
+    resolve_initial_morphology,
+    run_candidate_plans,
+    set_global_seed,
+    setup_device,
+    warn_ignored_config_keys,
+)
+from tasks.environment import l_environment
+from tasks.sampling.pose_sampler import (
     NUM_EXTRA_PATHS,
     NUM_LINE_SAMPLES,
     NUM_SAMPLES,
@@ -13,19 +23,7 @@ from task.task_pose_sampler import (
     create_start_goal_poses,
     create_task_pose_sets,
 )
-from util.optimization_timing import OptimizationTiming
-from util.pipeline_common import (
-    build_arg_parser,
-    report_optimization_timing,
-    resolve_initial_morphology,
-    run_plan,
-    run_postprocess,
-    set_global_seed,
-    setup_device,
-    warn_ignored_config_keys,
-)
 
-DEFAULT_CONFIG = Path(__file__).parent / "config.json"
 IGNORED_CONFIG_KEYS = (
     "learning_rate_angle",
     "timelapse",
@@ -70,13 +68,11 @@ def main() -> None:
     task = Task(
         environment=l_environment(),
         goal_poses=optimizer_goal_poses,
-        reachable_region=None,
         start_q=None,
     )
     planner_task = Task(
         environment=task.environment,
         goal_poses=planner_goal_poses,
-        reachable_region=task.reachable_region,
         start_q=task.start_q,
     )
     print(
@@ -95,10 +91,8 @@ def main() -> None:
     )
 
     if used_cache:
-        optimized_morph, csv_path, optimization_timing = (
-            morph,
-            cached_csv_path,
-            OptimizationTiming(0.0, 0.0),
+        optimized_morph, csv_path, optimization_timing = cached_optimization_result(
+            morph, cached_csv_path
         )
         candidates = [(optimized_morph, None)]
     else:
@@ -128,16 +122,9 @@ def main() -> None:
             )
         )
 
-    print(
-        f"[Info] Optimized morphology params:\n{optimized_morph.params} \nlink_radius={optimized_morph.link_radius}"
+    finalize_and_report(
+        optimized_morph, csv_path, optimization_timing, args, used_cache
     )
-    print(f"[Info] Optimization CSV: {csv_path}")
-    report_optimization_timing(optimization_timing)
-
-    if used_cache or bool(getattr(args, "csv_logging", True)):
-        run_postprocess(Path(csv_path), args)
-    else:
-        print("[Info] csv_logging disabled: skipping CSV-based postprocessing.")
 
     if plan_goal_start:
         plan_task = Task(
@@ -146,38 +133,22 @@ def main() -> None:
                 start_pose=START_POSE,
                 device=device,
             ),
-            reachable_region=task.reachable_region,
             start_q=task.start_q,
         )
     else:
         plan_task = planner_task
 
-    successes = []
-    for idx, (candidate_morph, ik_success_rate) in enumerate(candidates):
-        if len(candidates) > 1:
-            print(
-                f"[Info] Planning candidate {idx + 1}/{len(candidates)} "
-                f"(ik_success_pose_rate={ik_success_rate})"
-            )
-        success = run_plan(
-            candidate_morph,
-            plan_task,
-            ignore_ground=args.ignore_ground,
-            ignore_obstacles=args.ignore_obstacles,
-            debug=args.debug,
-            visualize=args.visualize and idx == 0,
-        )
-        successes.append(success)
-        if success:
-            # success@k is satisfied by the first candidate that plans; the
-            # remaining candidates can't change the outcome, so stop here.
-            break
-
-    if len(candidates) > 1:
-        print(
-            f"[Info] success@{num_plan_candidates}: "
-            f"tried={len(successes)}/{len(candidates)} any_success={any(successes)}"
-        )
+    run_candidate_plans(
+        [
+            (candidate_morph, plan_task, ik_success_rate)
+            for candidate_morph, ik_success_rate in candidates
+        ],
+        num_plan_candidates=num_plan_candidates,
+        ignore_ground=args.ignore_ground,
+        ignore_obstacles=args.ignore_obstacles,
+        debug=args.debug,
+        visualize=args.visualize,
+    )
 
 
 if __name__ == "__main__":

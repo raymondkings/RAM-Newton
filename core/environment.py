@@ -21,18 +21,7 @@ class Sphere:
     radius: float = 0.1
 
 
-@dataclass
-class Capsule:
-    kind: Literal["capsule"] = "capsule"
-    center: torch.Tensor = field(default_factory=lambda: torch.zeros(3))
-    half_height: float = 0.1
-    radius: float = 0.05
-    rotation: torch.Tensor = field(
-        default_factory=lambda: torch.tensor([0.0, 0.0, 0.0, 1.0])
-    )
-
-
-Obstacle = Box | Sphere | Capsule
+Obstacle = Box | Sphere
 
 
 @dataclass

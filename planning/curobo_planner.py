@@ -165,11 +165,8 @@ class CuroboPlanner:
                 return PlanResult(
                     success=False,
                     path=full_path,
-                    n_iterations=0,
-                    n_nodes=len(full_path),
                     failed_at_goal=i,
                     best_ik_q=best_ik_q,
-                    reachable_ratio=reachable_ratio,
                 ), None
 
             path, current_q = self._result_to_path(result)
@@ -179,29 +176,7 @@ class CuroboPlanner:
         return PlanResult(
             success=True,
             path=full_path,
-            n_iterations=1,
-            n_nodes=len(full_path),
-            reachable_ratio=1.0,
         ), current_q
-
-    def sequence_reachability_ratio(
-        self,
-        goal_poses: torch.Tensor,
-        start_q: torch.Tensor | None = None,
-        max_attempts: int = 5,
-    ) -> float:
-        """Plan the sequence and return only the reachable-goal fraction.
-
-        Args:
-            goal_poses: Goal EE poses as ``(N, 4, 4)`` homogeneous transforms.
-            start_q: Initial joint config; if None, sampled via :meth:`default_start_q`.
-            max_attempts: Max cuRobo plan_pose retries per goal.
-
-        Returns:
-            Fraction in ``[0, 1]``: number of goals reached over total goals.
-        """
-        result, _ = self.plan_sequence(goal_poses, start_q, max_attempts)
-        return result.reachable_ratio
 
     # === Public API — feasibility & utilities ===
 
