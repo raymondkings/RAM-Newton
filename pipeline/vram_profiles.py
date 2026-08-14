@@ -38,6 +38,14 @@ context, stays within 85% of the target GPU -- leaving ~15% for the OS and the
 cuRobo planner.  Every value below was confirmed by a real run with the
 allocator capped at that 85% budget.
 
+Peaks are torch.cuda.max_memory_allocated (live tensors).  nvidia-smi reports
+considerably more on a roomy GPU, because the caching allocator expands into
+free VRAM and only reclaims under pressure -- do not read it as a requirement.
+
+Measured with CANDIDATE_DOF="all" as well as 7: running all three DOF groups
+peaks at 5495 MiB vs 5494 MiB for DOF 7 alone, i.e. memory is released between
+groups and the sequence does not accumulate.
+
 Profile  target_GPU  candidate_batch  measured_peak  85%_budget
 low      8 GB        96                5494 MiB      6963 MiB
 medium   12 GB       160               9077 MiB     10445 MiB
