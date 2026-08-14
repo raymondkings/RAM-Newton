@@ -8,9 +8,16 @@ that was previously duplicated verbatim across all of them.
 
 import argparse
 import json
+import os
 import random
 import time
 from pathlib import Path
+
+# Must be set BEFORE torch is imported: the caching allocator reads this when it
+# initializes, and once it has, a later setdefault() silently does nothing. The
+# profiles in vram_profiles.py are calibrated with expandable_segments on, so
+# losing it here means more fragmentation and OOMs at batch sizes that fit.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import torch
 
@@ -60,6 +67,9 @@ def load_config(path: Path | None, default_config: Path) -> argparse.Namespace:
     config_path = path or default_config
     with open(config_path) as f:
         data = json.load(f)
+    from pipeline.vram_profiles import resolve_vram_profile
+
+    data = resolve_vram_profile(data)
     return argparse.Namespace(**data)
 
 

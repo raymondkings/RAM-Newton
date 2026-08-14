@@ -124,6 +124,36 @@ To supply a different config file:
 uv run python scripts/gradient_trajectory.py --config path/to/my_config.json
 ```
 
+## GPU Configuration
+
+GPU memory usage scales with the batch-size parameters in `config.json`. The
+`"vram_profile"` key sets all of them at once based on available VRAM:
+
+```json
+{
+  "vram_profile": "high"
+}
+```
+
+Each profile stays within 85% of the target GPU's memory, leaving roughly 15%
+free for the OS and the cuRobo planner:
+
+| Profile  | Target GPU | Measured peak | Example GPUs                          |
+|----------|------------|---------------|---------------------------------------|
+| `low`    | 8 GB       | 5.4 GB        | RTX 3070, RTX 4060, RTX 4060 Ti 8 GB  |
+| `medium` | 12 GB      | 8.9 GB        | RTX 3080 Ti, RTX 4070, RTX 4070 Super |
+| `high`   | 16 GB      | 10.6 GB       | RTX 4080, RTX 4080 Super, RTX 5080    |
+| `ultra`  | 32 GB      | 24.4 GB       | RTX 5090                              |
+
+Individual keys override the profile when both are set:
+
+```json
+{
+  "vram_profile": "high",
+  "candidate_batch_size": 300
+}
+```
+
 ## Evaluation
 
 `evaluation/run.py` sweeps the pipeline across N random seeds, running each seed
