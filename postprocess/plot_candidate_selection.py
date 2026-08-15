@@ -67,13 +67,6 @@ def _group_rows_by_dof(rows: list[dict]) -> dict[int, list[dict]]:
     return dict(sorted(grouped.items()))
 
 
-def _marker_sizes(markers: np.ndarray, base_size: float) -> np.ndarray:
-    sizes = np.full(markers.shape, base_size, dtype=float)
-    sizes[markers == 1] = base_size * 6.0
-    sizes[markers == 2] = base_size * 10.0
-    return sizes
-
-
 def _create_candidate_morphology_3d_mp4_for_rows(
     rows: list[dict],
     output_path: Path,
@@ -217,71 +210,104 @@ def create_candidate_morphology_3d_mp4s(
     return paths
 
 
-def create_probability_vs_se3_scatter(
+def create_candidate_ranking_chart(
     csv_path: str | Path,
     output_dir: str | Path = "output/candidate_plots",
     filename: str | None = None,
     dpi: int = 200,
 ) -> Path:
-    """Create a 2D scatter: NRM probability vs validation SE3 error.
+    """Create a two-panel ranked dot chart of validated candidates.
 
-    Color convention:
-        iteration 0 -> blue
-        iteration 1 -> orange
-        iteration 2 -> red
+    Left panel: NRM reachability probability (higher = better).
+    Right panel: Validation SE3 error (lower = better).
+    Candidates are sorted by selection tier (final selected first),
+    then by probability descending within each tier.
     """
     rows = _load_validated_candidate_rows(csv_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     if filename is None:
-        filename = f"probability_vs_se3_{_csv_time_suffix(csv_path)}.png"
+        filename = f"candidate_ranking_{_csv_time_suffix(csv_path)}.png"
     output_path = output_dir / filename
+
+    rows = sorted(
+        rows,
+        key=lambda r: (-int(r["iteration"]), -float(r["reachability_probability"])),
+    )
+    n = len(rows)
 
     probs = np.array([row["reachability_probability"] for row in rows], dtype=float)
     se3 = np.array([row["best_se3_dist_mean"] for row in rows], dtype=float)
-    markers = np.array([int(row["iteration"]) for row in rows], dtype=int)
+    tiers = np.array([int(row["iteration"]) for row in rows], dtype=int)
     dofs = np.array([_candidate_dof(row) for row in rows], dtype=int)
 
-    fig, ax = plt.subplots(figsize=(7.2, 5.2))
+    multi_dof = len(set(dofs.tolist())) > 1
 
-    specs = [
-        (0, "tab:blue", "validated top-prob candidates"),
-        (1, "tab:orange", "best SE3 tie"),
+    tier_counts: dict[int, int] = {}
+    y_labels = []
+    for row in rows:
+        tier = int(row["iteration"])
+        dof = _candidate_dof(row)
+        tier_counts[tier] = tier_counts.get(tier, 0) + 1
+        rank = tier_counts[tier]
+        if tier == 2:
+            label = "final" if rank == 1 else f"final #{rank}"
+        else:
+            label = f"#{rank}"
+        if multi_dof:
+            label = f"DOF{dof} {label}"
+        y_labels.append(label)
+
+    y = np.arange(n)
+
+    tier_specs = [
         (2, "tab:red", "final selected"),
+        (1, "tab:orange", "best SE3 tier"),
+        (0, "tab:blue", "validated pool"),
     ]
 
-    unique_dofs = sorted(set(int(dof) for dof in dofs.tolist()))
-    dof_symbols = ["o", "s", "^", "D", "P", "X"]
-    symbol_by_dof = {
-        dof: dof_symbols[idx % len(dof_symbols)] for idx, dof in enumerate(unique_dofs)
-    }
+    fig_h = max(3.5, 0.45 * n + 1.5)
+    fig, (ax_prob, ax_se3) = plt.subplots(1, 2, figsize=(9.0, fig_h), sharey=True)
 
-    for marker, color, label in specs:
-        mask = markers == marker
-        if not mask.any():
-            continue
-        for dof in unique_dofs:
-            dof_mask = mask & (dofs == dof)
-            if not dof_mask.any():
-                continue
-            legend_label = label if len(unique_dofs) == 1 else f"{label}, DOF{dof}"
-            ax.scatter(
-                probs[dof_mask],
-                se3[dof_mask],
-                s=_marker_sizes(markers[dof_mask], base_size=55.0),
-                color=color,
-                marker=symbol_by_dof[dof],
-                alpha=0.82,
-                label=legend_label,
+    tier_boundaries = [i - 0.5 for i in range(1, n) if tiers[i] != tiers[i - 1]]
+    for ax in (ax_prob, ax_se3):
+        for boundary in tier_boundaries:
+            ax.axhline(
+                boundary, color="gray", linewidth=0.8, linestyle="--", alpha=0.45
             )
 
-    ax.set_title("Validation SE3 error vs NRM probability")
-    ax.set_xlabel("NRM mean reachability probability")
-    ax.set_ylabel("Validation mean SE3 error")
-    ax.grid(True, alpha=0.25)
-    ax.legend()
+    for tier_val, color, label in tier_specs:
+        mask = tiers == tier_val
+        if not mask.any():
+            continue
+        ypos = y[mask]
+        ax_prob.hlines(ypos, 0, probs[mask], colors=color, alpha=0.22, linewidth=1.2)
+        ax_prob.scatter(
+            probs[mask], ypos, color=color, s=52, zorder=3, alpha=0.90, label=label
+        )
+        ax_se3.hlines(ypos, 0, se3[mask], colors=color, alpha=0.22, linewidth=1.2)
+        ax_se3.scatter(se3[mask], ypos, color=color, s=52, zorder=3, alpha=0.90)
+
+    ax_prob.set_xlabel("NRM mean reachability probability")
+    ax_prob.set_xlim(0, 1)
+    ax_prob.set_title("Probability  ▶ higher is better")
+
+    max_se3 = se3.max() * 1.1 if se3.max() > 0 else 1.0
+    ax_se3.set_xlabel("Validation mean SE3 error  [m + rad]")
+    ax_se3.set_xlim(0, max_se3)
+    ax_se3.set_title("SE3 error  ◀ lower is better")
+
+    ax_prob.set_yticks(y)
+    ax_prob.set_yticklabels(y_labels, fontsize=8)
+    ax_prob.invert_yaxis()
+
+    ax_prob.grid(True, axis="x", alpha=0.22)
+    ax_se3.grid(True, axis="x", alpha=0.22)
+
+    ax_prob.legend(loc="lower right", fontsize=8)
+    fig.suptitle("Candidate selection ranking", fontsize=11, y=1.01)
     fig.tight_layout()
-    fig.savefig(output_path, dpi=dpi)
+    fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
 
     return output_path
@@ -303,7 +329,7 @@ def create_candidate_selection_plots(
         num_frames=num_frames,
         dpi=dpi,
     )
-    png_path = create_probability_vs_se3_scatter(
+    png_path = create_candidate_ranking_chart(
         csv_path=csv_path,
         output_dir=output_dir,
         dpi=max(dpi, 200),
