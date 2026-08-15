@@ -16,7 +16,7 @@ from pipeline.common import (
     setup_device,
     warn_ignored_config_keys,
 )
-from tasks.environment import l_environment
+from tasks.environment import wall_environment
 from tasks.sampling.fixed_alpha_candidates import (
     DEFAULT_DIRECT_PRESAMPLING_BATCH_SIZE,
     DEFAULT_DYNAMIC_REJECTION_BATCH_SIZE,
@@ -75,7 +75,7 @@ def main() -> None:
     )
 
     task = Task(
-        environment=l_environment(),
+        environment=wall_environment(),
         goal_poses=trajectory_poses,
         start_q=None,
     )

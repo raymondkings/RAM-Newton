@@ -3,8 +3,8 @@ import torch
 from core import Box, Environment
 
 
-def l_environment() -> Environment:
-    """L-shaped room with the robot base frame aligned to the world frame."""
+def wall_environment() -> Environment:
+    """Single-wall environment with the robot base frame aligned to the world frame."""
     WALL_THICKNESS = 0.025
     # ROOM_WIDTH = 0.5
     ROOM_DEPTH = 0.5
