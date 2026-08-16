@@ -123,6 +123,79 @@ To supply a different config file:
 uv run python scripts/gradient_trajectory.py --config path/to/my_config.json
 ```
 
+## GPU Configuration
+
+GPU memory usage scales with the batch-size parameters in `config.json`. The
+`"vram_profile"` key sets all of them at once based on available VRAM:
+
+```json
+{
+  "vram_profile": "high"
+}
+```
+
+Each profile stays within 85% of the target GPU's memory, leaving roughly 15%
+free for the OS and the cuRobo planner:
+
+| Profile  | Target GPU | Memory needed | Example GPUs                          |
+|----------|------------|---------------|---------------------------------------|
+| `low`    | 8 GB       | 5.4 GB        | RTX 3070, RTX 4060, RTX 4060 Ti 8 GB  |
+| `medium` | 12 GB      | 8.9 GB        | RTX 3080 Ti, RTX 4070, RTX 4070 Super |
+| `high`   | 16 GB      | 10.6 GB       | RTX 4080, RTX 4080 Super, RTX 5080    |
+| `ultra`  | 32 GB      | 24.4 GB       | RTX 5090                              |
+
+"Memory needed" is the peak of live tensors. **`nvidia-smi` will report more** — often
+several GB more on a large card — because PyTorch's caching allocator keeps memory it
+has finished with rather than returning it, and only reclaims under pressure. A run
+showing 8.4 GB in `nvidia-smi` on a 32 GB card still fits an 8 GB card. To see the
+figure this column reports, use `torch.cuda.max_memory_allocated()`.
+
+Individual keys override the profile when both are set:
+
+```json
+{
+  "vram_profile": "high",
+  "candidate_batch_size": 300
+}
+```
+
+## GPU Configuration
+
+GPU memory usage scales with the batch-size parameters in `config.json`. The
+`"vram_profile"` key sets all of them at once based on available VRAM:
+
+```json
+{
+  "vram_profile": "high"
+}
+```
+
+Each profile stays within 85% of the target GPU's memory, leaving roughly 15%
+free for the OS and the cuRobo planner:
+
+| Profile  | Target GPU | Memory needed | Example GPUs                          |
+|----------|------------|---------------|---------------------------------------|
+| `low`    | 8 GB       | 5.4 GB        | RTX 3070, RTX 4060, RTX 4060 Ti 8 GB  |
+| `medium` | 12 GB      | 8.9 GB        | RTX 3080 Ti, RTX 4070, RTX 4070 Super |
+| `high`   | 16 GB      | 10.6 GB       | RTX 4080, RTX 4080 Super, RTX 5080    |
+| `ultra`  | 32 GB      | 24.4 GB       | RTX 5090                              |
+
+"Memory needed" is the peak of live tensors. **`nvidia-smi` will report more** — often
+several GB more on a large card — because PyTorch's caching allocator keeps memory it
+has finished with rather than returning it, and only reclaims under pressure. A run
+showing 8.4 GB in `nvidia-smi` on a 32 GB card still fits an 8 GB card. To see the
+figure this column reports, use `torch.cuda.max_memory_allocated()`.
+
+Individual keys override the profile when both are set:
+
+```json
+{
+  "vram_profile": "high",
+  "candidate_batch_size": 300
+}
+```
+
+
 > **Note:** the `use_cached_optimized_morphology` flag controls whether the
 > optimizer runs. When `true`, a run **skips optimization** and replays the most
 > recent optimized morphology from `output/`; when `false`, it runs the

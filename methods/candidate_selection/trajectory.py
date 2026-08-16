@@ -825,6 +825,10 @@ def _optimize_one_dof_group(
         dof=dof,
     )
 
+    # Release optimizer state and gradient buffers before the distribution check,
+    # which needs a fresh 500+ MiB allocation for FK across all candidates.
+    torch.cuda.empty_cache()
+
     return _postfilter_dof_group(
         dof=dof,
         losses=losses,

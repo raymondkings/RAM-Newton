@@ -13,7 +13,11 @@ from pipeline.common import (
     setup_device,
     warn_ignored_config_keys,
 )
-from tasks.environment import l_environment
+from tasks.environment import wall_environment
+from tasks.sampling.fixed_alpha_candidates import (
+    DEFAULT_DIRECT_PRESAMPLING_BATCH_SIZE,
+    DEFAULT_DYNAMIC_REJECTION_BATCH_SIZE,
+)
 from tasks.sampling.pose_sampler import (
     NUM_EXTRA_PATHS,
     NUM_LINE_SAMPLES,
@@ -66,7 +70,7 @@ def main() -> None:
     )
 
     task = Task(
-        environment=l_environment(),
+        environment=wall_environment(),
         goal_poses=optimizer_goal_poses,
         start_q=None,
     )
@@ -107,6 +111,16 @@ def main() -> None:
             "percentage_poses": args.percentage_poses,
             "candidate_batch_size": getattr(args, "candidate_batch_size", 64),
             "distribution_batch_size": getattr(args, "distribution_batch_size", 128),
+            "direct_presampling_batch_size": getattr(
+                args,
+                "direct_presampling_batch_size",
+                DEFAULT_DIRECT_PRESAMPLING_BATCH_SIZE,
+            ),
+            "dynamic_rejection_batch_size": getattr(
+                args,
+                "dynamic_rejection_batch_size",
+                DEFAULT_DYNAMIC_REJECTION_BATCH_SIZE,
+            ),
             "ignore_ground": args.ignore_ground,
             "ignore_obstacles": args.ignore_obstacles,
             "num_plan_candidates": num_plan_candidates,
