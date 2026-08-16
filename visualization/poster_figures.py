@@ -36,26 +36,25 @@ import socket
 import time
 from pathlib import Path
 
+import newton
 import torch
 import warp as wp
-import newton
-
 from interface import Morphology, Task
 from task.environment import l_environment
-from task.task_pose_sampler import START_POSE, create_task_pose_sets
 from task.morphology_sampler import sample_initial_morphologies
+from task.task_pose_sampler import START_POSE, create_task_pose_sets
+from util.csv_log_reader import read_optimization_csv
 from util.kinematics import build_scene, compute_link_world_poses
 from util.mdh import add_robot_to_builder
-from util.csv_log_reader import read_optimization_csv
-from util.pipeline_common import setup_device, set_global_seed, run_plan
+from util.pipeline_common import run_plan, set_global_seed, setup_device
 from validation.curobo_planner import CuroboPlanner
+from validation.ground import add_ground_grid_to_viser
 from validation.render import (
     add_curobo_scene_to_viser,
     add_goals_to_viser,
     make_goal_pose_axes,
     render_scene,
 )
-from validation.ground import add_ground_grid_to_viser
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CANDIDATE_CACHE = PROJECT_ROOT / "initial_candidates"
