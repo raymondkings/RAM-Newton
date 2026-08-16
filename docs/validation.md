@@ -19,9 +19,9 @@ Metrics returned (and logged to the CSV):
 - **`ik_success_pose_rate`** — fraction of goal poses with at least one IK
   solution. This is the **primary final-selection criterion**.
 - **`pos_err`** (m), **`rot_err`** (rad), and **`se3_distance`** — the combined
-  SE(3) error `√(pos²/8 + rot²/(2π²))`, matching the paper's SE(3) norm
-  (`c₁=1/8`, `c₂=1/(2π²)`). The constants bound translation to ½ (`c₁·2² = ½`
-  across `B³`) and rotation to ½ (`c₂·π² = ½` up to `π`), so both components
+  SE(3) error $\sqrt{\text{pos}^2/8 + \text{rot}^2/(2\pi^2)}$, matching the paper's SE(3) norm
+  ($c_1=1/8$, $c_2=1/(2\pi^2)$). The constants bound translation to $1/2$ ($c_1 \cdot 2^2 = 1/2$
+  across $B^3$) and rotation to $1/2$ ($c_2 \cdot \pi^2 = 1/2$ up to $\pi$), so both components
   contribute equally and the combined distance maxes out at 1.
 
 ## 2. Final validation: cuRobo motion planning
@@ -63,11 +63,11 @@ robot's state along the trajectory:
 - **Joint-limit panel** — each joint's current position against its `[lower,
   upper]` limits, updated every frame so it's obvious when a joint runs into a
   bound.
-- **Yoshikawa manipulability** — the manipulability index `√det(JJᵀ)` (soft
+- **Yoshikawa manipulability** — the manipulability index $\sqrt{\det(JJ^\top)}$ (soft
   variant for dof < 6) plotted over the trajectory; the EEF path is also colored
   green→red by the same value.
-- **Singular values** — one progress bar per singular value σᵢ of the tool
-  Jacobian, normalized to the largest σ seen on the trajectory. A bottom bar
+- **Singular values** — one progress bar per singular value $\sigma_i$ of the tool
+  Jacobian, normalized to the largest $\sigma$ seen on the trajectory. A bottom bar
   collapsing toward zero signals an approaching singularity.
 
 `validation/visualize.py` is a simpler Newton-based animation fallback.
@@ -82,11 +82,11 @@ It reuses cuRobo's per-link collision spheres (the same model the planner checks
 so a single link may carry more than one sphere
 (`CuroboPlanner.robot_spheres_world` gives the world-frame spheres per frame).
 
-**How d_crit is computed.** Each frame, for every sphere pair *(i, j)*:
+**How d_crit is computed.** Each frame, for every sphere pair $(i, j)$:
 
-```
-gap = ‖pᵢ − pⱼ‖ − rᵢ − rⱼ      # surface-to-surface; negative = penetration
-```
+$$d_\text{gap} = \|p_i - p_j\| - r_i - r_j$$
+
+A negative value indicates penetration.
 
 `d_crit` is the **smallest gap over all valid pairs**. A pair is excluded when:
 

@@ -32,7 +32,7 @@ term), minimized by AdamW.
 `nrm_alpha_random_selection.py · optimize_morphology`. Fixed goal poses, no trajectory.
 
 1. **Enumerate** alpha candidates per DOF in `CANDIDATE_DOF` (default 5,6,7) over
-   `{-π/2, 0, π/2}`; drop ≥3 consecutive zero twists.
+   $\{-\pi/2, 0, \pi/2\}$; drop $\geq 3$ consecutive zero twists.
 2. **Sample** a valid initial `[a, d]` per candidate.
 3. **Optimize** all candidates batched, with per-candidate **early stop** (prob
    moves < `1e-4` for 5 steps → freeze).

@@ -13,7 +13,7 @@ for collision-free motion planning and renders it in viser.
 ![The four-stage optimization pipeline, from the project poster](media/optimization_pipeline.png)
 
 **1. Kinematic structure sampling.** Twist angles are discrete: enumerate alpha
-candidates from `{-π/2, 0, π/2}` per DoF and sample a valid initial morphology
+candidates from $\{-\pi/2, 0, \pi/2\}$ per DoF and sample a valid initial morphology
 for each. Candidates with three or more consecutive zero-twist links are excluded.
 
 **2. Alternating optimization.** Link lengths `[a, d]` are optimized with AdamW
@@ -55,7 +55,7 @@ paper and should be confirmed against [arXiv:2606.09108](https://arxiv.org/abs/2
 | Concept | Implementation |
 | --- | --- |
 | Morphology as a sequence of MDH tokens `[α, a, d]` | [`core/morphology.py`](../core/morphology.py) |
-| Discrete twist set `{-π/2, 0, π/2}` | `ALPHA_VALUES` in [`tasks/sampling/fixed_alpha_candidates.py`](../tasks/sampling/fixed_alpha_candidates.py) |
+| Discrete twist set $\{-\pi/2, 0, \pi/2\}$ | `ALPHA_VALUES` in [`tasks/sampling/fixed_alpha_candidates.py`](../tasks/sampling/fixed_alpha_candidates.py) |
 | Reachability surrogate | `MLP` in [`methods/nrm_model.py`](../methods/nrm_model.py): an LSTM `Encoder` over the link sequence feeding an MLP `Decoder` |
 | Reachability probability for a pose | `torch.sigmoid(logit)` over the decoder output, averaged across poses |
 | Pose encoding, SE(3) → 9D | `_se3_to_vector` in [`methods/_nrm_common.py`](../methods/_nrm_common.py): 3D position + 6D rotation |
