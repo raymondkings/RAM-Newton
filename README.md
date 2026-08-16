@@ -94,7 +94,11 @@ config.json             # default pipeline config
 
 ## Usage
 
-> **TODO:** link the quickstart Jupyter notebook here once it lands.
+For a guided walkthrough of the full pipeline, open the [demo notebook](demo.ipynb):
+
+```bash
+uv run jupyter notebook demo.ipynb
+```
 
 There are three pipeline entry points, each pairing a task formulation with an
 optimizer:
