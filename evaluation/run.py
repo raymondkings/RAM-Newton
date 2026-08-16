@@ -173,18 +173,11 @@ def _configure_entry_point(optim_algo: str) -> None:
     }
 
 
-CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
+_DEFAULT_SWEEP_CONFIG = Path(__file__).resolve().parent / "config.json"
 
-
-with open(CONFIG_PATH) as f:
-    _presets_config = json.load(f)
-CONDITIONS = list(_presets_config["conditions"].items())
-# Each entry in "algorithms" is pinned to an optim_algo (an ENTRY_POINTS key)
-# with its own sampler-param "configs" tuples and "output_dir" (resolved
-# relative to the project root). Algorithms run sequentially, one after
-# another, in a single invocation. Top-level "num_seeds" can be overridden
-# per-algorithm.
-DEFAULT_NUM_SEEDS = _presets_config.get("num_seeds")
+CONDITIONS: list[tuple[str, dict]] = []
+DEFAULT_NUM_SEEDS: int | None = None
+ALGORITHMS: list[dict] = []
 
 
 def _expand_configs(
@@ -203,19 +196,29 @@ def _expand_configs(
     return [c + (k,) for c in configs for k in num_plan_candidates]
 
 
-ALGORITHMS = [
-    {
-        "optim_algo": algo["optim_algo"],
-        "configs": _expand_configs(
-            [tuple(c) for c in algo["configs"]],
-            algo.get("num_plan_candidates"),
-        ),
-        "output_dir": PROJECT_DIR
-        / algo.get("output_dir", f"evaluation_results/{algo['optim_algo']}"),
-        "num_seeds": algo.get("num_seeds"),
-    }
-    for algo in _presets_config["algorithms"]
-]
+def _load_sweep_config(path: Path) -> None:
+    """Load sweep definition from path, updating module-level globals."""
+    global CONDITIONS, DEFAULT_NUM_SEEDS, ALGORITHMS
+    with open(path) as f:
+        presets = json.load(f)
+    CONDITIONS = list(presets["conditions"].items())
+    DEFAULT_NUM_SEEDS = presets.get("num_seeds")
+    ALGORITHMS = [
+        {
+            "optim_algo": algo["optim_algo"],
+            "configs": _expand_configs(
+                [tuple(c) for c in algo["configs"]],
+                algo.get("num_plan_candidates"),
+            ),
+            "output_dir": PROJECT_DIR
+            / algo.get("output_dir", f"evaluation_results/{algo['optim_algo']}"),
+            "num_seeds": algo.get("num_seeds"),
+        }
+        for algo in presets["algorithms"]
+    ]
+
+
+_load_sweep_config(_DEFAULT_SWEEP_CONFIG)
 
 
 def _extract_error_detail(stderr: str, stdout: str) -> str:
@@ -442,58 +445,101 @@ FAILURE_COLORS = {
 }
 SUCCESS_COLOR = "#4C8DC9"
 
+_CONDITION_LABELS: dict[str, str] = {
+    "obstacles_off_ground_off": "No obstacles",
+    "obstacles_on_ground_off": "With obstacles",
+}
+
+
+def _readable_condition(name: str) -> str:
+    """Convert a snake_case condition name to a short human-readable label."""
+    if name in _CONDITION_LABELS:
+        return _CONDITION_LABELS[name]
+    parts = name.split("_")
+    labels = []
+    i = 0
+    while i + 1 < len(parts):
+        feature, state = parts[i], parts[i + 1]
+        if state in ("on", "off"):
+            labels.append(feature if state == "on" else f"no {feature}")
+            i += 2
+        else:
+            labels.append(feature)
+            i += 1
+    if i < len(parts):
+        labels.append(parts[i])
+    return ", ".join(labels) if labels else name.replace("_", " ")
+
+
+def _normalize_reason(reason: str) -> str:
+    """Collapse 'category: detail' into just 'category' for grouping/legend."""
+    colon = reason.find(": ")
+    return reason[:colon] if colon != -1 else reason
+
 
 def _plot_outcome_breakdown(ax, rows: list[dict]) -> None:
     by_condition = group_by(rows, lambda r: r["condition"])
     conditions = sorted(by_condition.keys())
     all_reasons = sorted(
         {
-            r["failure_reason"]
+            _normalize_reason(r["failure_reason"])
             for rs in by_condition.values()
             for r in rs
             if not r["success"]
         }
     )
-    bottoms = np.zeros(len(conditions))
-    totals = [len(by_condition[c]) for c in conditions]
-    for reason in all_reasons:
-        counts = [
-            sum(
-                1
-                for r in by_condition[c]
-                if not r["success"] and r["failure_reason"] == reason
-            )
-            for c in conditions
-        ]
-        pcts = [100 * cnt / tot for cnt, tot in zip(counts, totals, strict=False)]
-        label = reason if len(reason) <= 50 else reason[:47] + "..."
-        ax.bar(
-            conditions,
-            pcts,
-            bottom=bottoms,
-            label=label,
-            color=FAILURE_COLORS.get(reason, "#CCCCCC"),
-        )
-        bottoms += np.array(pcts)
-    success_pcts = [
-        100 * sum(r["success"] for r in by_condition[c]) / len(by_condition[c])
-        for c in conditions
-    ]
-    ax.bar(
-        conditions, success_pcts, bottom=bottoms, label="success", color=SUCCESS_COLOR
-    )
-    ax.set_ylim(0, 110)
+    categories = all_reasons + ["success"]
+    colors = [FAILURE_COLORS.get(r, "#CCCCCC") for r in all_reasons] + [SUCCESS_COLOR]
+
+    n_conditions = len(conditions)
+    n_cats = len(categories)
+    x = np.arange(n_conditions)
+    width = 0.75 / n_cats
+    totals = {c: len(by_condition[c]) for c in conditions}
+
+    for i, (category, color) in enumerate(zip(categories, colors, strict=False)):
+        offset = (i - n_cats / 2 + 0.5) * width
+        pcts = []
+        for cond in conditions:
+            cond_rows = by_condition[cond]
+            if category == "success":
+                count = sum(1 for r in cond_rows if r["success"])
+            else:
+                count = sum(
+                    1
+                    for r in cond_rows
+                    if not r["success"]
+                    and _normalize_reason(r["failure_reason"]) == category
+                )
+            pcts.append(100 * count / totals[cond])
+
+        bars = ax.bar(x + offset, pcts, width=width, label=category, color=color)
+
+        if category == "success":
+            for bar, pct in zip(bars, pcts, strict=False):
+                if pct > 0:
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + 1.5,
+                        f"{pct:.0f}%",
+                        ha="center",
+                        va="bottom",
+                        fontsize=8,
+                        fontweight="bold",
+                    )
+
+    ax.set_xticks(x)
+    ax.set_xticklabels([_readable_condition(c) for c in conditions])
+    ax.set_ylim(0, 115)
     ax.set_ylabel("Percentage of runs (%)")
     ax.set_title("Outcome Breakdown by Condition", pad=5)
     ax.legend(
         loc="upper center",
-        bbox_to_anchor=(0.5, -0.08),
+        bbox_to_anchor=(0.5, -0.10),
         fontsize=8,
-        ncol=1,
+        ncol=2,
         frameon=False,
     )
-    for i, rate in enumerate(success_pcts):
-        ax.text(i, 102, f"{rate:.1f}% success", ha="center", fontsize=10)
 
 
 def _make_figure(results: list[dict], output_dir: Path) -> None:
@@ -513,7 +559,7 @@ def _make_figure(results: list[dict], output_dir: Path) -> None:
         # Lay the combos out on a roughly square grid (e.g. 4 combos -> 2x2).
         ncols = math.ceil(math.sqrt(len(combos)))
         nrows = math.ceil(len(combos) / ncols)
-        fig_h = 4.5 * nrows + 1.2
+        fig_h = 5.0 * nrows + 1.2
         fig, axes_grid = plt.subplots(
             nrows, ncols, figsize=(5.5 * ncols, fig_h), squeeze=False
         )
@@ -606,6 +652,20 @@ def parse_args() -> argparse.Namespace:
         "--replot",
         action="store_true",
         help="Load all CSVs from --output-dir and regenerate the figure without running evaluations",
+    )
+    parser.add_argument(
+        "--sweep-config",
+        type=Path,
+        default=None,
+        help="Path to the sweep config JSON (default: evaluation/config.json). "
+        "Controls conditions, algorithms, and num_seeds.",
+    )
+    parser.add_argument(
+        "--base-config",
+        type=Path,
+        default=None,
+        help="Path to the project base config JSON used as the template for each "
+        "per-run config (default: config.json in the repo root).",
     )
     parser.add_argument(
         "--no-results-csv",
@@ -735,6 +795,7 @@ def _run_algorithm(
     configs: list[tuple],
     num_seeds: int,
     output_dir: Path,
+    base_config_path: Path,
 ) -> None:
     """Configure the entry point for one optim_algo and run its full
     seed x condition x configs sweep, then report on its results."""
@@ -761,7 +822,7 @@ def _run_algorithm(
         _run_replot(output_dir)
         return
 
-    with open(PROJECT_DIR / "config.json") as f:
+    with open(base_config_path) as f:
         base_config = json.load(f)
 
     sweep_args = argparse.Namespace(**vars(args))
@@ -787,6 +848,11 @@ def _run_algorithm(
 def main() -> None:
     args = parse_args()
 
+    if args.sweep_config:
+        _load_sweep_config(args.sweep_config)
+
+    base_config_path = args.base_config or (PROJECT_DIR / "config.json")
+
     if args.resume and len(ALGORITHMS) > 1:
         raise SystemExit(
             "--resume isn't supported when config.json has more than one "
@@ -803,7 +869,12 @@ def main() -> None:
             args.num_seeds or algo_entry["num_seeds"] or DEFAULT_NUM_SEEDS or 100
         )
         _run_algorithm(
-            args, algo_entry["optim_algo"], algo_entry["configs"], num_seeds, output_dir
+            args,
+            algo_entry["optim_algo"],
+            algo_entry["configs"],
+            num_seeds,
+            output_dir,
+            base_config_path,
         )
 
 

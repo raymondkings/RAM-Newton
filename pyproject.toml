@@ -18,6 +18,7 @@ dependencies = [
     "torch-geometric>=2.5.0",
     "liegroups",
     "generative-graphik",
+    "jupyter>=1.1.0",
 ]
 
 [build-system]
@@ -92,6 +93,6 @@ select = [
 ignore = ["F722", "F821", "E402", "E501"]
 
 [tool.codespell]
-skip = "*.lock,*.json,*.egg-info,.git,.venv,.ruff_cache,.pytest_cache"
+skip = "*.lock,*.json,*.ipynb,*.egg-info,.git,.venv,.ruff_cache,.pytest_cache"
 # To whitelist domain terms that codespell misflags, add a comma-separated
 # ignore-words-list, e.g. ignore-words-list = "mdh,curobo"

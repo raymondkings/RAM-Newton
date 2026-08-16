@@ -412,7 +412,7 @@ def optimize_morphology(
     "6,7", "5", "6", or "7".
     """
     total_iterations = int(optimization_parameters.get("num_iterations", 100))
-    dof_selector = CANDIDATE_DOF
+    dof_selector = optimization_parameters.get("candidate_dof", CANDIDATE_DOF)
     params = _parse_candidate_search_params(optimization_parameters, dof_selector)
 
     device = morph.params.device
