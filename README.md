@@ -19,6 +19,7 @@ Practical course project at TUM CPS, Summer 2026.
 - [Installation](#installation)
 - [Repository Layout](#repository-layout)
 - [Usage](#usage)
+- [GPU Configuration](#gpu-configuration)
 - [Documentation](#documentation)
 - [Evaluation](#evaluation)
 - [License and Citation](#license-and-citation)
@@ -69,23 +70,23 @@ paths.py                # canonical PROJECT_ROOT / data / weights / config paths
 core/                   # data model: Morphology, Task, Environment, results
 kinematics/             # forward kinematics, MDH parameters, self-collision
 tasks/                  # task setup
-├── environment.py      #   the L-shaped room
+├── environment.py      #   the single wall the arm has to reach around
 └── sampling/           #   morphology + task-pose samplers, candidate cache
 methods/                # optimization approaches (see below)
 ├── nrm_model.py        #   shared RAM surrogate network (MLP)
 ├── _nrm_common.py      #   checkpoint loading, pose/morphology encoding
 ├── candidate_selection/  # discrete-alpha candidate search (our heuristic)
 ├── nrm_gradient/       #   gradient-based optimizer (baseline)
-├── baselines/          #   IFT-JAX + HJCD-IK direct-IK comparison baselines
-└── legacy/             #   discrete-relaxation attempts that didn't pan out
+├── baselines/          #   direct-IK comparison baselines (IFT-JAX, IFT-torch, HJCD-IK)
+└── legacy/             #   earlier attempts that didn't pan out
 planning/               # cuRobo collision-free motion planning
 validation/             # reachability/collision validation of a morphology
-visualization/          # live viser 3-D rendering, ground plane, d_crit view
+visualization/          # live viser 3-D rendering, ground plane, d_crit, poster figures
 logutils/               # optimization CSV logging/reading, timing
-pipeline/               # shared entry-point plumbing (common.py)
+pipeline/               # shared plumbing: entry-point common.py, VRAM profiles
 postprocess/            # figures from logged CSVs
 
-scripts/                # the three pipeline entry points
+scripts/                # the three pipeline entry points + bench_vram.py
 evaluation/             # seed-sweep harness + its config.json
 tests/                  # unit tests
 docs/                   # deep reference documentation, demo media, poster
@@ -150,41 +151,10 @@ has finished with rather than returning it, and only reclaims under pressure. A 
 showing 8.4 GB in `nvidia-smi` on a 32 GB card still fits an 8 GB card. To see the
 figure this column reports, use `torch.cuda.max_memory_allocated()`.
 
-Individual keys override the profile when both are set:
-
-```json
-{
-  "vram_profile": "high",
-  "candidate_batch_size": 300
-}
-```
-
-## GPU Configuration
-
-GPU memory usage scales with the batch-size parameters in `config.json`. The
-`"vram_profile"` key sets all of them at once based on available VRAM:
-
-```json
-{
-  "vram_profile": "high"
-}
-```
-
-Each profile stays within 85% of the target GPU's memory, leaving roughly 15%
-free for the OS and the cuRobo planner:
-
-| Profile  | Target GPU | Memory needed | Example GPUs                          |
-|----------|------------|---------------|---------------------------------------|
-| `low`    | 8 GB       | 5.4 GB        | RTX 3070, RTX 4060, RTX 4060 Ti 8 GB  |
-| `medium` | 12 GB      | 8.9 GB        | RTX 3080 Ti, RTX 4070, RTX 4070 Super |
-| `high`   | 16 GB      | 10.6 GB       | RTX 4080, RTX 4080 Super, RTX 5080    |
-| `ultra`  | 32 GB      | 24.4 GB       | RTX 5090                              |
-
-"Memory needed" is the peak of live tensors. **`nvidia-smi` will report more** — often
-several GB more on a large card — because PyTorch's caching allocator keeps memory it
-has finished with rather than returning it, and only reclaims under pressure. A run
-showing 8.4 GB in `nvidia-smi` on a 32 GB card still fits an 8 GB card. To see the
-figure this column reports, use `torch.cuda.max_memory_allocated()`.
+To re-check the profiles on your own GPU, run
+`uv run python scripts/bench_vram.py`. It measures each phase in isolation, so
+its numbers are a lower bound on full-pipeline usage — confirm a profile with a
+real run before trusting it on new hardware.
 
 Individual keys override the profile when both are set:
 
@@ -194,7 +164,6 @@ Individual keys override the profile when both are set:
   "candidate_batch_size": 300
 }
 ```
-
 
 > **Note:** the `use_cached_optimized_morphology` flag controls whether the
 > optimizer runs. When `true`, a run **skips optimization** and replays the most
@@ -208,8 +177,8 @@ Individual keys override the profile when both are set:
 Deep reference lives in [`docs/`](docs/) — start at the
 [documentation index](docs/index.md):
 
-- [docs/architecture.md](docs/architecture.md) — repository layout, the full
-  pipeline, data flow, the paper↔code map, and the output CSV schema.
+- [docs/architecture.md](docs/architecture.md) — the four-stage pipeline, the
+  data model passed between stages, and the paper↔code map.
 - [docs/optimization.md](docs/optimization.md) — deep walkthrough of the
   morphology optimizer (differentiable preprocessing, batched optimization,
   early stopping, selection cascade).
@@ -235,7 +204,8 @@ code changes are needed. It holds:
 - `conditions` — the named `ignore_obstacles` / `ignore_ground` combinations
   every seed is run under. The shipped default compares obstacles off against
   obstacles on, both with the ground ignored.
-- `num_seeds` — how many seeds to sweep.
+- `num_seeds` — how many seeds to sweep. An algorithm entry can override it with
+  its own `num_seeds`.
 - `algorithms` — a flat list of entries, each pinned to its own `optim_algo`
   (one of `candidate_selection_static`, `candidate_selection_trajectory`, or
   `gradient_trajectory`), its sampler-param tuples under `configs`, and an
@@ -253,16 +223,17 @@ Each entry point exposes its own sweepable sampler params, and an entry's
 
 | `optim_algo` | sampler params |
 | --- | --- |
-| `candidate_selection_static` | `num_samples`, `num_line_samples`, `num_extra_paths`, `repeat_start_goal` |
-| `candidate_selection_trajectory` | `num_poses` |
+| `candidate_selection_static` | `num_samples`, `num_line_samples`, `num_extra_paths`, `repeat_start_goal`, `num_plan_candidates` |
+| `candidate_selection_trajectory` | `num_poses`, `num_plan_candidates` |
 | `gradient_trajectory` | `num_poses` |
 
-Both candidate-selection algorithms additionally accept `num_plan_candidates`
-(success@k). It is listed separately from `configs` and crossed with it, so
-`"num_plan_candidates": [1, 10]` doubles the sweep. With `k > 1` a seed counts
-as a success if any of the top k candidates plans successfully; with `k = 1`
-(the default) it is plain single-candidate success. `gradient_trajectory` does
-not support it.
+`num_plan_candidates` (success@k) is a sampler param like any other, so a
+candidate-selection entry has to supply it — either as the last element of every
+`configs` tuple, or, more readably, as its own key that gets crossed with
+`configs`, so `"num_plan_candidates": [1, 10]` doubles the sweep. With `k > 1` a
+seed counts as a success if any of the top k candidates plans successfully; with
+`k = 1` it is plain single-candidate success. `gradient_trajectory` has no
+candidate pool to rank and does not take the param.
 
 Common options (apply to every algorithm in the list):
 
@@ -276,10 +247,10 @@ uv run python evaluation/run.py --no-results-csv         # disposable sweep: no 
 
 Resume an interrupted sweep by pointing at the existing CSV. Already-completed
 `(seed, condition, *sampler_values)` rows are skipped. This only works when
-`config.json` has a single algorithm:
+`evaluation/config.json` has a single algorithm:
 
 ```bash
-uv run python evaluation/run.py --resume evaluation_results/<optim_algo>/evaluation_<timestamp>.csv
+uv run python evaluation/run.py --resume evaluation_results/<optim_algo>/evaluation_<optim_algo>_<timestamp>.csv
 ```
 
 Or regenerate the figure for an algorithm's existing CSVs without rerunning:
