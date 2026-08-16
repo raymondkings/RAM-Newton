@@ -16,6 +16,8 @@ authors:
     family-names: Zhang
   - given-names: Raymond King
     family-names: Setia
+  - given-names: Tim
+    family-names: Walter
 repository-code: "https://github.com/raymondkings/ram-newton"
 license: MIT
 version: 0.1.0

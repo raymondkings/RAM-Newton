@@ -14,8 +14,8 @@
     "ignore_ground": true,
     "ignore_obstacles": false,
     "plan_goal_start": false,
-    "use_cached_optimized_morphology": false,
-    "cached_optimization_csv": null,
+    "use_cached_optimized_morphology": true,
+    "cached_optimization_csv": "output",
     "plot": {
         "enabled": false,
         "output_dir": "output/figures"
