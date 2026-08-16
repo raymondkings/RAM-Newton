@@ -2,10 +2,10 @@ import os
 
 import torch
 
-from interface import Morphology, Task
-from util.kinematics import (
-    IK,
+from core import Morphology, Task
+from kinematics.kinematics import (
     FK,
+    IK,
     build_robot_dict,
     build_scene,
     pose_errors,
@@ -15,7 +15,6 @@ from util.kinematics import (
 
 def build_optimization_validation_context(
     task: Task,
-    device: torch.device,
     ignore_ground: bool = False,
     ignore_obstacles: bool = False,
 ):

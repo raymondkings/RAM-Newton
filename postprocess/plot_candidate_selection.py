@@ -1,5 +1,5 @@
 # -----------------------------------------------------------------------------
-# Candidate-selection CSV plots for nrm_alpha_random_selection.py
+# Candidate-selection CSV plots for candidate_selection/static.py
 #
 # Expected CSV convention:
 #   iteration = 0  -> validated top-probability candidate, not final-tier
@@ -22,7 +22,7 @@ import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 import numpy as np
 
-from util.csv_log_reader import read_optimization_csv
+from logutils.csv_reader import read_optimization_csv
 
 
 def _csv_time_suffix(csv_path: str | Path) -> str:
@@ -215,30 +215,6 @@ def create_candidate_morphology_3d_mp4s(
         )
 
     return paths
-
-
-def create_candidate_morphology_3d_mp4(
-    csv_path: str | Path,
-    output_dir: str | Path = "output/candidate_plots",
-    filename: str | None = None,
-    fps: int = 24,
-    num_frames: int = 180,
-    dpi: int = 160,
-) -> Path:
-    """Create one rotating 3D scatter MP4.
-
-    This preserves the historical single-path API. For mixed-DOF CSVs, prefer
-    create_candidate_morphology_3d_mp4s(), which returns every per-DOF MP4.
-    """
-    paths = create_candidate_morphology_3d_mp4s(
-        csv_path=csv_path,
-        output_dir=output_dir,
-        filename=filename,
-        fps=fps,
-        num_frames=num_frames,
-        dpi=dpi,
-    )
-    return paths[0]
 
 
 def create_probability_vs_se3_scatter(

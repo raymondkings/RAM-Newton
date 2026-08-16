@@ -1,0 +1,9 @@
+{
+    "model_class": "MLP",
+    "hyperparameter": {
+        "encoder_config": {
+            "dim_encoding": 128
+        },
+        "decoder_config": {}
+    }
+}
