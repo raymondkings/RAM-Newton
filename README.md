@@ -61,9 +61,7 @@ uv run python -c "import torch, curobo, newton, viser; print(f'ok, cuda={torch.c
 ```
 
 ## Repository Layout
-
-The library is organized as concept-named packages at the repo root. The
-entry-point scripts, evaluations, tests, and data sit alongside them.
+Here is a quick glimpse of how the repository is structured
 
 ```text
 paths.py                # canonical PROJECT_ROOT / data / weights / config paths
@@ -81,12 +79,12 @@ methods/                # optimization approaches (see below)
 └── legacy/             #   earlier attempts that didn't pan out
 planning/               # cuRobo collision-free motion planning
 validation/             # reachability/collision validation of a morphology
-visualization/          # live viser 3-D rendering, ground plane, d_crit, poster figures
-logutils/               # optimization CSV logging/reading, timing
-pipeline/               # shared plumbing: entry-point common.py, VRAM profiles
+visualization/          # live viser 3-D rendering
+logutils/               # utility functions to help with logging (csv parser, clock)
+pipeline/               # the pipeline that is shared across the different methods (seeding, config loading, etc)
 postprocess/            # figures from logged CSVs
 
-scripts/                # the three pipeline entry points + bench_vram.py
+scripts/                # the three pipeline entry points + VRAM Benchmarking script
 evaluation/             # seed-sweep harness + its config.json
 tests/                  # unit tests
 docs/                   # deep reference documentation, demo media, poster
@@ -103,12 +101,10 @@ optimizer:
 
 - `scripts/candidate_selection_static.py` runs the candidate-selection
   heuristic over static task poses (`methods/candidate_selection/static.py`).
-- `scripts/candidate_selection_trajectory.py` is **our heuristic**. It extends
-  the candidate-selection search to jointly pick a morphology and a trajectory
+- `scripts/candidate_selection_trajectory.py` extends the candidate-selection search to jointly pick a morphology and a trajectory
   (`methods/candidate_selection/trajectory.py`).
 - `scripts/gradient_trajectory.py` runs alternating gradient-based optimization
-  of morphology and trajectory (`methods/nrm_gradient/trajectory.py`). It serves
-  as the baseline to compare the heuristic against.
+  of morphology and trajectory (`methods/nrm_gradient/trajectory.py`).
 
 Run any of them with the default `config.json`:
 
@@ -159,20 +155,14 @@ Individual keys override the profile when both are set:
 Deep reference lives in [`docs/`](docs/). Start at the
 [documentation index](docs/index.md):
 
-- [docs/architecture.md](docs/architecture.md) — the four-stage pipeline, the
-  data model passed between stages, and the paper $\leftrightarrow$ code map.
-- [docs/optimization.md](docs/optimization.md) — deep walkthrough of the
-  morphology optimizer (differentiable preprocessing, batched optimization,
-  early stopping, selection cascade).
-- [docs/validation.md](docs/validation.md) — IK/FK validation, cuRobo motion
-  planning, and the viser visualization.
-- [docs/configuration.md](docs/configuration.md) — every `config.json` key plus
-  the hard-coded knobs that live in source.
+- [docs/architecture.md](docs/architecture.md) — explains the pipeline stages and data model.
+- [docs/optimization.md](docs/optimization.md) — explains the three optimization
+  pipelines
+- [docs/validation.md](docs/validation.md) — explains how we validate the result of the optimization pipelines, and how we visualize the result.
+- [docs/configuration.md](docs/configuration.md) — explains every `config.json` key.
 
-The final project poster, *Task-Driven Robotic Arm Optimization*, is in
-[docs/poster/](docs/poster/). It covers the motivation and research question,
-the optimizer benchmark against the direct-IK baselines, the planning success
-rates, and what didn't work.
+The final project poster shown during the poster session, *Task-Driven Robotic Arm Optimization*, is in
+[docs/poster/](docs/poster/). It covers the motivation, problem statement, the challenges we faced, benchmark and validation results, how the optimization pipeline is structured, what we tried that did not work, and future works.
 
 ## Evaluation
 
