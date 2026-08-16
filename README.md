@@ -2,9 +2,9 @@
 
 A pipeline for robot morphology optimization. Given a target task, it uses
 [Reachability Across Morphologies (RAM)](https://arxiv.org/abs/2606.09108) to
-optimize a 5–7 DoF arm morphology. The result is then validated through
-collision-free motion planning with [cuRobo](https://github.com/NVlabs/curobo)
-and visualized in the [Newton physics simulator](https://github.com/newton-physics/newton).
+optimize a 5–7 DoF arm morphology, then validates the result with
+[cuRobo](https://github.com/NVlabs/curobo) collision-free motion planning and
+renders it in the [Newton physics simulator](https://github.com/newton-physics/newton).
 
 Practical course project at TUM CPS, Summer 2026.
 
@@ -145,17 +145,6 @@ free for the OS and the cuRobo planner:
 | `high`   | 16 GB      | 10.6 GB       | RTX 4080, RTX 4080 Super, RTX 5080    |
 | `ultra`  | 32 GB      | 24.4 GB       | RTX 5090                              |
 
-"Memory needed" is the peak of live tensors. **`nvidia-smi` will report more** — often
-several GB more on a large card — because PyTorch's caching allocator keeps memory it
-has finished with rather than returning it, and only reclaims under pressure. A run
-showing 8.4 GB in `nvidia-smi` on a 32 GB card still fits an 8 GB card. To see the
-figure this column reports, use `torch.cuda.max_memory_allocated()`.
-
-To re-check the profiles on your own GPU, run
-`uv run python scripts/bench_vram.py`. It measures each phase in isolation, so
-its numbers are a lower bound on full-pipeline usage — confirm a profile with a
-real run before trusting it on new hardware.
-
 Individual keys override the profile when both are set:
 
 ```json
@@ -165,20 +154,13 @@ Individual keys override the profile when both are set:
 }
 ```
 
-> **Note:** the `use_cached_optimized_morphology` flag controls whether the
-> optimizer runs. When `true`, a run **skips optimization** and replays the most
-> recent optimized morphology from `output/`; when `false`, it runs the
-> optimizer. The shipped `config.json` sets it to `true`, so set it to `false`
-> for your first run — a fresh clone has no `output/` to replay from. See
-> [docs/configuration.md](docs/configuration.md).
-
 ## Documentation
 
-Deep reference lives in [`docs/`](docs/) — start at the
+Deep reference lives in [`docs/`](docs/). Start at the
 [documentation index](docs/index.md):
 
 - [docs/architecture.md](docs/architecture.md) — the four-stage pipeline, the
-  data model passed between stages, and the paper↔code map.
+  data model passed between stages, and the paper $\leftrightarrow$ code map.
 - [docs/optimization.md](docs/optimization.md) — deep walkthrough of the
   morphology optimizer (differentiable preprocessing, batched optimization,
   early stopping, selection cascade).
@@ -227,13 +209,11 @@ Each entry point exposes its own sweepable sampler params, and an entry's
 | `candidate_selection_trajectory` | `num_poses`, `num_plan_candidates` |
 | `gradient_trajectory` | `num_poses` |
 
-`num_plan_candidates` (success@k) is a sampler param like any other, so a
-candidate-selection entry has to supply it — either as the last element of every
-`configs` tuple, or, more readably, as its own key that gets crossed with
-`configs`, so `"num_plan_candidates": [1, 10]` doubles the sweep. With `k > 1` a
-seed counts as a success if any of the top k candidates plans successfully; with
-`k = 1` it is plain single-candidate success. `gradient_trajectory` has no
-candidate pool to rank and does not take the param.
+`num_plan_candidates` (success@k) can be supplied as the last element of each
+`configs` tuple or as a standalone key that crosses with `configs` (e.g.
+`"num_plan_candidates": [1, 10]` doubles the sweep). With `k > 1`, a seed counts
+as a success if any of the top k candidates plans successfully. `gradient_trajectory`
+has no candidate pool and does not take this param.
 
 Common options (apply to every algorithm in the list):
 
@@ -268,7 +248,7 @@ Outputs (per algorithm, under its `output_dir`):
 ## License and Citation
 
 Released under the [MIT License](LICENSE). Parts of `methods/` derive from
-[TimWalter/nrm](https://github.com/TimWalter/nrm); see the headers in those
+[TimWalter/ram](https://github.com/TimWalter/ram); see the headers in those
 files.
 
 If you use this software, cite it via [CITATION.cff](CITATION.cff).

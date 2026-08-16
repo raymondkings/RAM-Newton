@@ -1,6 +1,6 @@
 # Optimization
 
-Currently we have 3 optimization pipelines:
+Three optimization pipelines are available:
 
 | Entry point | Optimizer module | Morphology search | Task |
 | --- | --- | --- | --- |
@@ -10,23 +10,22 @@ Currently we have 3 optimization pipelines:
 
 ## Shared foundation
 
-- **Morphology** = a sequence of links `[α, a, d]` (MDH twist + two lengths).
-  **Only lengths `[a, d]` are optimized.** The twist `α` is fixed — candidate
-  search *enumerates* it, the gradient pipeline inherits it from the seed.
-- **NRM scorer:** `model(morphology, pose) → logit`; `sigmoid(logit)` is the
-  predicted reachability of that pose (`pose` = `[pos(3), rot_6d(6)]`).
-- **Length preprocessing** (`_preprocess_lengths`) cleans up the raw lengths
-  before scoring, in three steps:
-  1. **normalize** — rescale all lengths so the total arm length is 1 (keeps the
-     numbers in the range the NRM was trained on);
-  2. **squash** — set to 0 any segment thinner than the link itself, i.e. shorter
-     than the capsule diameter `2·link_radius`. These "stubs" aren't real links,
-     so they're dropped. A straight-through estimator lets gradients pass through
-     this hard cutoff, so the step stays differentiable;
-  3. **normalize again** — rescale back to total length 1 now that stubs are gone.
-- **Reachability loss:** push predicted prob → 1 over every task pose
-  (`BCEWithLogits` for candidate search, `MSE(1, sigmoid)` for the trajectory
-  term). Minimized by AdamW.
+A morphology is a sequence of links `[α, a, d]` (MDH twist and two lengths).
+Only lengths `[a, d]` are optimized; the twist `α` is fixed. Candidate search
+enumerates it; the gradient pipeline inherits it from the seed.
+
+The NRM scorer maps `model(morphology, pose) → logit`, where `sigmoid(logit)` is
+the predicted reachability of that pose (`pose` = `[pos(3), rot_6d(6)]`).
+
+Length preprocessing (`_preprocess_lengths`) runs in three steps:
+1. **normalize:** rescale all lengths so total arm length is 1.
+2. **squash:** zero out any segment shorter than `2·link_radius`. A straight-through
+   estimator keeps this step differentiable.
+3. **normalize again:** rescale back to total length 1.
+
+The reachability loss pushes predicted probability toward 1 over every task pose
+(`BCEWithLogits` for candidate search, `MSE(1, sigmoid)` for the trajectory
+term), minimized by AdamW.
 
 ## A — candidate selection, static
 
@@ -43,11 +42,10 @@ Currently we have 3 optimization pipelines:
 ## B — candidate selection, trajectory
 
 `nrm_alpha_random_selection_trajectory.py · optimize_morphology_and_trajectory`.
-Reuses A's candidate machinery and selection cascade (`candidate_base`), plus:
-
-- Task is an ordered **trajectory**; start/goal fixed, **intermediate poses optimized**.
-- Each candidate alternates morphology/trajectory steps (see [ratio](#alternating-ratio))
-  and is validated on the trajectory it produced.
+Uses the same candidate machinery and selection cascade as A (`candidate_base`).
+The task is an ordered trajectory with fixed start/goal and optimized intermediate
+poses. Each candidate alternates morphology/trajectory steps (see
+[ratio](#alternating-ratio)) and is validated on its produced trajectory.
 
 **Trajectory loss** (`_trajectory_loss_and_stats_batched`), weighted sum:
 
@@ -60,36 +58,21 @@ Reuses A's candidate machinery and selection cascade (`candidate_base`), plus:
 
 ## C — gradient, trajectory
 
-`nrm_trajectory.py · optimize_morphology_and_trajectory`. Simplest path: no
-enumeration, no selection — one seed morphology, alternating length/trajectory
-steps (like a single candidate of B). Validation is **inline** every
-`eval_interval` steps. Softer smoothing (0.1 / 3.0 / 1.0). Output morphology *is*
-the optimized seed.
+`nrm_trajectory.py · optimize_morphology_and_trajectory`. No enumeration or
+selection: one seed morphology with alternating length/trajectory steps (equivalent
+to a single candidate of B). Validation runs inline every `eval_interval` steps.
+Smoothing weights are softer (0.1 / 3.0 / 1.0). The output is the optimized seed.
 
 ## Alternating ratio
 
-Trajectory pipelines (B, C) optimize morphology and trajectory **one at a time,
-never together** (alternating block-coordinate descent). They tune the lengths
-for a while with the path frozen, then tune the path for a while with the
-morphology frozen, and repeat.
-
-Two module constants set the schedule (same in both files):
+Trajectory pipelines (B, C) use alternating block-coordinate descent: lengths are
+optimized with the path frozen, then poses are optimized with the morphology frozen.
+Two constants set the schedule (same in both files):
 
 ```python
-num_iteratives = 50   # how many times we switch back and forth (outer rounds)
+num_iteratives = 50   # outer rounds
 num_steps      = 20   # gradient steps per phase
 ```
 
-One **round** looks like this, and it repeats 50 times:
-
-```
-20 length steps  (path frozen)  →  20 pose steps  (morphology frozen)
-└──────── morphology phase ─────────┘ └──────── trajectory phase ────────┘
-```
-
-So per round the split is **20 : 20 = 1 : 1** between the two phases. Over all
-50 rounds that is:
-
-- morphology: `50 × 20 = 1000` steps
-- trajectory: `50 × 20 = 1000` steps
-- **2000 gradient steps total.**
+Each round runs 20 length steps then 20 pose steps, repeated 50 times: 1000
+morphology steps and 1000 trajectory steps for 2000 gradient steps total.

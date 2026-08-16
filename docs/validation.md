@@ -19,21 +19,20 @@ Metrics returned (and logged to the CSV):
 - **`ik_success_pose_rate`** — fraction of goal poses with at least one IK
   solution. This is the **primary final-selection criterion**.
 - **`pos_err`** (m), **`rot_err`** (rad), and **`se3_distance`** — the combined
-  SE(3) error `√(pos²/8 + rot²/(2π²))`, the same weighting as the paper's SE(3)
-  norm (`c₁=1/8`, `c₂=1/(2π²)`). These constants are chosen so each component is
-  bounded to ½ — translation across the unit ball `B³` (diameter 2: `c₁·2² = ½`)
-  and rotation up to `π` (`c₂·π² = ½`) — so position and orientation contribute
-  equally and the combined distance maxes out at 1.
+  SE(3) error `√(pos²/8 + rot²/(2π²))`, matching the paper's SE(3) norm
+  (`c₁=1/8`, `c₂=1/(2π²)`). The constants bound translation to ½ (`c₁·2² = ½`
+  across `B³`) and rotation to ½ (`c₂·π² = ½` up to `π`), so both components
+  contribute equally and the combined distance maxes out at 1.
 
 ## 2. Final validation: cuRobo motion planning
 
-The selected morphology is validated end-to-end with a **collision-free motion
-plan** through the task goals (`validation/curobo_planner.py`,
-`CuroboPlanner`). Unlike step 1 (which only checks pose reachability), this
-proves the arm can actually *move* between goals without collision.
+The selected morphology is validated end-to-end with a collision-free motion plan
+through the task goals (`planning/curobo_planner.py`, `CuroboPlanner`). Unlike
+the IK/FK pass, cuRobo plans a full collision-free trajectory through all goals.
 
-Construction writes the morphology to a temp URDF, builds collision spheres
-(capsules → spheres) with a self-collision ignore map then builds the world scene.
+Construction writes the morphology to a temp URDF and builds collision spheres
+(capsules → spheres) with a self-collision ignore map. It then configures the
+world scene.
 
 Key methods:
 
@@ -76,13 +75,11 @@ robot's state along the trajectory:
 ### Self-collision critical distance (d_crit)
 
 During trajectory playback, `validation/critical_distance.py` shows how close
-the robot comes to colliding **with itself**. It is purely diagnostic — it can
-be toggled off on Viser and never interrupts playback
-(`build_critical_distance_monitor` swallows all errors and returns `None` if
-plotly is missing or the sphere model is inconsistent).
+the robot comes to colliding with itself. It is purely diagnostic and can be
+toggled off in viser without interrupting playback.
 
-It reuses cuRobo's per-link collision spheres — the same model the planner
-checks — so a single link may carry more than one sphere
+It reuses cuRobo's per-link collision spheres (the same model the planner checks),
+so a single link may carry more than one sphere
 (`CuroboPlanner.robot_spheres_world` gives the world-frame spheres per frame).
 
 **How d_crit is computed.** Each frame, for every sphere pair *(i, j)*:
@@ -94,14 +91,12 @@ gap = ‖pᵢ − pⱼ‖ − rᵢ − rⱼ      # surface-to-surface; negative 
 `d_crit` is the **smallest gap over all valid pairs**. A pair is excluded when:
 
 - both spheres belong to the same link, or
-- the two links are effectively adjacent — the ignore map from
+- the two links are effectively adjacent (the ignore map from
   [`build_self_collision_ignore`](../util/kinematics.py) excludes a pair when
-  every link strictly between them is degenerate (zero-length), or
+  every link strictly between them is degenerate, i.e. zero-length), or
 - either sphere is disabled (radius ≤ 0).
 
-There is **no per-link representative sphere**: a single global `argmin` over all
-valid sphere pairs returns the closest pair *(sᵢ, sⱼ)*, so for a link with many
-spheres whichever one is nearest the other link wins.
+The closest pair is selected by a single global `argmin` over all valid sphere pairs.
 
 **What it shows:**
 

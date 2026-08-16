@@ -1,7 +1,6 @@
 # NRM-Newton Documentation
 
-This folder is the deep reference for the project. The top-level
-[`../README.md`](../README.md) covers install and quickstart; everything that explains *how the pipeline works and how to configure it* lives here.
+Deep reference for the pipeline. Installation and quickstart are in [`../README.md`](../README.md).
 
 ## Index
 
